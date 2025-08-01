@@ -15,8 +15,6 @@ from PIL import Image, ImageDraw, ImageFont
 from qwen_vl_utils import process_vision_info
 from transformers import AutoModelForCausalLM, AutoProcessor
 
-print(torch.__version__)
-
 # Constants
 MIN_PIXELS = 3136
 MAX_PIXELS = 11289600
