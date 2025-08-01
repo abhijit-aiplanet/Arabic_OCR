@@ -284,7 +284,7 @@ processing_results = {
     'markdown_content': None,
     'raw_output': None,
 }
-@spaces.gpu
+@spaces.GPU()
 def inference(image: Image.Image, prompt: str, max_new_tokens: int = 24000) -> str:
     """Run inference on an image with the given prompt"""
     try:
