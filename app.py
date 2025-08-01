@@ -1,17 +1,21 @@
+import spaces
 import json
 import math
 import os
 import traceback
 from io import BytesIO
 from typing import Any, Dict, List, Optional, Tuple
-from huggingface_hub import snapshot_download
+
 import fitz  # PyMuPDF
 import gradio as gr
 import requests
 import torch
+from huggingface_hub import snapshot_download
 from PIL import Image, ImageDraw, ImageFont
 from qwen_vl_utils import process_vision_info
 from transformers import AutoModelForCausalLM, AutoProcessor
+
+print(torch.__version__)
 
 # Constants
 MIN_PIXELS = 3136
