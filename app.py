@@ -476,45 +476,47 @@ def load_file_for_preview(file_path: str) -> Tuple[Optional[Image.Image], str]:
         return None, f"Error loading file: {str(e)}"
 
 
-def turn_page(direction: str) -> Tuple[Optional[Image.Image], str, str]:
-    """Navigate through PDF pages"""
+def turn_page(direction: str) -> Tuple[Optional[Image.Image], str, Any, Optional[Image.Image], Optional[Dict]]:
+    """Navigate through PDF pages and update all relevant outputs."""
     global pdf_cache
-    
+
     if not pdf_cache["images"]:
-        return None, "No file loaded", "No results yet"
-    
+        return None, '<div class="page-info">No file loaded</div>', "No results yet", None, None
+
     if direction == "prev":
         pdf_cache["current_page"] = max(0, pdf_cache["current_page"] - 1)
     elif direction == "next":
         pdf_cache["current_page"] = min(
-            pdf_cache["total_pages"] - 1, 
+            pdf_cache["total_pages"] - 1,
             pdf_cache["current_page"] + 1
         )
-    
+
     index = pdf_cache["current_page"]
-    current_image = pdf_cache["images"][index]
-    page_info = f"Page {index + 1} / {pdf_cache['total_pages']}"
-    
+    current_image_preview = pdf_cache["images"][index]
+    page_info_html = f'<div class="page-info">Page {index + 1} / {pdf_cache["total_pages"]}</div>'
+
+    # Initialize default result values
+    markdown_content = "Page not processed yet"
+    processed_img = None
+    layout_json = None
+
     # Get results for current page if available
-    current_result = ""
-    if (pdf_cache["is_parsed"] and 
-        index < len(pdf_cache["results"]) and 
+    if (pdf_cache["is_parsed"] and
+        index < len(pdf_cache["results"]) and
         pdf_cache["results"][index]):
+
         result = pdf_cache["results"][index]
-        if result.get('markdown_content'):
-            current_result = result['markdown_content']
-        else:
-            current_result = result.get('raw_output', 'No content available')
+        markdown_content = result.get('markdown_content') or result.get('raw_output', 'No content available')
+        processed_img = result.get('processed_image', None) # Get the processed image
+        layout_json = result.get('layout_result', None) # Get the layout JSON
+
+    # Check for Arabic text to set RTL property
+    if is_arabic_text(markdown_content):
+        markdown_update = gr.update(value=markdown_content, rtl=True)
     else:
-        current_result = "Page not processed yet"
-    
-    # Check if the result contains mostly Arabic text and return appropriate update
-    if is_arabic_text(current_result):
-        result_update = gr.update(value=current_result, rtl=True)
-    else:
-        result_update = current_result
-    
-    return current_image, page_info, result_update
+        markdown_update = markdown_content
+
+    return current_image_preview, page_info_html, markdown_update, processed_img, layout_json
 
 
 def create_gradio_interface():
@@ -534,7 +536,6 @@ def create_gradio_interface():
     }
     
     .process-button {
-        background: linear-gradient(45deg, #667eea 0%, #764ba2 100%) !important;
         border: none !important;
         color: white !important;
         font-weight: bold !important;
@@ -546,7 +547,6 @@ def create_gradio_interface():
     }
     
     .info-box {
-        background: #f8f9fa;
         border: 1px solid #dee2e6;
         border-radius: 8px;
         padding: 15px;
@@ -556,7 +556,6 @@ def create_gradio_interface():
     .page-info {
         text-align: center;
         padding: 8px 16px;
-        background: #e9ecef;
         border-radius: 20px;
         font-weight: bold;
         margin: 10px 0;
@@ -574,12 +573,6 @@ def create_gradio_interface():
         background: #d1edff;
         color: #0c5460;
         border: 1px solid #b8daff;
-    }
-    
-    .status-error {
-        background: #f8d7da;
-        color: #721c24;
-        border: 1px solid #f5c6cb;
     }
     """
     
@@ -789,25 +782,19 @@ def create_gradio_interface():
         def clear_all():
             """Clear all data and reset interface"""
             global pdf_cache
-            
+
             pdf_cache = {
-                "images": [],
-                "current_page": 0, 
-                "total_pages": 0,
-                "file_type": None,
-                "is_parsed": False,
-                "results": []
+                "images": [], "current_page": 0, "total_pages": 0,
+                "file_type": None, "is_parsed": False, "results": []
             }
-            
+
             return (
                 None,  # file_input
                 None,  # image_preview
-                "No file loaded",  # page_info
+                '<div class="page-info">No file loaded</div>',  # page_info
                 None,  # processed_image
                 "Click 'Process Document' to see extracted content...",  # markdown_output
-                "",  # raw_output
                 None,  # json_output
-                '<div class="model-status status-ready">✅ Interface cleared</div>'  # model_status
             )
         
         # Wire up event handlers
@@ -817,14 +804,15 @@ def create_gradio_interface():
             outputs=[image_preview, page_info]
         )
         
+        # The outputs list is now updated to include all components that need to change
         prev_page_btn.click(
-            lambda: handle_page_turn("prev"),
-            outputs=[image_preview, page_info, markdown_output]
+            lambda: turn_page("prev"),
+            outputs=[image_preview, page_info, markdown_output, processed_image, json_output]
         )
-        
+
         next_page_btn.click(
-            lambda: handle_page_turn("next"), 
-            outputs=[image_preview, page_info, markdown_output]
+            lambda: turn_page("next"),
+            outputs=[image_preview, page_info, markdown_output, processed_image, json_output]
         )
         
         process_btn.click(
@@ -833,10 +821,11 @@ def create_gradio_interface():
             outputs=[processed_image, markdown_output, json_output]
         )
         
+        # The outputs list for the clear button is now correct
         clear_btn.click(
             clear_all,
             outputs=[
-                file_input, image_preview, page_info, processed_image, 
+                file_input, image_preview, page_info, processed_image,
                 markdown_output, json_output
             ]
         )
