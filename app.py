@@ -284,6 +284,7 @@ processing_results = {
     'markdown_content': None,
     'raw_output': None,
 }
+@spaces.gpu
 def inference(image: Image.Image, prompt: str, max_new_tokens: int = 24000) -> str:
     """Run inference on an image with the given prompt"""
     try:
@@ -356,7 +357,6 @@ def inference(image: Image.Image, prompt: str, max_new_tokens: int = 24000) -> s
 
 def process_image(
     image: Image.Image, 
-    prompt_mode: str, 
     min_pixels: Optional[int] = None,
     max_pixels: Optional[int] = None
 ) -> Dict[str, Any]:
@@ -366,48 +366,42 @@ def process_image(
         if min_pixels is not None or max_pixels is not None:
             image = fetch_image(image, min_pixels=min_pixels, max_pixels=max_pixels)
         
-        # Run inference
+        # Run inference with the default prompt
         raw_output = inference(image, prompt)
         
         # Process results based on prompt mode
         result = {
             'original_image': image,
             'raw_output': raw_output,
-            'prompt_mode': prompt_mode,
             'processed_image': image,
             'layout_result': None,
             'markdown_content': None
         }
         
-        # For layout analysis prompts, try to parse JSON and create visualizations
-        if prompt_mode in ['prompt_layout_all_en', 'prompt_layout_only_en']:
+        # Try to parse JSON and create visualizations (since we're doing layout analysis)
+        try:
+            # Try to parse JSON output
+            layout_data = json.loads(raw_output)
+            result['layout_result'] = layout_data
+            
+            # Create visualization with bounding boxes
             try:
-                # Try to parse JSON output
-                layout_data = json.loads(raw_output)
-                result['layout_result'] = layout_data
-                
-                # Create visualization with bounding boxes
-                try:
-                    processed_image = draw_layout_on_image(image, layout_data)
-                    result['processed_image'] = processed_image
-                except Exception as e:
-                    print(f"Error drawing layout: {e}")
-                    result['processed_image'] = image
-                
-                # Generate markdown if text is available
-                if prompt_mode == 'prompt_layout_all_en':
-                    try:
-                        markdown_content = layoutjson2md(image, layout_data, text_key='text')
-                        result['markdown_content'] = markdown_content
-                    except Exception as e:
-                        print(f"Error generating markdown: {e}")
-                        result['markdown_content'] = raw_output
-                
-            except json.JSONDecodeError:
-                print("Failed to parse JSON output, using raw output")
+                processed_image = draw_layout_on_image(image, layout_data)
+                result['processed_image'] = processed_image
+            except Exception as e:
+                print(f"Error drawing layout: {e}")
+                result['processed_image'] = image
+            
+            # Generate markdown from layout data
+            try:
+                markdown_content = layoutjson2md(image, layout_data, text_key='text')
+                result['markdown_content'] = markdown_content
+            except Exception as e:
+                print(f"Error generating markdown: {e}")
                 result['markdown_content'] = raw_output
-        else:
-            # For OCR prompts, use raw output as markdown
+            
+        except json.JSONDecodeError:
+            print("Failed to parse JSON output, using raw output")
             result['markdown_content'] = raw_output
         
         return result
@@ -418,7 +412,6 @@ def process_image(
         return {
             'original_image': image,
             'raw_output': f"Error processing image: {str(e)}",
-            'prompt_mode': prompt_mode,
             'processed_image': image,
             'layout_result': None,
             'markdown_content': f"Error processing image: {str(e)}"
@@ -707,7 +700,7 @@ def create_gradio_interface():
             except Exception as e:
                 return f'<div class="model-status status-error">❌ Error: {str(e)}</div>'
         
-        def process_document(file_path, prompt_mode_val, max_tokens, min_pix, max_pix):
+        def process_document(file_path, max_tokens, min_pix, max_pix):
             """Process the uploaded document"""
             global pdf_cache
             
@@ -750,7 +743,6 @@ def create_gradio_interface():
                     for i, img in enumerate(pdf_cache["images"]):
                         result = process_image(
                             img, 
-                            prompt_mode_val, 
                             min_pixels=int(min_pix) if min_pix else None,
                             max_pixels=int(max_pix) if max_pix else None
                         )
@@ -776,7 +768,6 @@ def create_gradio_interface():
                     # Process single image
                     result = process_image(
                         image,
-                        prompt_mode_val,
                         min_pixels=int(min_pix) if min_pix else None,
                         max_pixels=int(max_pix) if max_pix else None
                     )
@@ -804,10 +795,6 @@ def create_gradio_interface():
                     f'<div class="model-status status-error">❌ {error_msg}</div>'
                 )
         
-        def update_prompt_display(mode):
-            """Update the prompt display when mode changes"""
-            return prompt
-
         def handle_file_upload(file_path):
             """Handle file upload and show preview"""
             if not file_path:
@@ -871,15 +858,9 @@ def create_gradio_interface():
             outputs=[image_preview, page_info, markdown_output]
         )
         
-        prompt_mode.change(
-            update_prompt_display,
-            inputs=[prompt_mode],
-            outputs=[prompt_display]
-        )
-        
         process_btn.click(
             process_document,
-            inputs=[file_input, prompt_mode, max_new_tokens, min_pixels, max_pixels],
+            inputs=[file_input, max_new_tokens, min_pixels, max_pixels],
             outputs=[processed_image, markdown_output, raw_output, json_output, model_status]
         )
         
