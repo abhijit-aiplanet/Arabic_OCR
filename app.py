@@ -1,30 +1,17 @@
-#!/usr/bin/env python3
-"""
-Dots.OCR Gradio Demo Application
-
-A Gradio-based web interface for demonstrating the Dots.OCR model using Hugging Face transformers.
-This application provides OCR and layout analysis capabilities for documents and images.
-"""
-
-import os
 import json
-import traceback
 import math
+import os
+import traceback
 from io import BytesIO
-from typing import Optional, Dict, Any, Tuple, List
-import requests
-
-# Set LOCAL_RANK for transformers
-if "LOCAL_RANK" not in os.environ:
-    os.environ["LOCAL_RANK"] = "0"
-
-import torch
-import gradio as gr
-from PIL import Image, ImageDraw, ImageFont
-from transformers import AutoModelForCausalLM, AutoProcessor
-from qwen_vl_utils import process_vision_info
+from typing import Any, Dict, List, Optional, Tuple
+from huggingface_hub import snapshot_download
 import fitz  # PyMuPDF
-
+import gradio as gr
+import requests
+import torch
+from PIL import Image, ImageDraw, ImageFont
+from qwen_vl_utils import process_vision_info
+from transformers import AutoModelForCausalLM, AutoProcessor
 
 # Constants
 MIN_PIXELS = 3136
@@ -32,8 +19,7 @@ MAX_PIXELS = 11289600
 IMAGE_FACTOR = 28
 
 # Prompts
-dict_promptmode_to_prompt = {
-    "prompt_layout_all_en": """Please output the layout information from the PDF image, including each layout element's bbox, its category, and the corresponding text content within the bbox.
+prompt = """Please output the layout information from the PDF image, including each layout element's bbox, its category, and the corresponding text content within the bbox.
 
 1. Bbox format: [x1, y1, x2, y2]
 
@@ -50,15 +36,7 @@ dict_promptmode_to_prompt = {
     - All layout elements must be sorted according to human reading order.
 
 5. Final Output: The entire output must be a single JSON object.
-""",
-
-    "prompt_layout_only_en": """Please output the layout information from this PDF image, including each layout's bbox and its category. The bbox should be in the format [x1, y1, x2, y2]. The layout categories for the PDF document include ['Caption', 'Footnote', 'Formula', 'List-item', 'Page-footer', 'Page-header', 'Picture', 'Section-header', 'Table', 'Text', 'Title']. Do not output the corresponding text. The layout result should be in JSON format.""",
-
-    "prompt_ocr": """Extract the text content from this image.""",
-
-    "prompt_grounding_ocr": """Extract text from the given bounding box on the image (format: [x1, y1, x2, y2]).\nBounding Box:\n""",
-}
-
+"""
 
 # Utility functions
 def round_by_factor(number: int, factor: int) -> int:
@@ -263,15 +241,21 @@ def layoutjson2md(image: Image.Image, layout_data: List[Dict], text_key: str = '
 
 # Initialize model and processor at script level
 model_id = "rednote-hilab/dots.ocr"
+model_path = "./models/dots-ocr-local"
+snapshot_download(
+    repo_id=model_id,
+    local_dir=model_path,
+    local_dir_use_symlinks=False, # Recommended to set to False to avoid symlink issues
+)
 model = AutoModelForCausalLM.from_pretrained(
-    model_id,
+    model_path,
     attn_implementation="flash_attention_2",
     torch_dtype=torch.bfloat16,
     device_map="auto",
     trust_remote_code=True
 )
 processor = AutoProcessor.from_pretrained(
-    model_id, 
+    model_path, 
     trust_remote_code=True
 )
 
@@ -377,9 +361,6 @@ def process_image(
         # Resize image if needed
         if min_pixels is not None or max_pixels is not None:
             image = fetch_image(image, min_pixels=min_pixels, max_pixels=max_pixels)
-        
-        # Get prompt
-        prompt = dict_promptmode_to_prompt[prompt_mode]
         
         # Run inference
         raw_output = inference(image, prompt)
@@ -640,15 +621,7 @@ def create_gradio_interface():
                     next_page_btn = gr.Button("Next ▶", size="sm")
                 
                 gr.Markdown("### ⚙️ Settings")
-                
-                # Prompt mode selection
-                prompt_mode = gr.Dropdown(
-                    choices=list(dict_promptmode_to_prompt.keys()),
-                    value="prompt_layout_all_en",
-                    label="Task Mode",
-                    info="Choose the type of analysis to perform"
-                )
-                
+                                
                 # Advanced settings
                 with gr.Accordion("Advanced Settings", open=False):
                     max_new_tokens = gr.Slider(
@@ -720,16 +693,6 @@ def create_gradio_interface():
                             label="Layout Analysis Results",
                             value=None
                         )
-        
-        # Prompt display
-        gr.Markdown("### 💬 Current Prompt")
-        prompt_display = gr.Textbox(
-            value=dict_promptmode_to_prompt["prompt_layout_all_en"],
-            label="Prompt Text",
-            lines=8,
-            interactive=False,
-            info="This is the prompt that will be sent to the model"
-        )
         
         # Event handlers
         def load_model_on_startup():
@@ -839,8 +802,8 @@ def create_gradio_interface():
         
         def update_prompt_display(mode):
             """Update the prompt display when mode changes"""
-            return dict_promptmode_to_prompt[mode]
-        
+            return prompt
+
         def handle_file_upload(file_path):
             """Handle file upload and show preview"""
             if not file_path:
