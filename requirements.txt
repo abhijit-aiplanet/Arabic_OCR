@@ -1,5 +1,5 @@
+spaces
 huggingface_hub
-accelerate
 transformers
 torch
 torchvision
