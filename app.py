@@ -185,6 +185,29 @@ def draw_layout_on_image(image: Image.Image, layout_data: List[Dict]) -> Image.I
     return img_copy
 
 
+def is_arabic_text(text: str) -> bool:
+    """Check if text contains mostly Arabic characters"""
+    if not text:
+        return False
+    
+    # Arabic Unicode ranges
+    arabic_chars = 0
+    total_chars = 0
+    
+    for char in text:
+        if char.isalpha():
+            total_chars += 1
+            # Arabic script ranges
+            if ('\u0600' <= char <= '\u06FF') or ('\u0750' <= char <= '\u077F') or ('\u08A0' <= char <= '\u08FF'):
+                arabic_chars += 1
+    
+    if total_chars == 0:
+        return False
+    
+    # Consider text as Arabic if more than 50% of alphabetic characters are Arabic
+    return (arabic_chars / total_chars) > 0.5
+
+
 def layoutjson2md(image: Image.Image, layout_data: List[Dict], text_key: str = 'text') -> str:
     """Convert layout JSON to markdown format"""
     markdown_lines = []
@@ -494,7 +517,13 @@ def turn_page(direction: str) -> Tuple[Optional[Image.Image], str, str]:
     else:
         current_result = "Page not processed yet"
     
-    return current_image, page_info, current_result
+    # Check if the result contains mostly Arabic text and return appropriate update
+    if is_arabic_text(current_result):
+        result_update = gr.update(value=current_result, rtl=True)
+    else:
+        result_update = current_result
+    
+    return current_image, page_info, result_update
 
 
 def create_gradio_interface():
@@ -573,9 +602,22 @@ def create_gradio_interface():
         
         # Header
         gr.HTML("""
-        <div class="header-text">
-            <h1>🔍 Dots.OCR Hugging Face Demo</h1>
-            <p>Advanced OCR and Document Layout Analysis powered by Hugging Face Transformers</p>
+        <div class="title" style="text-align: center">
+            <h1>🔍 Dot-OCR - Multilingual Document Text Extraction</h1>
+            <p style="font-size: 1.1em; color: #6b7280; margin-bottom: 0.6em;">
+                A state-of-the-art image/pdf-to-markdown vision language model for intelligent document processing
+            </p>
+            <div style="display: flex; justify-content: center; gap: 20px; margin: 15px 0;">
+                <a href="https://huggingface.co/rednote-hilab/dots.ocr" target="_blank" style="text-decoration: none; color: #2563eb; font-weight: 500;">
+                    📚 Hugging Face Model
+                </a>
+                <a href="https://github.com/rednote-hilab/dots.ocr/blob/master/assets/blog.md" target="_blank" style="text-decoration: none; color: #2563eb; font-weight: 500;">
+                    📝 Release Blog
+                </a>
+                <a href="https://github.com/rednote-hilab/dots.ocr" target="_blank" style="text-decoration: none; color: #2563eb; font-weight: 500;">
+                    💻 GitHub Repository
+                </a>
+            </div>
         </div>
         """)
         
@@ -735,9 +777,15 @@ def create_gradio_interface():
                     first_result = all_results[0]
                     combined_markdown = "\n\n---\n\n".join(all_markdown)
                     
+                    # Check if the combined markdown contains mostly Arabic text
+                    if is_arabic_text(combined_markdown):
+                        markdown_update = gr.update(value=combined_markdown, rtl=True)
+                    else:
+                        markdown_update = combined_markdown
+                    
                     return (
                         first_result['processed_image'],
-                        combined_markdown,
+                        markdown_update,
                         first_result['raw_output'],
                         first_result['layout_result'],
                         '<div class="model-status status-ready">✅ Processing completed!</div>'
@@ -753,9 +801,16 @@ def create_gradio_interface():
                     pdf_cache["results"] = [result]
                     pdf_cache["is_parsed"] = True
                     
+                    # Check if the content contains mostly Arabic text
+                    content = result['markdown_content'] or "No content extracted"
+                    if is_arabic_text(content):
+                        markdown_update = gr.update(value=content, rtl=True)
+                    else:
+                        markdown_update = content
+                    
                     return (
                         result['processed_image'],
-                        result['markdown_content'] or "No content extracted",
+                        markdown_update,
                         result['raw_output'],
                         result['layout_result'],
                         '<div class="model-status status-ready">✅ Processing completed!</div>'
