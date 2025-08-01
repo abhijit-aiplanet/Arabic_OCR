@@ -1,5 +1,6 @@
 huggingface_hub
 torch
+torchvision
 transformers
 qwen_vl_utils
 Pillow
