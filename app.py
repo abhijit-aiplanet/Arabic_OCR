@@ -187,12 +187,9 @@ def draw_layout_on_image(image: Image.Image, layout_data: List[Dict]) -> Image.I
     return img_copy
 
 
-def layoutjson2md(image: Image.Image, layout_data: List[Dict], text_key: str = 'text', no_page_hf: bool = False) -> str:
+def layoutjson2md(image: Image.Image, layout_data: List[Dict], text_key: str = 'text') -> str:
     """Convert layout JSON to markdown format"""
     markdown_lines = []
-    
-    if not no_page_hf:
-        markdown_lines.append("# Document Content\n")
     
     try:
         # Sort items by reading order (top to bottom, left to right)
@@ -584,12 +581,6 @@ def create_gradio_interface():
         </div>
         """)
         
-        # Model status
-        model_status = gr.HTML(
-            '<div class="model-status status-loading">🔄 Initializing model...</div>',
-            elem_id="model_status"
-        )
-        
         # Main interface
         with gr.Row():
             # Left column - Input and controls
@@ -667,23 +658,12 @@ def create_gradio_interface():
                             interactive=False,
                             height=500
                         )
-                    
                     # Markdown output tab  
                     with gr.Tab("📝 Extracted Content"):
                         markdown_output = gr.Markdown(
                             value="Click 'Process Document' to see extracted content...",
                             height=500
                         )
-                    
-                    # Raw output tab
-                    with gr.Tab("🔧 Raw Output"):
-                        raw_output = gr.Textbox(
-                            label="Raw Model Output",
-                            lines=20,
-                            max_lines=30,
-                            interactive=False
-                        )
-                    
                     # JSON layout tab
                     with gr.Tab("📋 Layout JSON"):
                         json_output = gr.JSON(
@@ -840,8 +820,6 @@ def create_gradio_interface():
             )
         
         # Wire up event handlers
-        demo.load(load_model_on_startup, outputs=[model_status])
-        
         file_input.change(
             handle_file_upload,
             inputs=[file_input],
@@ -861,14 +839,14 @@ def create_gradio_interface():
         process_btn.click(
             process_document,
             inputs=[file_input, max_new_tokens, min_pixels, max_pixels],
-            outputs=[processed_image, markdown_output, raw_output, json_output, model_status]
+            outputs=[processed_image, markdown_output, json_output]
         )
         
         clear_btn.click(
             clear_all,
             outputs=[
                 file_input, image_preview, page_info, processed_image, 
-                markdown_output, raw_output, json_output, model_status
+                markdown_output, json_output
             ]
         )
     
