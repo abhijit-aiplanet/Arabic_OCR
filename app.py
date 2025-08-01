@@ -293,15 +293,6 @@ pdf_cache = {
     "is_parsed": False,
     "results": []
 }
-
-# Processing state
-processing_results = {
-    'original_image': None,
-    'processed_image': None,
-    'layout_result': None,
-    'markdown_content': None,
-    'raw_output': None,
-}
 @spaces.GPU()
 def inference(image: Image.Image, prompt: str, max_new_tokens: int = 24000) -> str:
     """Run inference on an image with the given prompt"""
@@ -579,12 +570,6 @@ def create_gradio_interface():
         font-weight: bold;
     }
     
-    .status-loading {
-        background: #fff3cd;
-        color: #856404;
-        border: 1px solid #ffeaa7;
-    }
-    
     .status-ready {
         background: #d1edff;
         color: #0c5460;
@@ -625,7 +610,6 @@ def create_gradio_interface():
         with gr.Row():
             # Left column - Input and controls
             with gr.Column(scale=1):
-                gr.Markdown("### 📁 Input")
                 
                 # File input
                 file_input = gr.File(
@@ -644,12 +628,10 @@ def create_gradio_interface():
                 
                 # Page navigation for PDFs
                 with gr.Row():
-                    prev_page_btn = gr.Button("◀ Previous", size="sm")
+                    prev_page_btn = gr.Button("◀ Previous", size="md")
                     page_info = gr.HTML('<div class="page-info">No file loaded</div>')
-                    next_page_btn = gr.Button("Next ▶", size="sm")
+                    next_page_btn = gr.Button("Next ▶", size="md")
                 
-                gr.Markdown("### ⚙️ Settings")
-                                
                 # Advanced settings
                 with gr.Accordion("Advanced Settings", open=False):
                     max_new_tokens = gr.Slider(
@@ -686,7 +668,6 @@ def create_gradio_interface():
             
             # Right column - Results
             with gr.Column(scale=2):
-                gr.Markdown("### 📊 Results")
                 
                 # Results tabs
                 with gr.Tabs():
@@ -712,47 +693,21 @@ def create_gradio_interface():
                         )
         
         # Event handlers
-        def load_model_on_startup():
-            """Load model when the interface starts"""
-            try:
-                # Model is already loaded at script level
-                return '<div class="model-status status-ready">✅ Model loaded successfully!</div>'
-            except Exception as e:
-                return f'<div class="model-status status-error">❌ Error: {str(e)}</div>'
-        
         def process_document(file_path, max_tokens, min_pix, max_pix):
             """Process the uploaded document"""
             global pdf_cache
             
             try:
                 if not file_path:
-                    return (
-                        None, 
-                        "Please upload a file first.", 
-                        "No file uploaded",
-                        None,
-                        '<div class="model-status status-error">❌ No file uploaded</div>'
-                    )
+                    return None, "Please upload a file first.", None
                 
                 if model is None:
-                    return (
-                        None,
-                        "Model not loaded. Please refresh the page and try again.",
-                        "Model not loaded",
-                        None,
-                        '<div class="model-status status-error">❌ Model not loaded</div>'
-                    )
+                    return None, "Model not loaded. Please refresh the page and try again.", None
                 
                 # Load and preview file
                 image, page_info = load_file_for_preview(file_path)
                 if image is None:
-                    return (
-                        None,
-                        page_info,
-                        "Failed to load file",
-                        None,
-                        '<div class="model-status status-error">❌ Failed to load file</div>'
-                    )
+                    return None, page_info, None
                 
                 # Process the image(s)
                 if pdf_cache["file_type"] == "pdf":
@@ -786,9 +741,7 @@ def create_gradio_interface():
                     return (
                         first_result['processed_image'],
                         markdown_update,
-                        first_result['raw_output'],
-                        first_result['layout_result'],
-                        '<div class="model-status status-ready">✅ Processing completed!</div>'
+                        first_result['layout_result']
                     )
                 else:
                     # Process single image
@@ -811,22 +764,14 @@ def create_gradio_interface():
                     return (
                         result['processed_image'],
                         markdown_update,
-                        result['raw_output'],
-                        result['layout_result'],
-                        '<div class="model-status status-ready">✅ Processing completed!</div>'
+                        result['layout_result']
                     )
                     
             except Exception as e:
                 error_msg = f"Error processing document: {str(e)}"
                 print(error_msg)
                 traceback.print_exc()
-                return (
-                    None,
-                    error_msg,
-                    error_msg, 
-                    None,
-                    f'<div class="model-status status-error">❌ {error_msg}</div>'
-                )
+                return None, error_msg, None
         
         def handle_file_upload(file_path):
             """Handle file upload and show preview"""
@@ -843,7 +788,7 @@ def create_gradio_interface():
         
         def clear_all():
             """Clear all data and reset interface"""
-            global pdf_cache, processing_results
+            global pdf_cache
             
             pdf_cache = {
                 "images": [],
@@ -852,13 +797,6 @@ def create_gradio_interface():
                 "file_type": None,
                 "is_parsed": False,
                 "results": []
-            }
-            processing_results = {
-                'original_image': None,
-                'processed_image': None,
-                'layout_result': None,
-                'markdown_content': None,
-                'raw_output': None,
             }
             
             return (
