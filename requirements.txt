@@ -5,5 +5,4 @@ qwen_vl_utils
 Pillow
 PyMuPDF
 accelerate
-https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.0.8/flash_attn-2.7.4.post1+cu126torch2.7-cp310-cp310-linux_x86_64.whl
 git+https://github.com/rednote-hilab/dots.ocr.git
