@@ -210,6 +210,9 @@ def is_arabic_text(text: str) -> bool:
 
 def layoutjson2md(image: Image.Image, layout_data: List[Dict], text_key: str = 'text') -> str:
     """Convert layout JSON to markdown format"""
+    import base64
+    from io import BytesIO
+    
     markdown_lines = []
     
     try:
@@ -219,11 +222,38 @@ def layoutjson2md(image: Image.Image, layout_data: List[Dict], text_key: str = '
         for item in sorted_items:
             category = item.get('category', '')
             text = item.get(text_key, '')
+            bbox = item.get('bbox', [])
             
-            if not text:
+            if category == 'Picture':
+                # Extract image region and embed it
+                if bbox and len(bbox) == 4:
+                    try:
+                        # Extract the image region
+                        x1, y1, x2, y2 = bbox
+                        # Ensure coordinates are within image bounds
+                        x1, y1 = max(0, int(x1)), max(0, int(y1))
+                        x2, y2 = min(image.width, int(x2)), min(image.height, int(y2))
+                        
+                        if x2 > x1 and y2 > y1:
+                            cropped_img = image.crop((x1, y1, x2, y2))
+                            
+                            # Convert to base64 for embedding
+                            buffer = BytesIO()
+                            cropped_img.save(buffer, format='PNG')
+                            img_data = base64.b64encode(buffer.getvalue()).decode()
+                            
+                            # Add as markdown image
+                            markdown_lines.append(f"![Image](data:image/png;base64,{img_data})\n")
+                        else:
+                            markdown_lines.append("![Image](Image region detected)\n")
+                    except Exception as e:
+                        print(f"Error processing image region: {e}")
+                        markdown_lines.append("![Image](Image detected)\n")
+                else:
+                    markdown_lines.append("![Image](Image detected)\n")
+            elif not text:
                 continue
-                
-            if category == 'Title':
+            elif category == 'Title':
                 markdown_lines.append(f"# {text}\n")
             elif category == 'Section-header':
                 markdown_lines.append(f"## {text}\n")
