@@ -5,6 +5,7 @@ import os
 import traceback
 from io import BytesIO
 from typing import Any, Dict, List, Optional, Tuple
+import re
 
 import fitz  # PyMuPDF
 import gradio as gr
@@ -186,15 +187,43 @@ def draw_layout_on_image(image: Image.Image, layout_data: List[Dict]) -> Image.I
 
 
 def is_arabic_text(text: str) -> bool:
-    """Check if text contains mostly Arabic characters"""
+    """Check if text in headers and paragraphs contains mostly Arabic characters"""
     if not text:
         return False
+    
+    # Extract text from headers and paragraphs only
+    # Match markdown headers (# ## ###) and regular paragraph text
+    header_pattern = r'^#{1,6}\s+(.+)$'
+    paragraph_pattern = r'^(?!#{1,6}\s|!\[|```|\||\s*[-*+]\s|\s*\d+\.\s)(.+)$'
+    
+    content_text = []
+    
+    for line in text.split('\n'):
+        line = line.strip()
+        if not line:
+            continue
+            
+        # Check for headers
+        header_match = re.match(header_pattern, line, re.MULTILINE)
+        if header_match:
+            content_text.append(header_match.group(1))
+            continue
+            
+        # Check for paragraph text (exclude lists, tables, code blocks, images)
+        if re.match(paragraph_pattern, line, re.MULTILINE):
+            content_text.append(line)
+    
+    if not content_text:
+        return False
+    
+    # Join all content text and check for Arabic characters
+    combined_text = ' '.join(content_text)
     
     # Arabic Unicode ranges
     arabic_chars = 0
     total_chars = 0
     
-    for char in text:
+    for char in combined_text:
         if char.isalpha():
             total_chars += 1
             # Arabic script ranges
