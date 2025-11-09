@@ -1,5 +1,5 @@
 # RunPod Dockerfile for AIN Vision Language Model OCR
-FROM runpod/pytorch:2.1.1-py3.10-cuda11.8.0-devel-ubuntu22.04
+FROM runpod/pytorch:2.1.0-py3.10-cuda11.8.0-ubuntu22.04
 
 # Set working directory
 WORKDIR /app
