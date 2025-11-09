@@ -8,11 +8,14 @@ WORKDIR /app
 # Update pip
 RUN python3 -m pip install --no-cache-dir --upgrade pip
 
+# Uninstall any pre-existing conflicting packages from base image
+RUN pip3 uninstall -y torch torchvision transformers || true
+
 # Copy requirements
 COPY requirements.txt .
 
-# Install Python dependencies
-RUN pip3 install --no-cache-dir -r requirements.txt
+# Install Python dependencies with --force-reinstall to ensure clean versions
+RUN pip3 install --no-cache-dir --force-reinstall -r requirements.txt
 
 # Copy handler code
 COPY handler.py .
