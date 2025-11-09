@@ -174,11 +174,6 @@ export default function Home() {
             />
           </div>
         </div>
-
-        {/* Footer */}
-        <div className="mt-12 text-center text-gray-600 text-sm">
-          <p>Powered by <strong>MBZUAI/AIN</strong> - Specialized for understanding and extracting text from images</p>
-        </div>
       </div>
     </main>
   )
