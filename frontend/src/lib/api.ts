@@ -42,6 +42,10 @@ export async function processOCR(
       }
     )
 
+    console.log('🔍 API Response:', response.data)
+    console.log('🔍 Response status:', response.data.status)
+    console.log('🔍 Response extracted_text:', response.data.extracted_text)
+
     return response.data
   } catch (error) {
     if (axios.isAxiosError(error)) {

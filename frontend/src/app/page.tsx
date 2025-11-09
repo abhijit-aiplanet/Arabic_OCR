@@ -53,10 +53,16 @@ export default function Home() {
     try {
       const result = await processOCR(selectedImage, settings)
       
+      console.log('🎯 Result received in page:', result)
+      console.log('🎯 Result status:', result.status)
+      console.log('🎯 Result extracted_text:', result.extracted_text)
+      
       if (result.status === 'success') {
+        console.log('✅ Setting extracted text:', result.extracted_text)
         setExtractedText(result.extracted_text)
         toast.success('Text extracted successfully!', { id: loadingToast })
       } else {
+        console.log('❌ Status not success:', result.status)
         throw new Error(result.error || 'Failed to extract text')
       }
     } catch (error) {
