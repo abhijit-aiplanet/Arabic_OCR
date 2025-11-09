@@ -1,0 +1,8 @@
+runpod==1.6.0
+torch>=2.0.0
+torchvision
+transformers>=4.45.0
+qwen_vl_utils
+Pillow
+accelerate
+

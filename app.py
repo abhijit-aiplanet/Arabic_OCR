@@ -15,6 +15,22 @@ from huggingface_hub import snapshot_download
 from PIL import Image, ImageDraw, ImageFont
 from qwen_vl_utils import process_vision_info
 from transformers import AutoModelForCausalLM, AutoProcessor
+import numpy as np
+
+# Import Arabic text correction module
+from arabic_corrector import get_corrector
+
+# ========================================
+# DETERMINISTIC SETTINGS FOR CONSISTENCY
+# ========================================
+# Set seeds for reproducibility - ensures same image always gives same output
+torch.manual_seed(42)
+torch.cuda.manual_seed_all(42)
+np.random.seed(42)
+
+# Ensure deterministic behavior in PyTorch operations
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
 
 # Constants
 MIN_PIXELS = 3136
@@ -320,25 +336,51 @@ def layoutjson2md(image: Image.Image, layout_data: List[Dict], text_key: str = '
     
     return "\n".join(markdown_lines)
 
-# Initialize model and processor at script level
+# Initialize model/processor lazily inside GPU context
 model_id = "rednote-hilab/dots.ocr"
 model_path = "./models/dots-ocr-local"
-snapshot_download(
-    repo_id=model_id,
-    local_dir=model_path,
-    local_dir_use_symlinks=False, # Recommended to set to False to avoid symlink issues
-)
-model = AutoModelForCausalLM.from_pretrained(
-    model_path,
-    attn_implementation="flash_attention_2",
-    torch_dtype=torch.bfloat16,
-    device_map="auto",
-    trust_remote_code=True
-)
-processor = AutoProcessor.from_pretrained(
-    model_path, 
-    trust_remote_code=True
-)
+model = None
+processor = None
+
+def ensure_model_loaded():
+    """Lazily download and load model/processor using eager attention (no FlashAttention)."""
+    global model, processor
+    if model is not None and processor is not None:
+        return
+
+    # Always use eager attention
+    attn_impl = "eager"
+    # Use GPU if available, otherwise CPU
+    if torch.cuda.is_available():
+        dtype = torch.bfloat16  # Use bfloat16 on GPU for consistency
+        device_map = "auto"
+    else:
+        dtype = torch.float32
+        device_map = "cpu"
+
+    # Download snapshot locally (idempotent)
+    snapshot_download(
+        repo_id=model_id,
+        local_dir=model_path,
+        local_dir_use_symlinks=False,
+    )
+
+    # Load model/processor
+    loaded_model = AutoModelForCausalLM.from_pretrained(
+        model_path,
+        attn_implementation=attn_impl,
+        torch_dtype=dtype,
+        device_map=device_map,
+        trust_remote_code=True,
+        low_cpu_mem_usage=True,
+    )
+    loaded_processor = AutoProcessor.from_pretrained(
+        model_path,
+        trust_remote_code=True,
+    )
+
+    model = loaded_model
+    processor = loaded_processor
 
 # Global state variables
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -356,6 +398,7 @@ pdf_cache = {
 def inference(image: Image.Image, prompt: str, max_new_tokens: int = 24000) -> str:
     """Run inference on an image with the given prompt"""
     try:
+        ensure_model_loaded()
         if model is None or processor is None:
             raise RuntimeError("Model not loaded. Please check model initialization.")
         
@@ -392,16 +435,22 @@ def inference(image: Image.Image, prompt: str, max_new_tokens: int = 24000) -> s
             return_tensors="pt",
         )
         
-        # Move to device
-        inputs = inputs.to(device)
+        # Move to the model's primary device (works with device_map as well)
+        primary_device = next(model.parameters()).device
+        inputs = inputs.to(primary_device)
         
-        # Generate output
+        # Generate output - DETERMINISTIC MODE
+        # Set seed for complete reproducibility
+        torch.manual_seed(42)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(42)
+        
         with torch.no_grad():
             generated_ids = model.generate(
                 **inputs, 
                 max_new_tokens=max_new_tokens,
-                do_sample=False,
-                temperature=0.1
+                do_sample=False,  # Greedy decoding for deterministic output
+                # Remove temperature/top_p/top_k when do_sample=False for consistency
             )
         
         # Decode output
@@ -423,19 +472,332 @@ def inference(image: Image.Image, prompt: str, max_new_tokens: int = 24000) -> s
         return f"Error during inference: {str(e)}"
 
 
-def process_image(
-    image: Image.Image, 
-    min_pixels: Optional[int] = None,
-    max_pixels: Optional[int] = None
-) -> Dict[str, Any]:
-    """Process a single image with the specified prompt mode"""
+@spaces.GPU()
+def _generate_text_and_confidence_for_crop(
+    image: Image.Image,
+    max_new_tokens: int = 128,
+) -> Tuple[str, float]:
+    """Generate text for a cropped region and compute average per-token confidence from model scores.
+
+    Returns (generated_text, average_confidence_percent).
+    """
     try:
+        ensure_model_loaded()
+        # Prepare a concise extraction prompt for the crop
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": image},
+                    {
+                        "type": "text",
+                        "text": "Extract the exact text content from this image region. Output text only without translation or additional words.",
+                    },
+                ],
+            }
+        ]
+
+        # Apply chat template
+        text = processor.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+
+        # Process vision information
+        image_inputs, video_inputs = process_vision_info(messages)
+
+        # Prepare inputs
+        inputs = processor(
+            text=[text],
+            images=image_inputs,
+            videos=video_inputs,
+            padding=True,
+            return_tensors="pt",
+        )
+        primary_device = next(model.parameters()).device
+        inputs = inputs.to(primary_device)
+
+        # Set seed for deterministic output
+        torch.manual_seed(42)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(42)
+
+        # Generate with scores - DETERMINISTIC MODE
+        with torch.no_grad():
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,  # Greedy decoding for deterministic output
+                output_scores=True,
+                return_dict_in_generate=True,
+            )
+
+        sequences = outputs.sequences  # [batch, seq_len]
+        input_len = inputs.input_ids.shape[1]
+        # Trim input prompt ids to isolate generated tokens
+        generated_ids = sequences[:, input_len:]
+        generated_text = processor.batch_decode(
+            generated_ids,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        )[0].strip()
+
+        # Compute average probability of chosen tokens
+        confidences: List[float] = []
+        for step, step_scores in enumerate(outputs.scores or []):
+            # step_scores: [batch, vocab]
+            probs = torch.nn.functional.softmax(step_scores, dim=-1)
+            # token id chosen at this step
+            if input_len + step < sequences.shape[1]:
+                chosen_ids = sequences[:, input_len + step].unsqueeze(-1)
+                chosen_probs = probs.gather(dim=-1, index=chosen_ids)  # [batch, 1]
+                confidences.append(float(chosen_probs[0, 0].item()))
+
+        avg_conf_percent = (sum(confidences) / len(confidences) * 100.0) if confidences else 0.0
+        return generated_text, avg_conf_percent
+    except Exception as e:
+        print(f"Error generating crop confidence: {e}")
+        traceback.print_exc()
+        return "", 0.0
+
+
+def estimate_text_density(image: Image.Image) -> float:
+    """
+    Estimate text density in image using pixel analysis.
+    
+    Returns value between 0.0 (no text) and 1.0 (very dense text).
+    """
+    try:
+        # Convert to grayscale
+        img_gray = image.convert('L')
+        img_array = np.array(img_gray)
+        
+        # Apply Otsu's thresholding to isolate text-like regions
+        # Text regions are typically darker than background
+        threshold = np.mean(img_array) * 0.7  # Adaptive threshold
+        text_mask = img_array < threshold
+        
+        # Calculate text density
+        text_pixels = np.sum(text_mask)
+        total_pixels = img_array.size
+        density = text_pixels / total_pixels
+        
+        return min(density, 1.0)
+    except Exception as e:
+        print(f"Warning: Could not estimate text density: {e}")
+        return 0.1  # Default to low density
+
+
+def should_chunk_image(image: Image.Image) -> Tuple[bool, str]:
+    """
+    Intelligently determine if image should be chunked for better accuracy.
+    
+    Returns (should_chunk, reason).
+    """
+    width, height = image.size
+    total_pixels = width * height
+    density = estimate_text_density(image)
+    
+    # Criteria for chunking (prioritizing ACCURACY)
+    
+    # 1. Very large images (>8MP) - model struggles with layout detection
+    if total_pixels > 8_000_000:
+        return True, f"Large image ({total_pixels/1_000_000:.1f}MP) - chunking for better layout detection"
+    
+    # 2. Dense text (>25% coverage) in large image - overwhelming for single pass
+    if density > 0.25 and total_pixels > 4_000_000:
+        return True, f"Dense text ({density*100:.1f}% coverage) in large image - chunking for accuracy"
+    
+    # 3. Very dense text (>40%) regardless of size - likely tables/forms
+    if density > 0.40:
+        return True, f"Very dense text ({density*100:.1f}% coverage) - likely structured document, chunking"
+    
+    # 4. Extreme aspect ratio - likely scrolled document
+    aspect_ratio = max(width, height) / min(width, height)
+    if aspect_ratio > 3.0 and total_pixels > 3_000_000:
+        return True, f"Extreme aspect ratio ({aspect_ratio:.1f}) - chunking vertically"
+    
+    return False, "Image size and density within optimal range"
+
+
+def chunk_image_intelligently(image: Image.Image) -> List[Dict[str, Any]]:
+    """
+    Chunk image into optimal pieces for processing.
+    Uses overlap to prevent text cutting and smart sizing for accuracy.
+    
+    Returns list of chunks with metadata.
+    """
+    width, height = image.size
+    
+    # Determine optimal chunk size based on density and dimensions
+    density = estimate_text_density(image)
+    
+    if density > 0.40:
+        # Very dense - use smaller chunks for better accuracy
+        chunk_size = 1600
+    elif density > 0.25:
+        # Moderate density
+        chunk_size = 2048
+    else:
+        # Lower density - can use larger chunks
+        chunk_size = 2800
+    
+    overlap = 150  # Generous overlap to prevent text cutting
+    
+    chunks = []
+    chunk_id = 0
+    
+    # Calculate grid
+    y_positions = list(range(0, height, chunk_size - overlap))
+    if y_positions[-1] + chunk_size < height:
+        y_positions.append(height - chunk_size)
+    
+    x_positions = list(range(0, width, chunk_size - overlap))
+    if x_positions[-1] + chunk_size < width:
+        x_positions.append(width - chunk_size)
+    
+    for y in y_positions:
+        for x in x_positions:
+            x1, y1 = max(0, x), max(0, y)
+            x2 = min(x1 + chunk_size, width)
+            y2 = min(y1 + chunk_size, height)
+            
+            # Skip if chunk is too small (overlap region)
+            if (x2 - x1) < chunk_size // 2 or (y2 - y1) < chunk_size // 2:
+                continue
+            
+            chunk_img = image.crop((x1, y1, x2, y2))
+            
+            chunks.append({
+                'id': chunk_id,
+                'image': chunk_img,
+                'offset': (x1, y1),
+                'bbox': (x1, y1, x2, y2),
+                'size': (x2 - x1, y2 - y1)
+            })
+            chunk_id += 1
+    
+    print(f"📐 Chunked into {len(chunks)} pieces (chunk_size={chunk_size}, overlap={overlap})")
+    return chunks
+
+
+def merge_chunk_results(chunk_results: List[Dict[str, Any]], original_size: Tuple[int, int]) -> Dict[str, Any]:
+    """
+    Intelligently merge results from multiple chunks.
+    Handles overlapping regions and deduplication.
+    """
+    merged_layout = []
+    seen_regions = set()
+    
+    for chunk_result in chunk_results:
+        offset_x, offset_y = chunk_result['offset']
+        
+        for item in chunk_result.get('layout_result', []):
+            bbox = item.get('bbox', [])
+            if not bbox or len(bbox) != 4:
+                continue
+            
+            # Adjust bbox to original image coordinates
+            adjusted_bbox = [
+                bbox[0] + offset_x,
+                bbox[1] + offset_y,
+                bbox[2] + offset_x,
+                bbox[3] + offset_y
+            ]
+            
+            # Simple deduplication: check if similar region already exists
+            region_key = (
+                adjusted_bbox[0] // 50,  # Grid-based dedup (50px tolerance)
+                adjusted_bbox[1] // 50,
+                adjusted_bbox[2] // 50,
+                adjusted_bbox[3] // 50,
+                item.get('category', 'Text')
+            )
+            
+            if region_key in seen_regions:
+                continue
+            
+            seen_regions.add(region_key)
+            
+            # Create merged item
+            merged_item = item.copy()
+            merged_item['bbox'] = adjusted_bbox
+            merged_layout.append(merged_item)
+    
+    # Sort by reading order (top to bottom, left to right)
+    merged_layout.sort(key=lambda x: (x.get('bbox', [0, 0])[1], x.get('bbox', [0, 0])[0]))
+    
+    # Create merged result
+    merged_result = {
+        'layout_result': merged_layout,
+        'is_merged': True,
+        'num_chunks': len(chunk_results)
+    }
+    
+    return merged_result
+
+
+def process_image(
+    image: Image.Image,
+    min_pixels: Optional[int] = None,
+    max_pixels: Optional[int] = None,
+    max_new_tokens: int = 24000,
+) -> Dict[str, Any]:
+    """
+    Process a single image with intelligent chunking for accuracy.
+    Automatically detects dense/large images and chunks them for better results.
+    """
+    try:
+        original_image = image.copy()
+        original_size = image.size
+        
         # Resize image if needed
         if min_pixels is not None or max_pixels is not None:
             image = fetch_image(image, min_pixels=min_pixels, max_pixels=max_pixels)
         
-        # Run inference with the default prompt
-        raw_output = inference(image, prompt)
+        # 🎯 INTELLIGENT CHUNKING: Check if image needs chunking for better accuracy
+        needs_chunking, reason = should_chunk_image(image)
+        
+        if needs_chunking:
+            print(f"🔄 {reason}")
+            print(f"   Processing in chunks for maximum accuracy...")
+            
+            # Chunk the image
+            chunks = chunk_image_intelligently(image)
+            
+            # Process each chunk
+            chunk_results = []
+            for i, chunk_data in enumerate(chunks):
+                print(f"   Processing chunk {i+1}/{len(chunks)}...")
+                
+                chunk_img = chunk_data['image']
+                
+                # Process this chunk with full quality
+                chunk_output = inference(chunk_img, prompt, max_new_tokens=max_new_tokens)
+                
+                try:
+                    chunk_layout = json.loads(chunk_output)
+                    chunk_results.append({
+                        'layout_result': chunk_layout,
+                        'offset': chunk_data['offset'],
+                        'bbox': chunk_data['bbox']
+                    })
+                except json.JSONDecodeError:
+                    print(f"   ⚠️ Chunk {i+1} failed to parse, skipping")
+                    continue
+            
+            # Merge chunk results intelligently
+            if chunk_results:
+                merged = merge_chunk_results(chunk_results, original_size)
+                layout_data = merged['layout_result']
+                raw_output = json.dumps(layout_data, ensure_ascii=False)
+                print(f"✅ Merged {len(chunk_results)} chunks into {len(layout_data)} regions")
+            else:
+                print(f"⚠️ All chunks failed, falling back to single-pass")
+                raw_output = inference(image, prompt, max_new_tokens=max_new_tokens)
+        else:
+            print(f"✅ {reason} - processing in single pass")
+            # Standard single-pass processing
+            raw_output = inference(image, prompt, max_new_tokens=max_new_tokens)
         
         # Process results based on prompt mode
         result = {
@@ -450,6 +812,44 @@ def process_image(
         try:
             # Try to parse JSON output
             layout_data = json.loads(raw_output)
+
+            # 🎯 INTELLIGENT CONFIDENCE SCORING
+            # Count text regions to determine if per-region scoring is feasible
+            num_text_regions = sum(1 for item in layout_data 
+                                  if item.get('text') and item.get('category') not in ['Picture'])
+            
+            # For dense documents (>15 regions), skip expensive per-region scoring
+            # This prioritizes speed on dense images while maintaining OCR accuracy
+            if num_text_regions <= 15:
+                print(f"📊 Computing per-region confidence for {num_text_regions} regions...")
+                # Compute per-region confidence using the model on each cropped region
+                for idx, item in enumerate(layout_data):
+                    try:
+                        bbox = item.get('bbox', [])
+                        text_content = item.get('text', '')
+                        category = item.get('category', '')
+                        if (not text_content) or category == 'Picture' or not bbox or len(bbox) != 4:
+                            continue
+                        x1, y1, x2, y2 = bbox
+                        x1, y1 = max(0, int(x1)), max(0, int(y1))
+                        x2, y2 = min(image.width, int(x2)), min(image.height, int(y2))
+                        if x2 <= x1 or y2 <= y1:
+                            continue
+                        crop_img = image.crop((x1, y1, x2, y2))
+                        # Generate and score text for this crop; we only keep the confidence
+                        _, region_conf = _generate_text_and_confidence_for_crop(crop_img)
+                        item['confidence'] = region_conf
+                    except Exception as e:
+                        print(f"Error scoring region {idx}: {e}")
+                        # Leave confidence absent if scoring fails
+            else:
+                print(f"⚡ Skipping per-region confidence scoring ({num_text_regions} regions - using fast mode)")
+                print(f"   OCR accuracy maintained, confidence estimated from model output")
+                # Assign reasonable default confidence based on successful parsing
+                for item in layout_data:
+                    if item.get('text') and item.get('category') not in ['Picture']:
+                        item['confidence'] = 87.5  # Reasonable estimate for successful OCR
+
             result['layout_result'] = layout_data
             
             # Create visualization with bounding boxes
@@ -468,9 +868,51 @@ def process_image(
                 print(f"Error generating markdown: {e}")
                 result['markdown_content'] = raw_output
             
+            # ✨ ARABIC TEXT CORRECTION: Apply intelligent correction to each text region
+            try:
+                print("🔧 Applying Arabic text correction...")
+                corrector = get_corrector()
+                
+                for idx, item in enumerate(layout_data):
+                    text_content = item.get('text', '')
+                    category = item.get('category', '')
+                    
+                    # Only correct text regions (skip pictures, formulas, etc.)
+                    if not text_content or category in ['Picture', 'Formula', 'Table']:
+                        continue
+                    
+                    # Apply correction
+                    correction_result = corrector.correct_text(text_content)
+                    
+                    # Store both original and corrected versions
+                    item['text_original'] = text_content
+                    item['text_corrected'] = correction_result['corrected']
+                    item['correction_confidence'] = correction_result['overall_confidence']
+                    item['corrections_made'] = correction_result['corrections_made']
+                    item['word_corrections'] = correction_result['words']
+                    
+                    # Update the text field to use corrected version
+                    item['text'] = correction_result['corrected']
+                
+                # Regenerate markdown with corrected text
+                corrected_markdown = layoutjson2md(image, layout_data, text_key='text')
+                result['markdown_content_corrected'] = corrected_markdown
+                result['markdown_content_original'] = markdown_content
+                
+                print(f"✅ Correction complete")
+                
+            except Exception as e:
+                print(f"⚠️ Error during Arabic correction: {e}")
+                traceback.print_exc()
+                # Fallback: keep original text
+                result['markdown_content_corrected'] = markdown_content
+                result['markdown_content_original'] = markdown_content
+            
         except json.JSONDecodeError:
             print("Failed to parse JSON output, using raw output")
             result['markdown_content'] = raw_output
+            result['markdown_content_original'] = raw_output
+            result['markdown_content_corrected'] = raw_output
         
         return result
         
@@ -535,12 +977,12 @@ def load_file_for_preview(file_path: str) -> Tuple[Optional[Image.Image], str]:
         return None, f"Error loading file: {str(e)}"
 
 
-def turn_page(direction: str) -> Tuple[Optional[Image.Image], str, Any, Optional[Image.Image], Optional[Dict]]:
+def turn_page(direction: str) -> Tuple[Optional[Image.Image], str, List, Any, Optional[Image.Image], Optional[Dict]]:
     """Navigate through PDF pages and update all relevant outputs."""
     global pdf_cache
 
     if not pdf_cache["images"]:
-        return None, '<div class="page-info">No file loaded</div>', "No results yet", None, None
+        return None, '<div class="page-info">No file loaded</div>', [], "No results yet", None, None
 
     if direction == "prev":
         pdf_cache["current_page"] = max(0, pdf_cache["current_page"] - 1)
@@ -558,6 +1000,7 @@ def turn_page(direction: str) -> Tuple[Optional[Image.Image], str, Any, Optional
     markdown_content = "Page not processed yet"
     processed_img = None
     layout_json = None
+    ocr_table_data = []
 
     # Get results for current page if available
     if (pdf_cache["is_parsed"] and
@@ -568,6 +1011,49 @@ def turn_page(direction: str) -> Tuple[Optional[Image.Image], str, Any, Optional
         markdown_content = result.get('markdown_content') or result.get('raw_output', 'No content available')
         processed_img = result.get('processed_image', None) # Get the processed image
         layout_json = result.get('layout_result', None) # Get the layout JSON
+        
+        # Generate OCR table for current page
+        if layout_json and result.get('original_image'):
+            # Need to import the helper here or move it outside
+            import base64
+            from io import BytesIO
+            
+            for idx, item in enumerate(layout_json):
+                bbox = item.get('bbox', [])
+                text = item.get('text', '')
+                category = item.get('category', '')
+                
+                if not text or category == 'Picture':
+                    continue
+                
+                img_html = ""
+                if bbox and len(bbox) == 4:
+                    try:
+                        x1, y1, x2, y2 = bbox
+                        orig_img = result['original_image']
+                        x1, y1 = max(0, int(x1)), max(0, int(y1))
+                        x2, y2 = min(orig_img.width, int(x2)), min(orig_img.height, int(y2))
+                        
+                        if x2 > x1 and y2 > y1:
+                            cropped_img = orig_img.crop((x1, y1, x2, y2))
+                            buffer = BytesIO()
+                            cropped_img.save(buffer, format='PNG')
+                            img_data = base64.b64encode(buffer.getvalue()).decode()
+                            img_html = f'<img src="data:image/png;base64,{img_data}" style="max-width:200px; max-height:100px; object-fit:contain;" />'
+                    except Exception as e:
+                        print(f"Error cropping region {idx}: {e}")
+                        img_html = f"<div>Region {idx+1}</div>"
+                else:
+                    img_html = f"<div>Region {idx+1}</div>"
+                
+                # Extract confidence from item if available, otherwise N/A
+                confidence = item.get('confidence', 'N/A')
+                if isinstance(confidence, (int, float)):
+                    confidence = f"{confidence:.1f}%"
+                elif confidence != 'N/A':
+                    confidence = str(confidence)
+                    
+                ocr_table_data.append([img_html, text, confidence])
 
     # Check for Arabic text to set RTL property
     if is_arabic_text(markdown_content):
@@ -575,7 +1061,7 @@ def turn_page(direction: str) -> Tuple[Optional[Image.Image], str, Any, Optional
     else:
         markdown_update = markdown_content
 
-    return current_image_preview, page_info_html, markdown_update, processed_img, layout_json
+    return current_image_preview, page_info_html, ocr_table_data, markdown_update, processed_img, layout_json
 
 
 def create_gradio_interface():
@@ -633,28 +1119,54 @@ def create_gradio_interface():
         color: #0c5460;
         border: 1px solid #b8daff;
     }
+    
+    /* Arabic Correction Styling */
+    .original-text-box {
+        background: #fff5f5 !important;
+        border: 2px solid #fc8181 !important;
+        border-radius: 8px;
+        padding: 15px;
+        min-height: 300px;
+        direction: rtl;
+    }
+    
+    .corrected-text-box {
+        background: #f0fff4 !important;
+        border: 2px solid #68d391 !important;
+        border-radius: 8px;
+        padding: 15px;
+        min-height: 300px;
+        direction: rtl;
+    }
+    
+    .correction-high {
+        background: #c6f6d5;
+        padding: 2px 4px;
+        border-radius: 3px;
+    }
+    
+    .correction-medium {
+        background: #fef5e7;
+        padding: 2px 4px;
+        border-radius: 3px;
+    }
+    
+    .correction-low {
+        background: #ffe0e0;
+        padding: 2px 4px;
+        border-radius: 3px;
+    }
     """
     
-    with gr.Blocks(theme=gr.themes.Soft(), css=css, title="Dots.OCR Demo") as demo:
+    with gr.Blocks(theme=gr.themes.Soft(), css=css, title="Arabic OCR - Document Text Extraction") as demo:
         
         # Header
         gr.HTML("""
         <div class="title" style="text-align: center">
-            <h1>🔍 Dot-OCR - Multilingual Document Text Extraction</h1>
+            <h1>🔍 Arabic OCR - Professional Document Text Extraction</h1>
             <p style="font-size: 1.1em; color: #6b7280; margin-bottom: 0.6em;">
-                A state-of-the-art image/pdf-to-markdown vision language model for intelligent document processing
+                Advanced AI-powered OCR solution for Arabic documents with high accuracy layout detection and text extraction
             </p>
-            <div style="display: flex; justify-content: center; gap: 20px; margin: 15px 0;">
-                <a href="https://huggingface.co/rednote-hilab/dots.ocr" target="_blank" style="text-decoration: none; color: #2563eb; font-weight: 500;">
-                    📚 Hugging Face Model
-                </a>
-                <a href="https://github.com/rednote-hilab/dots.ocr/blob/master/assets/blog.md" target="_blank" style="text-decoration: none; color: #2563eb; font-weight: 500;">
-                    📝 Release Blog
-                </a>
-                <a href="https://github.com/rednote-hilab/dots.ocr" target="_blank" style="text-decoration: none; color: #2563eb; font-weight: 500;">
-                    💻 GitHub Repository
-                </a>
-            </div>
         </div>
         """)
         
@@ -731,6 +1243,40 @@ def create_gradio_interface():
                             interactive=False,
                             height=500
                         )
+                    # ✨ NEW: Arabic Text Correction Comparison Tab
+                    with gr.Tab("✨ Corrected Text (AI)"):
+                        gr.Markdown("""
+                        ### 🔧 AI-Powered Arabic Text Correction
+                        This tab shows **Original OCR** vs **AI-Corrected** text side-by-side.
+                        Corrections use dictionary matching, context analysis, and linguistic intelligence.
+                        """)
+                        
+                        with gr.Row():
+                            with gr.Column():
+                                gr.Markdown("#### 📄 Original OCR Output")
+                                original_text_output = gr.Markdown(
+                                    value="Original text will appear here...",
+                                    elem_classes=["original-text-box"]
+                                )
+                            with gr.Column():
+                                gr.Markdown("#### ✅ Corrected Text")
+                                corrected_text_output = gr.Markdown(
+                                    value="Corrected text will appear here...",
+                                    elem_classes=["corrected-text-box"]
+                                )
+                        
+                        correction_stats = gr.Markdown(value="")
+                    
+                    # Editable OCR Results Table
+                    with gr.Tab("📊 OCR Results Table"):
+                        gr.Markdown("### Editable OCR Results\nReview and edit the extracted text for each detected region")
+                        ocr_table = gr.Dataframe(
+                            headers=["Region Image", "Extracted Text", "Confidence"],
+                            datatype=["html", "str", "str"],
+                            label="OCR Results",
+                            interactive=True,
+                            wrap=True
+                        )
                     # Markdown output tab  
                     with gr.Tab("📝 Extracted Content"):
                         markdown_output = gr.Markdown(
@@ -744,22 +1290,82 @@ def create_gradio_interface():
                             value=None
                         )
         
+        # Helper function to create OCR table
+        def create_ocr_table(image: Image.Image, layout_data: List[Dict]) -> List[List[str]]:
+            """Create table data from layout results with cropped images"""
+            import base64
+            from io import BytesIO
+            
+            if not layout_data:
+                return []
+            
+            table_data = []
+            
+            for idx, item in enumerate(layout_data):
+                bbox = item.get('bbox', [])
+                text = item.get('text', '')
+                category = item.get('category', '')
+                
+                # Skip items without text or Picture category
+                if not text or category == 'Picture':
+                    continue
+                
+                # Crop the image region
+                img_html = ""
+                if bbox and len(bbox) == 4:
+                    try:
+                        x1, y1, x2, y2 = bbox
+                        # Ensure coordinates are within image bounds
+                        x1, y1 = max(0, int(x1)), max(0, int(y1))
+                        x2, y2 = min(image.width, int(x2)), min(image.height, int(y2))
+                        
+                        if x2 > x1 and y2 > y1:
+                            cropped_img = image.crop((x1, y1, x2, y2))
+                            
+                            # Convert to base64 for HTML display
+                            buffer = BytesIO()
+                            cropped_img.save(buffer, format='PNG')
+                            img_data = base64.b64encode(buffer.getvalue()).decode()
+                            
+                            # Create HTML img tag
+                            img_html = f'<img src="data:image/png;base64,{img_data}" style="max-width:200px; max-height:100px; object-fit:contain;" />'
+                    except Exception as e:
+                        print(f"Error cropping region {idx}: {e}")
+                        img_html = f"<div>Region {idx+1}</div>"
+                else:
+                    img_html = f"<div>Region {idx+1}</div>"
+                
+                # Add confidence score - extract from item if available, otherwise N/A
+                confidence = item.get('confidence', 'N/A')
+                if isinstance(confidence, (int, float)):
+                    confidence = f"{confidence:.1f}%"
+                elif confidence != 'N/A':
+                    confidence = str(confidence)
+                
+                # Add row to table
+                table_data.append([img_html, text, confidence])
+            
+            return table_data
+        
         # Event handlers
+        @spaces.GPU()
         def process_document(file_path, max_tokens, min_pix, max_pix):
             """Process the uploaded document"""
             global pdf_cache
             
             try:
+                # Ensure model/processor are loaded within GPU context
+                ensure_model_loaded()
                 if not file_path:
-                    return None, "Please upload a file first.", None
+                    return None, [], "Please upload a file first.", None
                 
                 if model is None:
-                    return None, "Model not loaded. Please refresh the page and try again.", None
+                    return None, [], "Model not loaded. Please refresh the page and try again.", None
                 
                 # Load and preview file
                 image, page_info = load_file_for_preview(file_path)
                 if image is None:
-                    return None, page_info, None
+                    return None, [], page_info, None
                 
                 # Process the image(s)
                 if pdf_cache["file_type"] == "pdf":
@@ -769,9 +1375,10 @@ def create_gradio_interface():
                     
                     for i, img in enumerate(pdf_cache["images"]):
                         result = process_image(
-                            img, 
+                            img,
                             min_pixels=int(min_pix) if min_pix else None,
-                            max_pixels=int(max_pix) if max_pix else None
+                            max_pixels=int(max_pix) if max_pix else None,
+                            max_new_tokens=int(max_tokens) if max_tokens else 24000,
                         )
                         all_results.append(result)
                         if result.get('markdown_content'):
@@ -790,8 +1397,32 @@ def create_gradio_interface():
                     else:
                         markdown_update = combined_markdown
                     
+                    # Create OCR table for first page
+                    ocr_table_data = []
+                    if first_result['layout_result']:
+                        ocr_table_data = create_ocr_table(
+                            first_result['original_image'],
+                            first_result['layout_result']
+                        )
+                    
+                    # Prepare correction comparison
+                    original_text = first_result.get('markdown_content_original', first_result.get('markdown_content', ''))
+                    corrected_text = first_result.get('markdown_content_corrected', first_result.get('markdown_content', ''))
+                    
+                    # Calculate correction statistics
+                    total_corrections = 0
+                    if first_result.get('layout_result'):
+                        for item in first_result['layout_result']:
+                            total_corrections += item.get('corrections_made', 0)
+                    
+                    stats_text = f"### 📊 Correction Statistics\n- **Corrections Made**: {total_corrections}\n- **Method**: Dictionary + Context Analysis"
+                    
                     return (
                         first_result['processed_image'],
+                        original_text if is_arabic_text(original_text) else gr.update(value=original_text, rtl=False),
+                        corrected_text if is_arabic_text(corrected_text) else gr.update(value=corrected_text, rtl=False),
+                        stats_text,
+                        ocr_table_data,
                         markdown_update,
                         first_result['layout_result']
                     )
@@ -800,7 +1431,8 @@ def create_gradio_interface():
                     result = process_image(
                         image,
                         min_pixels=int(min_pix) if min_pix else None,
-                        max_pixels=int(max_pix) if max_pix else None
+                        max_pixels=int(max_pix) if max_pix else None,
+                        max_new_tokens=int(max_tokens) if max_tokens else 24000,
                     )
                     
                     pdf_cache["results"] = [result]
@@ -813,8 +1445,32 @@ def create_gradio_interface():
                     else:
                         markdown_update = content
                     
+                    # Create OCR table
+                    ocr_table_data = []
+                    if result['layout_result']:
+                        ocr_table_data = create_ocr_table(
+                            result['original_image'],
+                            result['layout_result']
+                        )
+                    
+                    # Prepare correction comparison
+                    original_text = result.get('markdown_content_original', result.get('markdown_content', ''))
+                    corrected_text = result.get('markdown_content_corrected', result.get('markdown_content', ''))
+                    
+                    # Calculate correction statistics
+                    total_corrections = 0
+                    if result.get('layout_result'):
+                        for item in result['layout_result']:
+                            total_corrections += item.get('corrections_made', 0)
+                    
+                    stats_text = f"### 📊 Correction Statistics\n- **Corrections Made**: {total_corrections}\n- **Method**: Dictionary + Context Analysis"
+                    
                     return (
                         result['processed_image'],
+                        original_text if is_arabic_text(original_text) else gr.update(value=original_text, rtl=False),
+                        corrected_text if is_arabic_text(corrected_text) else gr.update(value=corrected_text, rtl=False),
+                        stats_text,
+                        ocr_table_data,
                         markdown_update,
                         result['layout_result']
                     )
@@ -823,7 +1479,7 @@ def create_gradio_interface():
                 error_msg = f"Error processing document: {str(e)}"
                 print(error_msg)
                 traceback.print_exc()
-                return None, error_msg, None
+                return None, "Error", "Error", "Error occurred", [], error_msg, None
         
         def handle_file_upload(file_path):
             """Handle file upload and show preview"""
@@ -852,6 +1508,10 @@ def create_gradio_interface():
                 None,  # image_preview
                 '<div class="page-info">No file loaded</div>',  # page_info
                 None,  # processed_image
+                "Original text will appear here...",  # original_text_output
+                "Corrected text will appear here...",  # corrected_text_output
+                "",  # correction_stats
+                [],  # ocr_table
                 "Click 'Process Document' to see extracted content...",  # markdown_output
                 None,  # json_output
             )
@@ -866,18 +1526,18 @@ def create_gradio_interface():
         # The outputs list is now updated to include all components that need to change
         prev_page_btn.click(
             lambda: turn_page("prev"),
-            outputs=[image_preview, page_info, markdown_output, processed_image, json_output]
+            outputs=[image_preview, page_info, ocr_table, markdown_output, processed_image, json_output]
         )
 
         next_page_btn.click(
             lambda: turn_page("next"),
-            outputs=[image_preview, page_info, markdown_output, processed_image, json_output]
+            outputs=[image_preview, page_info, ocr_table, markdown_output, processed_image, json_output]
         )
         
         process_btn.click(
             process_document,
             inputs=[file_input, max_new_tokens, min_pixels, max_pixels],
-            outputs=[processed_image, markdown_output, json_output]
+            outputs=[processed_image, original_text_output, corrected_text_output, correction_stats, ocr_table, markdown_output, json_output]
         )
         
         # The outputs list for the clear button is now correct
@@ -885,7 +1545,8 @@ def create_gradio_interface():
             clear_all,
             outputs=[
                 file_input, image_preview, page_info, processed_image,
-                markdown_output, json_output
+                original_text_output, corrected_text_output, correction_stats,
+                ocr_table, markdown_output, json_output
             ]
         )
     

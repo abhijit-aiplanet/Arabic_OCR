@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "main.py",
+      "use": "@vercel/python"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "main.py"
+    }
+  ],
+  "env": {
+    "RUNPOD_ENDPOINT_URL": "@runpod_endpoint_url",
+    "RUNPOD_API_KEY": "@runpod_api_key",
+    "FRONTEND_URL": "@frontend_url"
+  }
+}
+
