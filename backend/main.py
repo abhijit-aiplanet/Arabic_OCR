@@ -30,7 +30,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",  # Local development
-        os.getenv("FRONTEND_URL", "*"),  # Production frontend URL
+        "https://arabic-ocr-frontend-beryl.vercel.app",  # Production frontend
+        os.getenv("FRONTEND_URL", "*"),  # Additional frontend URL from env
     ],
     allow_credentials=True,
     allow_methods=["*"],
