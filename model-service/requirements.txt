@@ -1,8 +1,10 @@
-runpod==1.6.0
-torch>=2.0.0
-torchvision
-transformers>=4.45.0
-qwen_vl_utils
-Pillow
-accelerate
+runpod==1.6.2
+torch==2.1.2
+torchvision==0.16.2
+transformers==4.36.0
+qwen-vl-utils
+Pillow==10.2.0
+accelerate==0.25.0
+sentencepiece
+protobuf
 
