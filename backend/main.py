@@ -172,10 +172,17 @@ async def process_ocr(
             
             result = response.json()
             
+            # Debug: Print the actual response
+            print(f"🔍 RunPod response: {result}")
+            print(f"🔍 Response status: {result.get('status')}")
+            print(f"🔍 Response output: {result.get('output')}")
+            
             # Extract text from response
             # RunPod response format: {"output": {"text": "extracted text"}, "status": "COMPLETED"}
             if result.get("status") == "COMPLETED":
                 extracted_text = result.get("output", {}).get("text", "")
+                print(f"✅ Extracted text from output: {extracted_text[:100]}...")
+                
                 if not extracted_text:
                     extracted_text = "No text extracted from image"
                 
@@ -184,6 +191,7 @@ async def process_ocr(
                     status="success"
                 )
             else:
+                print(f"❌ Status not COMPLETED: {result.get('status')}")
                 return OCRResponse(
                     extracted_text="",
                     status="error",
