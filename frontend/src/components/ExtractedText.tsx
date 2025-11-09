@@ -63,7 +63,7 @@ export default function ExtractedText({ text, isProcessing }: ExtractedTextProps
         ) : text ? (
           <div className="space-y-2">
             <div className="bg-gray-50 rounded-lg p-6 border border-gray-200">
-              <pre className="whitespace-pre-wrap font-sans text-base leading-relaxed text-gray-900 text-left" style={{ direction: 'auto' }}>
+              <pre className="whitespace-pre-wrap font-sans text-base leading-relaxed text-gray-900 text-left">
                 {text}
               </pre>
             </div>
