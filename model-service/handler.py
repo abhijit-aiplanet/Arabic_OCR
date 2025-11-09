@@ -211,6 +211,7 @@ def handler(job):
     try:
         # Get job input
         job_input = job.get("input", {})
+        print(f"🔍 Received job input keys: {list(job_input.keys())}")
         
         # Extract parameters
         image_b64 = job_input.get("image")
@@ -219,11 +220,15 @@ def handler(job):
         min_pixels = job_input.get("min_pixels", MIN_PIXELS)
         max_pixels = job_input.get("max_pixels", MAX_PIXELS)
         
+        print(f"📥 Image received: {bool(image_b64)}, Prompt received: {bool(prompt)}")
+        
         # Validate input
         if not image_b64:
+            print("❌ No image provided")
             return {"error": "No image provided"}
         
         if not prompt:
+            print("❌ No prompt provided")
             return {"error": "No prompt provided"}
         
         # Decode image from base64
@@ -238,6 +243,7 @@ def handler(job):
             return {"error": f"Invalid image data: {str(e)}"}
         
         # Process OCR
+        print(f"📝 Processing OCR with prompt length: {len(prompt)}")
         extracted_text = extract_text_from_image(
             image=image,
             prompt=prompt,
@@ -246,10 +252,15 @@ def handler(job):
             max_pixels=max_pixels
         )
         
-        return {
+        print(f"✅ Extracted text length: {len(extracted_text)}")
+        print(f"📤 Returning: {extracted_text[:100]}...")
+        
+        result = {
             "text": extracted_text,
             "status": "success"
         }
+        print(f"📦 Full result: {result}")
+        return result
         
     except Exception as e:
         error_msg = str(e)
