@@ -1,13 +1,16 @@
 # RunPod Dockerfile for AIN Vision Language Model OCR
-FROM runpod/pytorch:2.1.0-py3.10-cuda11.8.0-ubuntu22.04
+FROM pytorch/pytorch:2.1.0-cuda11.8-cudnn8-runtime
 
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies and runpod
 RUN apt-get update && apt-get install -y \
     git \
     && rm -rf /var/lib/apt/lists/*
+
+# Install runpod SDK first
+RUN pip install --no-cache-dir runpod
 
 # Copy requirements
 COPY requirements.txt .
