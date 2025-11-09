@@ -15,6 +15,7 @@ import io
 import base64
 from dotenv import load_dotenv
 import traceback
+import asyncio
 
 load_dotenv()
 
@@ -176,6 +177,49 @@ async def process_ocr(
             print(f"🔍 RunPod response: {result}")
             print(f"🔍 Response status: {result.get('status')}")
             print(f"🔍 Response output: {result.get('output')}")
+            
+            # Handle IN_QUEUE status - poll for results
+            if result.get("status") == "IN_QUEUE":
+                job_id = result.get("id")
+                print(f"⏳ Job in queue, polling for results. Job ID: {job_id}")
+                
+                # Poll the status endpoint
+                status_url = RUNPOD_ENDPOINT.replace("/runsync", f"/status/{job_id}")
+                print(f"🔄 Polling status URL: {status_url}")
+                
+                max_polls = 60  # Poll for up to 60 seconds
+                poll_interval = 2  # Poll every 2 seconds
+                
+                for i in range(max_polls):
+                    await asyncio.sleep(poll_interval)
+                    
+                    status_response = await client.get(
+                        status_url,
+                        headers=headers
+                    )
+                    
+                    if status_response.status_code == 200:
+                        result = status_response.json()
+                        print(f"🔄 Poll {i+1}: Status = {result.get('status')}")
+                        
+                        if result.get("status") == "COMPLETED":
+                            print(f"✅ Job completed after {i+1} polls")
+                            break
+                        elif result.get("status") in ["FAILED", "CANCELLED"]:
+                            print(f"❌ Job failed or cancelled: {result.get('status')}")
+                            return OCRResponse(
+                                extracted_text="",
+                                status="error",
+                                error=f"Job {result.get('status')}: {result.get('error', 'Unknown error')}"
+                            )
+                else:
+                    # Timeout after max_polls
+                    print(f"⏰ Polling timed out after {max_polls * poll_interval} seconds")
+                    return OCRResponse(
+                        extracted_text="",
+                        status="error",
+                        error="Request timed out while processing"
+                    )
             
             # Extract text from response
             # RunPod response format: {"output": {"text": "extracted text"}, "status": "COMPLETED"}
