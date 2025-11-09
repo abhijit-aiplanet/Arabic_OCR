@@ -61,9 +61,9 @@ Output only the extracted text, nothing else."""
 class OCRRequest(BaseModel):
     """Request model for OCR processing"""
     custom_prompt: Optional[str] = None
-    max_new_tokens: int = 2048
+    max_new_tokens: int = 8192  # Increased for longer documents with lots of text
     min_pixels: Optional[int] = 200704  # 256 * 28 * 28
-    max_pixels: Optional[int] = 1003520  # 1280 * 28 * 28
+    max_pixels: Optional[int] = 2007040  # 2560 * 28 * 28 - 2x increase for large images
 
 
 class OCRResponse(BaseModel):

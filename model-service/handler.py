@@ -5,20 +5,24 @@ This service runs on RunPod GPU instances and processes OCR requests
 
 import runpod
 import torch
-from PIL import Image
+from PIL import Image, ImageEnhance, ImageFilter
 from qwen_vl_utils import process_vision_info
 from transformers import Qwen2VLForConditionalGeneration, AutoProcessor, AutoTokenizer
 from transformers import Qwen2VLProcessor, Qwen2VLImageProcessor
 import traceback
 import io
 import base64
+import numpy as np
 
 # Model configuration
 MODEL_ID = "MBZUAI/AIN"
 
-# Image resolution settings
-MIN_PIXELS = 256 * 28 * 28
-MAX_PIXELS = 1280 * 28 * 28
+# Image resolution settings - Increased for better handling of large images with lots of text
+MIN_PIXELS = 256 * 28 * 28  # 200,704 - Keep same for small images
+MAX_PIXELS = 2560 * 28 * 28  # 2,007,040 - 2x increase for large images
+
+# Maximum tokens for generation - Increased for longer documents
+DEFAULT_MAX_TOKENS = 8192  # 4x increase from 2048
 
 # Global model and processor
 model = None
@@ -93,10 +97,67 @@ def load_model():
         raise
 
 
+def preprocess_image(image: Image.Image) -> Image.Image:
+    """
+    Preprocess image for better OCR quality.
+    Applies enhancement techniques while preserving text quality.
+    
+    Args:
+        image: PIL Image to preprocess
+        
+    Returns:
+        Preprocessed PIL Image
+    """
+    try:
+        print(f"📸 Original image size: {image.size}, mode: {image.mode}")
+        
+        # Convert to RGB if needed
+        if image.mode not in ('RGB', 'L'):
+            image = image.convert('RGB')
+            print(f"✓ Converted to RGB")
+        
+        # 1. Resize if image is too large (max 4K resolution for efficiency)
+        max_dimension = 4096
+        width, height = image.size
+        if width > max_dimension or height > max_dimension:
+            scale = max_dimension / max(width, height)
+            new_width = int(width * scale)
+            new_height = int(height * scale)
+            image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+            print(f"✓ Resized to: {image.size}")
+        
+        # 2. Enhance contrast for better text visibility
+        enhancer = ImageEnhance.Contrast(image)
+        image = enhancer.enhance(1.3)  # 30% contrast increase
+        print(f"✓ Enhanced contrast")
+        
+        # 3. Enhance sharpness for clearer text edges
+        enhancer = ImageEnhance.Sharpness(image)
+        image = enhancer.enhance(1.5)  # 50% sharpness increase
+        print(f"✓ Enhanced sharpness")
+        
+        # 4. Slight brightness adjustment for better readability
+        enhancer = ImageEnhance.Brightness(image)
+        image = enhancer.enhance(1.1)  # 10% brightness increase
+        print(f"✓ Adjusted brightness")
+        
+        # 5. Apply subtle unsharp mask for text clarity (but not too aggressive)
+        image = image.filter(ImageFilter.UnsharpMask(radius=1, percent=120, threshold=3))
+        print(f"✓ Applied unsharp mask")
+        
+        print(f"✅ Image preprocessing complete: {image.size}")
+        return image
+        
+    except Exception as e:
+        print(f"⚠️ Image preprocessing failed, using original: {str(e)}")
+        # If preprocessing fails, return original image
+        return image
+
+
 def extract_text_from_image(
     image: Image.Image,
     prompt: str,
-    max_new_tokens: int = 2048,
+    max_new_tokens: int = DEFAULT_MAX_TOKENS,
     min_pixels: int = MIN_PIXELS,
     max_pixels: int = MAX_PIXELS
 ) -> str:
@@ -116,6 +177,10 @@ def extract_text_from_image(
     try:
         if model is None or processor is None:
             raise RuntimeError("Model not loaded")
+        
+        # Preprocess image for better quality
+        print("🔧 Preprocessing image...")
+        image = preprocess_image(image)
         
         # Prepare messages
         messages = [
@@ -159,12 +224,18 @@ def extract_text_from_image(
         device = next(model.parameters()).device
         inputs = inputs.to(device)
         
-        # Generate output
+        # Generate output with optimized parameters for long documents
+        print(f"🤖 Generating with max_new_tokens={max_new_tokens}, max_pixels={max_pixels}")
         with torch.no_grad():
             generated_ids = model.generate(
                 **inputs,
                 max_new_tokens=max_new_tokens,
-                do_sample=False,
+                do_sample=True,  # Enable sampling for better quality
+                temperature=0.3,  # Low temperature for focused, deterministic output
+                top_p=0.9,  # Nucleus sampling for quality
+                top_k=50,  # Limit to top 50 tokens
+                repetition_penalty=1.1,  # Slight penalty to avoid repetition
+                num_beams=1,  # Greedy decoding for speed (can increase to 3-5 for quality)
             )
         
         # Decode output

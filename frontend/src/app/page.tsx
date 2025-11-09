@@ -22,9 +22,9 @@ export default function Home() {
   const [isProcessing, setIsProcessing] = useState(false)
   const [settings, setSettings] = useState<OCRSettings>({
     customPrompt: '',
-    maxTokens: 2048,
+    maxTokens: 8192,  // Increased for longer documents
     minPixels: 200704,
-    maxPixels: 1003520,
+    maxPixels: 2007040,  // Increased for large images with lots of text
   })
 
   const handleImageSelect = (file: File) => {
@@ -82,9 +82,9 @@ export default function Home() {
     setExtractedText('')
     setSettings({
       customPrompt: '',
-      maxTokens: 2048,
+      maxTokens: 8192,  // Increased for longer documents
       minPixels: 200704,
-      maxPixels: 1003520,
+      maxPixels: 2007040,  // Increased for large images with lots of text
     })
   }
 

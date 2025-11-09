@@ -99,23 +99,24 @@ export default function AdvancedSettings({
           {/* Max Tokens */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
-              Max Tokens: {settings.maxTokens}
+              Max Tokens: {settings.maxTokens.toLocaleString()}
             </label>
             <input
               type="range"
-              min="512"
-              max="4096"
-              step="128"
+              min="1024"
+              max="12288"
+              step="256"
               value={settings.maxTokens}
               onChange={(e) => handleChange('maxTokens', parseInt(e.target.value))}
               className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
             />
             <div className="flex justify-between text-xs text-gray-500 mt-1">
-              <span>512</span>
-              <span>4096</span>
+              <span>1,024</span>
+              <span>8,192 (default)</span>
+              <span>12,288</span>
             </div>
             <p className="text-xs text-gray-500 mt-1">
-              Maximum length of extracted text
+              Maximum length of extracted text (increased for longer documents)
             </p>
           </div>
 
@@ -155,7 +156,7 @@ export default function AdvancedSettings({
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
                 />
                 <p className="text-xs text-gray-500 mt-1">
-                  Default: 1,003,520
+                  Default: 2,007,040 (2x increase for large images)
                 </p>
               </div>
             </div>
