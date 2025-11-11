@@ -41,7 +41,7 @@ app.add_middleware(
 # RunPod Configuration
 RUNPOD_ENDPOINT = os.getenv("RUNPOD_ENDPOINT_URL")
 RUNPOD_API_KEY = os.getenv("RUNPOD_API_KEY")
-TIMEOUT_SECONDS = 120
+TIMEOUT_SECONDS = 600  # 10 minutes - enough for cold starts and large documents
 
 # Default OCR Prompt
 DEFAULT_OCR_PROMPT = """Extract all text from this image exactly as it appears. 
@@ -188,7 +188,7 @@ async def process_ocr(
                 status_url = RUNPOD_ENDPOINT.replace("/runsync", f"/status/{job_id}")
                 print(f"🔄 Polling status URL: {status_url}")
                 
-                max_polls = 60  # Poll for up to 60 seconds
+                max_polls = 180  # Poll for up to 6 minutes (180 × 2 = 360 seconds)
                 poll_interval = 2  # Poll every 2 seconds
                 
                 for i in range(max_polls):
