@@ -227,13 +227,23 @@ def extract_text_from_image(
         # Generate output with pure greedy decoding for deterministic results
         # Same image will ALWAYS produce identical output
         print(f"🤖 Generating with max_new_tokens={max_new_tokens}, max_pixels={max_pixels}")
-        print(f"🎯 Using deterministic greedy decoding (temperature=0)")
+        print(f"🎯 Using pure deterministic greedy decoding")
+        
+        # Get tokenizer tokens for better control
+        eos_token_id = processor.tokenizer.eos_token_id
+        pad_token_id = processor.tokenizer.pad_token_id
+        print(f"🔧 Token IDs - EOS: {eos_token_id}, PAD: {pad_token_id}")
         
         with torch.no_grad():
             generated_ids = model.generate(
                 **inputs,
                 max_new_tokens=max_new_tokens,
                 do_sample=False,  # Pure greedy decoding - deterministic
+                temperature=None,  # Explicitly unset to avoid warnings
+                top_p=None,  # Explicitly unset to avoid warnings
+                top_k=None,  # Explicitly unset to avoid warnings
+                pad_token_id=pad_token_id,
+                eos_token_id=eos_token_id,
             )
         
         # Decode output
@@ -241,14 +251,34 @@ def extract_text_from_image(
             out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
         ]
         
+        print(f"📊 Input tokens: {inputs.input_ids.shape[1]}")
+        print(f"📊 Generated tokens: {generated_ids.shape[1]}")
+        print(f"📊 New tokens generated: {generated_ids.shape[1] - inputs.input_ids.shape[1]}")
+        print(f"🔍 First 20 generated token IDs: {generated_ids_trimmed[0][:20].tolist() if len(generated_ids_trimmed[0]) > 0 else 'None'}")
+        
         output_text = processor.batch_decode(
             generated_ids_trimmed,
             skip_special_tokens=True,
             clean_up_tokenization_spaces=False
         )
         
+        print(f"📝 Decoded output length: {len(output_text[0]) if output_text else 0} characters")
+        print(f"📝 Output preview: {output_text[0][:200] if output_text and output_text[0] else 'EMPTY'}")
+        
         result = output_text[0] if output_text else ""
-        return result.strip() if result else "No text extracted"
+        result = result.strip()
+        
+        # Better validation
+        if not result or len(result) < 5:
+            print(f"⚠️ Very short or empty result: '{result}' ({len(result)} chars)")
+            print("   This might indicate:")
+            print("   - Model couldn't extract text from complex layout")
+            print("   - Image quality issues")
+            print("   - Model needs more tokens to generate properly")
+            return "No text extracted"
+        
+        print(f"✅ Successfully extracted {len(result)} characters")
+        return result
         
     except Exception as e:
         error_msg = f"Error during text extraction: {str(e)}"
@@ -285,7 +315,7 @@ def handler(job):
         # Extract parameters
         image_b64 = job_input.get("image")
         prompt = job_input.get("prompt")
-        max_new_tokens = job_input.get("max_new_tokens", 2048)
+        max_new_tokens = job_input.get("max_new_tokens", DEFAULT_MAX_TOKENS)
         min_pixels = job_input.get("min_pixels", MIN_PIXELS)
         max_pixels = job_input.get("max_pixels", MAX_PIXELS)
         
