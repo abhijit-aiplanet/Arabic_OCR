@@ -21,8 +21,8 @@ MODEL_ID = "MBZUAI/AIN"
 MIN_PIXELS = 256 * 28 * 28  # 200,704 - Keep same for small images
 MAX_PIXELS = 2560 * 28 * 28  # 2,007,040 - 2x increase for large images
 
-# Maximum tokens for generation - Increased for longer documents
-DEFAULT_MAX_TOKENS = 8192  # 4x increase from 2048
+# Maximum tokens for generation - Balanced for speed vs capacity
+DEFAULT_MAX_TOKENS = 4096  # Reduced from 8192 for 2x faster generation
 
 # Global model and processor
 model = None
@@ -224,18 +224,16 @@ def extract_text_from_image(
         device = next(model.parameters()).device
         inputs = inputs.to(device)
         
-        # Generate output with optimized parameters for long documents
+        # Generate output with pure greedy decoding for deterministic results
+        # Same image will ALWAYS produce identical output
         print(f"🤖 Generating with max_new_tokens={max_new_tokens}, max_pixels={max_pixels}")
+        print(f"🎯 Using deterministic greedy decoding (temperature=0)")
+        
         with torch.no_grad():
             generated_ids = model.generate(
                 **inputs,
                 max_new_tokens=max_new_tokens,
-                do_sample=True,  # Enable sampling for better quality
-                temperature=0.3,  # Low temperature for focused, deterministic output
-                top_p=0.9,  # Nucleus sampling for quality
-                top_k=50,  # Limit to top 50 tokens
-                repetition_penalty=1.1,  # Slight penalty to avoid repetition
-                num_beams=1,  # Greedy decoding for speed (can increase to 3-5 for quality)
+                do_sample=False,  # Pure greedy decoding - deterministic
             )
         
         # Decode output

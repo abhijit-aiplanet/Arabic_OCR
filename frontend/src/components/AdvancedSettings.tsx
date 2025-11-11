@@ -104,7 +104,7 @@ export default function AdvancedSettings({
             <input
               type="range"
               min="1024"
-              max="12288"
+              max="8192"
               step="256"
               value={settings.maxTokens}
               onChange={(e) => handleChange('maxTokens', parseInt(e.target.value))}
@@ -112,11 +112,11 @@ export default function AdvancedSettings({
             />
             <div className="flex justify-between text-xs text-gray-500 mt-1">
               <span>1,024</span>
-              <span>8,192 (default)</span>
-              <span>12,288</span>
+              <span>4,096 (default, faster)</span>
+              <span>8,192</span>
             </div>
             <p className="text-xs text-gray-500 mt-1">
-              Maximum length of extracted text (increased for longer documents)
+              Higher = more capacity but slower. 4096 is optimal for most documents.
             </p>
           </div>
 
