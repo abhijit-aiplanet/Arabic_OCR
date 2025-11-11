@@ -98,6 +98,67 @@ def load_model():
         raise
 
 
+def _clean_repetition_loops(text: str, max_repeats: int = 3) -> str:
+    """
+    Detect and clean up repetition loops in the generated text.
+    
+    This function looks for patterns that repeat more than max_repeats times
+    and truncates the output at the start of the excessive repetition.
+    
+    Args:
+        text: The text to clean
+        max_repeats: Maximum number of times a pattern can repeat before truncation
+        
+    Returns:
+        Cleaned text with repetitions removed
+    """
+    if not text or len(text) < 100:
+        return text
+    
+    # Split into lines to detect line-level repetitions
+    lines = text.split('\n')
+    
+    # Check for repeating line patterns
+    # Look for sequences of 2-5 lines that repeat
+    for pattern_length in range(2, 6):
+        if len(lines) < pattern_length * (max_repeats + 1):
+            continue
+        
+        for start_idx in range(len(lines) - pattern_length * max_repeats):
+            # Get the pattern
+            pattern = lines[start_idx:start_idx + pattern_length]
+            pattern_str = '\n'.join(pattern)
+            
+            # Count how many times it repeats consecutively
+            repeat_count = 1
+            check_idx = start_idx + pattern_length
+            
+            while check_idx + pattern_length <= len(lines):
+                check_pattern = lines[check_idx:check_idx + pattern_length]
+                check_str = '\n'.join(check_pattern)
+                
+                if check_str == pattern_str:
+                    repeat_count += 1
+                    check_idx += pattern_length
+                else:
+                    break
+            
+            # If we found excessive repetition, truncate
+            if repeat_count > max_repeats:
+                print(f"⚠️ Detected repetition loop: {repeat_count} repeats of {pattern_length}-line pattern")
+                print(f"🔧 Truncating at line {start_idx} (keeping first {max_repeats} occurrences)")
+                
+                # Keep only the first max_repeats occurrences
+                truncated_lines = lines[:start_idx + pattern_length * max_repeats]
+                result = '\n'.join(truncated_lines).strip()
+                
+                print(f"📉 Reduced from {len(text)} to {len(result)} characters")
+                return result
+    
+    # No excessive repetition found
+    return text
+
+
 def preprocess_image(image: Image.Image) -> Image.Image:
     """
     Preprocess image to make it lightweight while maintaining OCR quality.
@@ -221,10 +282,10 @@ def extract_text_from_image(
         device = next(model.parameters()).device
         inputs = inputs.to(device)
         
-        # Generate output with pure greedy decoding for deterministic results
-        # Same image will ALWAYS produce identical output
+        # Generate output with greedy decoding + repetition penalties
+        # Greedy decoding for determinism + penalties to prevent loops
         print(f"🤖 Generating with max_new_tokens={max_new_tokens}, max_pixels={max_pixels}")
-        print(f"🎯 Using pure deterministic greedy decoding")
+        print(f"🎯 Using greedy decoding with repetition penalties to prevent loops")
         
         # Get tokenizer tokens for better control
         eos_token_id = processor.tokenizer.eos_token_id
@@ -236,9 +297,8 @@ def extract_text_from_image(
                 **inputs,
                 max_new_tokens=max_new_tokens,
                 do_sample=False,  # Pure greedy decoding - deterministic
-                temperature=None,  # Explicitly unset to avoid warnings
-                top_p=None,  # Explicitly unset to avoid warnings
-                top_k=None,  # Explicitly unset to avoid warnings
+                repetition_penalty=1.2,  # Penalize repetitions (1.0 = no penalty, higher = more penalty)
+                no_repeat_ngram_size=3,  # Block exact 3-gram repetitions
                 pad_token_id=pad_token_id,
                 eos_token_id=eos_token_id,
             )
@@ -264,6 +324,10 @@ def extract_text_from_image(
         
         result = output_text[0] if output_text else ""
         result = result.strip()
+        
+        # Post-processing: Detect and clean up repetition loops
+        # Check for patterns that repeat more than 3 times
+        result = _clean_repetition_loops(result)
         
         # Better validation
         if not result or len(result) < 5:
