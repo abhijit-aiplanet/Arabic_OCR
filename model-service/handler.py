@@ -1,6 +1,7 @@
 """
 RunPod Handler for AIN Vision Language Model OCR
 This service runs on RunPod GPU instances and processes OCR requests
+Build trigger: 2025-01-11
 """
 
 import runpod
