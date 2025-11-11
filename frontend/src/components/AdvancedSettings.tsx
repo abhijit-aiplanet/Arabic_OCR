@@ -13,18 +13,29 @@ interface AdvancedSettingsProps {
   onSettingsChange: (settings: any) => void
 }
 
-const DEFAULT_PROMPT = `Extract all text from this image exactly as it appears. 
+const DEFAULT_PROMPT = `Extract all Arabic text from this image with maximum accuracy.
+
+CRITICAL: This image contains ARABIC text that may be:
+- Handwritten Arabic text
+- Typed/printed Arabic text
+- Small Arabic annotations or notes
+- Arabic text in forms, tables, or documents
+
+Your task: Find and extract EVERY piece of Arabic text visible in the image, no matter how small.
 
 Requirements:
-1. Extract ONLY the text content - do not describe, analyze, or interpret the image
-2. Maintain the original text structure, layout, and formatting
-3. Preserve line breaks, paragraphs, and spacing as they appear
-4. Do not translate the text - keep it in its original language
-5. Do not add any explanations, descriptions, or additional commentary
-6. If there are tables, maintain their structure
-7. If there are headers, titles, or sections, preserve their hierarchy
+1. Extract ALL Arabic text - handwritten, typed, printed, or annotations
+2. Accuracy is CRITICAL - extract Arabic text exactly as it appears
+3. Do NOT miss any Arabic text, even small notes or annotations
+4. Maintain the original text structure, layout, and formatting
+5. Preserve line breaks, paragraphs, and spacing as they appear
+6. Do NOT translate - keep all text in Arabic
+7. Do NOT add descriptions, interpretations, or commentary
+8. If there are tables or forms, maintain their structure
+9. If there are headers, titles, or sections, preserve their hierarchy
+10. Focus on ACCURACY over speed
 
-Output only the extracted text, nothing else.`
+Output only the extracted Arabic text, nothing else.`
 
 export default function AdvancedSettings({
   settings,
@@ -156,7 +167,7 @@ export default function AdvancedSettings({
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
                 />
                 <p className="text-xs text-gray-500 mt-1">
-                  Default: 2,007,040 (2x increase for large images)
+                  Default: 1,003,520 (balanced for speed)
                 </p>
               </div>
             </div>

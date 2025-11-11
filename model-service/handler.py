@@ -18,9 +18,9 @@ import numpy as np
 # Model configuration
 MODEL_ID = "MBZUAI/AIN"
 
-# Image resolution settings - Increased for better handling of large images with lots of text
+# Image resolution settings - Balanced for quality and speed
 MIN_PIXELS = 256 * 28 * 28  # 200,704 - Keep same for small images
-MAX_PIXELS = 2560 * 28 * 28  # 2,007,040 - 2x increase for large images
+MAX_PIXELS = 1280 * 28 * 28  # 1,003,520 - Reduced for faster processing
 
 # Maximum tokens for generation - Balanced for speed vs capacity
 DEFAULT_MAX_TOKENS = 4096  # Reduced from 8192 for 2x faster generation
@@ -100,53 +100,49 @@ def load_model():
 
 def preprocess_image(image: Image.Image) -> Image.Image:
     """
-    Preprocess image for better OCR quality.
-    Applies enhancement techniques while preserving text quality.
+    Preprocess image to make it lightweight while maintaining OCR quality.
+    Focus on making images smaller and faster to process.
     
     Args:
         image: PIL Image to preprocess
         
     Returns:
-        Preprocessed PIL Image
+        Preprocessed PIL Image (lightweight, optimized)
     """
     try:
         print(f"📸 Original image size: {image.size}, mode: {image.mode}")
+        original_pixels = image.size[0] * image.size[1]
         
         # Convert to RGB if needed
         if image.mode not in ('RGB', 'L'):
             image = image.convert('RGB')
             print(f"✓ Converted to RGB")
         
-        # 1. Resize if image is too large (max 4K resolution for efficiency)
-        max_dimension = 4096
+        # 1. Aggressive resizing for large images to reduce processing time
+        # Target max 2K resolution for good balance between quality and speed
+        max_dimension = 2048
         width, height = image.size
         if width > max_dimension or height > max_dimension:
             scale = max_dimension / max(width, height)
             new_width = int(width * scale)
             new_height = int(height * scale)
             image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
-            print(f"✓ Resized to: {image.size}")
+            print(f"✓ Resized: {image.size[0]}x{image.size[1]} (was {width}x{height})")
         
-        # 2. Enhance contrast for better text visibility
+        # 2. Moderate contrast enhancement (more conservative)
         enhancer = ImageEnhance.Contrast(image)
-        image = enhancer.enhance(1.3)  # 30% contrast increase
+        image = enhancer.enhance(1.2)  # 20% contrast increase (reduced from 30%)
         print(f"✓ Enhanced contrast")
         
-        # 3. Enhance sharpness for clearer text edges
+        # 3. Moderate sharpness (more conservative to avoid artifacts)
         enhancer = ImageEnhance.Sharpness(image)
-        image = enhancer.enhance(1.5)  # 50% sharpness increase
+        image = enhancer.enhance(1.3)  # 30% sharpness increase (reduced from 50%)
         print(f"✓ Enhanced sharpness")
         
-        # 4. Slight brightness adjustment for better readability
-        enhancer = ImageEnhance.Brightness(image)
-        image = enhancer.enhance(1.1)  # 10% brightness increase
-        print(f"✓ Adjusted brightness")
+        final_pixels = image.size[0] * image.size[1]
+        reduction = ((original_pixels - final_pixels) / original_pixels) * 100 if original_pixels > final_pixels else 0
+        print(f"✅ Preprocessing complete: {image.size[0]}x{image.size[1]} ({reduction:.1f}% size reduction)")
         
-        # 5. Apply subtle unsharp mask for text clarity (but not too aggressive)
-        image = image.filter(ImageFilter.UnsharpMask(radius=1, percent=120, threshold=3))
-        print(f"✓ Applied unsharp mask")
-        
-        print(f"✅ Image preprocessing complete: {image.size}")
         return image
         
     except Exception as e:

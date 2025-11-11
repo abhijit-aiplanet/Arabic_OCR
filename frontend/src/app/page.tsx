@@ -22,9 +22,9 @@ export default function Home() {
   const [isProcessing, setIsProcessing] = useState(false)
   const [settings, setSettings] = useState<OCRSettings>({
     customPrompt: '',
-    maxTokens: 4096,  // Balanced for speed (reduced from 8192)
+    maxTokens: 4096,  // Balanced for speed and capacity
     minPixels: 200704,
-    maxPixels: 2007040,  // Increased for large images with lots of text
+    maxPixels: 1003520,  // Reduced for faster processing
   })
 
   const handleImageSelect = (file: File) => {
@@ -82,9 +82,9 @@ export default function Home() {
     setExtractedText('')
     setSettings({
       customPrompt: '',
-      maxTokens: 4096,  // Balanced for speed (reduced from 8192)
+      maxTokens: 4096,  // Balanced for speed and capacity
       minPixels: 200704,
-      maxPixels: 2007040,  // Increased for large images with lots of text
+      maxPixels: 1003520,  // Reduced for faster processing
     })
   }
 
