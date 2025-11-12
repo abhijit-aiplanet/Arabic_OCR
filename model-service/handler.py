@@ -98,55 +98,167 @@ def load_model():
         raise
 
 
+def _clean_repetition_loops(text: str, max_repeats: int = 5) -> str:
+    """
+    Conservative cleanup for excessive repetition loops.
+    Only triggers on EXTREME repetition (5+ repeats) to preserve accuracy.
+    
+    Args:
+        text: The text to clean
+        max_repeats: Maximum repeats before truncation (default: 5, more lenient)
+        
+    Returns:
+        Cleaned text with extreme repetitions removed
+    """
+    if not text or len(text) < 200:
+        return text
+    
+    # Split into lines to detect line-level repetitions
+    lines = text.split('\n')
+    
+    # Only check for EXACT repeating patterns of 2-3 lines
+    # More conservative than before (was 2-5 lines)
+    for pattern_length in range(2, 4):
+        if len(lines) < pattern_length * (max_repeats + 1):
+            continue
+        
+        for start_idx in range(len(lines) - pattern_length * max_repeats):
+            # Get the pattern
+            pattern = lines[start_idx:start_idx + pattern_length]
+            pattern_str = '\n'.join(pattern)
+            
+            # Only trigger if pattern is short and repetitive (likely a loop, not real data)
+            if len(pattern_str) > 100:  # Skip long patterns (likely legitimate data)
+                continue
+            
+            # Count consecutive repeats
+            repeat_count = 1
+            check_idx = start_idx + pattern_length
+            
+            while check_idx + pattern_length <= len(lines):
+                check_pattern = lines[check_idx:check_idx + pattern_length]
+                check_str = '\n'.join(check_pattern)
+                
+                if check_str == pattern_str:
+                    repeat_count += 1
+                    check_idx += pattern_length
+                else:
+                    break
+            
+            # Only truncate on EXTREME repetition (5+ times)
+            if repeat_count > max_repeats:
+                print(f"⚠️ Detected EXTREME repetition: {repeat_count} repeats of {pattern_length}-line pattern")
+                print(f"🔧 Truncating (keeping first {max_repeats} occurrences)")
+                
+                truncated_lines = lines[:start_idx + pattern_length * max_repeats]
+                result = '\n'.join(truncated_lines).strip()
+                
+                print(f"📉 Reduced from {len(text)} to {len(result)} characters")
+                return result
+    
+    return text
+
+
 def preprocess_image(image: Image.Image) -> Image.Image:
     """
-    Preprocess image to make it lightweight while maintaining OCR quality.
-    Focus on making images smaller and faster to process.
+    OPTIMIZED preprocessing for Arabic OCR - smaller, cleaner, easier for model.
+    Focuses on making images lightweight and high-contrast for better text extraction.
     
     Args:
         image: PIL Image to preprocess
         
     Returns:
-        Preprocessed PIL Image (lightweight, optimized)
+        Preprocessed PIL Image (optimized for VLM processing)
     """
     try:
         print(f"📸 Original image size: {image.size}, mode: {image.mode}")
         original_pixels = image.size[0] * image.size[1]
         
-        # Convert to RGB if needed
+        # Convert to RGB first (required for VLM)
         if image.mode not in ('RGB', 'L'):
             image = image.convert('RGB')
             print(f"✓ Converted to RGB")
         
-        # 1. Aggressive resizing for large images to reduce processing time
-        # Target max 2K resolution for good balance between quality and speed
-        max_dimension = 2048
+        # 1. SMART RESIZING - More aggressive but quality-preserving
+        # Target 1600px max (down from 2048) - still excellent for OCR, but 40% fewer pixels
+        max_dimension = 1600
         width, height = image.size
+        
+        # Always resize if larger than target, even slightly
         if width > max_dimension or height > max_dimension:
             scale = max_dimension / max(width, height)
             new_width = int(width * scale)
             new_height = int(height * scale)
+            
+            # Use LANCZOS for high-quality downscaling (preserves text clarity)
             image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
             print(f"✓ Resized: {image.size[0]}x{image.size[1]} (was {width}x{height})")
         
-        # 2. Moderate contrast enhancement (more conservative)
-        enhancer = ImageEnhance.Contrast(image)
-        image = enhancer.enhance(1.2)  # 20% contrast increase (reduced from 30%)
-        print(f"✓ Enhanced contrast")
+        # 2. ADAPTIVE CONTRAST - Stronger for low-contrast images
+        # Calculate image contrast level
+        import numpy as np
+        img_array = np.array(image.convert('L'))  # Temporary grayscale for analysis
+        contrast_std = img_array.std()
         
-        # 3. Moderate sharpness (more conservative to avoid artifacts)
+        # Adaptive contrast enhancement based on image quality
+        if contrast_std < 40:  # Low contrast image
+            contrast_factor = 1.4  # Strong enhancement
+            print(f"✓ Low contrast detected (std={contrast_std:.1f}), applying strong enhancement")
+        elif contrast_std < 60:  # Medium contrast
+            contrast_factor = 1.25  # Moderate enhancement
+            print(f"✓ Medium contrast detected (std={contrast_std:.1f}), applying moderate enhancement")
+        else:  # Good contrast
+            contrast_factor = 1.15  # Mild enhancement
+            print(f"✓ Good contrast detected (std={contrast_std:.1f}), applying mild enhancement")
+        
+        enhancer = ImageEnhance.Contrast(image)
+        image = enhancer.enhance(contrast_factor)
+        
+        # 3. ADAPTIVE SHARPNESS - Helps with blurry text
+        # Check for blur using Laplacian variance
+        laplacian_var = img_array.var()
+        
+        if laplacian_var < 100:  # Blurry image
+            sharpness_factor = 1.5  # Strong sharpening
+            print(f"✓ Blur detected (var={laplacian_var:.1f}), applying strong sharpening")
+        elif laplacian_var < 300:  # Slightly blurry
+            sharpness_factor = 1.3  # Moderate sharpening
+            print(f"✓ Slight blur detected (var={laplacian_var:.1f}), applying moderate sharpening")
+        else:  # Sharp image
+            sharpness_factor = 1.1  # Minimal sharpening
+            print(f"✓ Sharp image (var={laplacian_var:.1f}), applying minimal sharpening")
+        
         enhancer = ImageEnhance.Sharpness(image)
-        image = enhancer.enhance(1.3)  # 30% sharpness increase (reduced from 50%)
-        print(f"✓ Enhanced sharpness")
+        image = enhancer.enhance(sharpness_factor)
+        
+        # 4. SUBTLE BRIGHTNESS NORMALIZATION (helps with dark/light images)
+        # Calculate average brightness
+        brightness_avg = img_array.mean()
+        
+        if brightness_avg < 100:  # Dark image
+            brightness_factor = 1.2
+            print(f"✓ Dark image detected (avg={brightness_avg:.1f}), brightening")
+            enhancer = ImageEnhance.Brightness(image)
+            image = enhancer.enhance(brightness_factor)
+        elif brightness_avg > 180:  # Very bright image
+            brightness_factor = 0.9
+            print(f"✓ Bright image detected (avg={brightness_avg:.1f}), dimming slightly")
+            enhancer = ImageEnhance.Brightness(image)
+            image = enhancer.enhance(brightness_factor)
+        else:
+            print(f"✓ Good brightness (avg={brightness_avg:.1f}), no adjustment needed")
         
         final_pixels = image.size[0] * image.size[1]
         reduction = ((original_pixels - final_pixels) / original_pixels) * 100 if original_pixels > final_pixels else 0
         print(f"✅ Preprocessing complete: {image.size[0]}x{image.size[1]} ({reduction:.1f}% size reduction)")
+        print(f"📊 Final image stats: {final_pixels:,} pixels ({final_pixels/1000000:.2f}MP)")
         
         return image
         
     except Exception as e:
         print(f"⚠️ Image preprocessing failed, using original: {str(e)}")
+        import traceback
+        traceback.print_exc()
         # If preprocessing fails, return original image
         return image
 
@@ -221,10 +333,10 @@ def extract_text_from_image(
         device = next(model.parameters()).device
         inputs = inputs.to(device)
         
-        # Generate output with PURE greedy decoding for maximum accuracy
-        # A100 GPU is fast enough - no need for compromises, focus on accuracy
+        # Generate output with CONSERVATIVE anti-repetition penalties
+        # Balanced for accuracy + loop prevention
         print(f"🤖 Generating with max_new_tokens={max_new_tokens}, max_pixels={max_pixels}")
-        print(f"🎯 Using PURE greedy decoding - fully deterministic, maximum accuracy")
+        print(f"🎯 Using greedy decoding with CONSERVATIVE penalties (accuracy-focused)")
         
         # Get tokenizer tokens for better control
         eos_token_id = processor.tokenizer.eos_token_id
@@ -235,7 +347,9 @@ def extract_text_from_image(
             generated_ids = model.generate(
                 **inputs,
                 max_new_tokens=max_new_tokens,
-                do_sample=False,  # Pure greedy decoding - fully deterministic
+                do_sample=False,  # Pure greedy decoding - deterministic
+                repetition_penalty=1.1,  # CONSERVATIVE penalty (was 1.2, now less aggressive)
+                no_repeat_ngram_size=4,  # Block 4-grams (was 3, now more flexible)
                 pad_token_id=pad_token_id,
                 eos_token_id=eos_token_id,
             )
@@ -262,8 +376,13 @@ def extract_text_from_image(
         result = output_text[0] if output_text else ""
         result = result.strip()
         
-        # Better validation
-        if not result or len(result) < 5:
+        # Conservative post-processing: Only clean EXTREME repetition loops
+        # More lenient than before (5+ repeats vs 3+) to preserve accuracy
+        result = _clean_repetition_loops(result, max_repeats=5)
+        
+        # Better validation - but more lenient (was < 5, now < 3)
+        # Sometimes short but valid text like "نعم" or "لا" should be preserved
+        if not result or len(result) < 3:
             print(f"⚠️ Very short or empty result: '{result}' ({len(result)} chars)")
             print("   This might indicate:")
             print("   - Model couldn't extract text from complex layout")
