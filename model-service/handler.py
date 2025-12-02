@@ -31,13 +31,13 @@ processor = None
 
 
 def load_model():
-    """Load the AIN VLM model and processor."""
+    """Load the Arabic VLM model and processor."""
     global model, processor
     
     if model is not None and processor is not None:
         return
     
-    print("🔄 Loading AIN VLM model on RunPod...")
+    print("🔄 Loading Arabic VLM model on RunPod...")
     
     try:
         # Use GPU if available
@@ -271,7 +271,7 @@ def extract_text_from_image(
     max_pixels: int = MAX_PIXELS
 ) -> str:
     """
-    Extract text from image using AIN VLM model.
+    Extract text from image using Arabic VLM model.
     
     Args:
         image: PIL Image to process

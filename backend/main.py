@@ -5,9 +5,9 @@ Handles API requests and communicates with the model service on RunPod
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List, Dict, Any
 import httpx
 import os
 from PIL import Image
@@ -16,6 +16,8 @@ import base64
 from dotenv import load_dotenv
 import traceback
 import asyncio
+import fitz  # PyMuPDF
+import json
 
 load_dotenv()
 
@@ -80,6 +82,23 @@ class OCRRequest(BaseModel):
 class OCRResponse(BaseModel):
     """Response model for OCR processing"""
     extracted_text: str
+    status: str
+    error: Optional[str] = None
+
+
+class PDFPageResult(BaseModel):
+    """Result for a single PDF page"""
+    page_number: int
+    extracted_text: str
+    status: str
+    error: Optional[str] = None
+    page_image: Optional[str] = None  # Base64 encoded image
+
+
+class PDFOCRResponse(BaseModel):
+    """Response model for PDF OCR processing"""
+    total_pages: int
+    results: List[PDFPageResult]
     status: str
     error: Optional[str] = None
 
@@ -258,6 +277,227 @@ async def process_ocr(
         raise
     except Exception as e:
         print(f"Error processing OCR request: {str(e)}")
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error: {str(e)}"
+        )
+
+
+@app.post("/api/ocr-pdf")
+async def process_pdf_ocr(
+    file: UploadFile = File(...),
+    custom_prompt: Optional[str] = Form(None),
+    max_new_tokens: int = Form(2048),
+    min_pixels: Optional[int] = Form(200704),
+    max_pixels: Optional[int] = Form(1003520),
+):
+    """
+    Process a PDF and extract text from each page using OCR.
+    Returns results page by page as they complete.
+    
+    Args:
+        file: PDF file to process
+        custom_prompt: Optional custom prompt (uses default if not provided)
+        max_new_tokens: Maximum tokens to generate
+        min_pixels: Minimum image resolution
+        max_pixels: Maximum image resolution
+        
+    Returns:
+        StreamingResponse with PDFPageResult for each page as JSON lines
+    """
+    try:
+        # Validate RunPod configuration
+        if not RUNPOD_ENDPOINT:
+            raise HTTPException(
+                status_code=500,
+                detail="Model service endpoint not configured. Please set RUNPOD_ENDPOINT_URL environment variable."
+            )
+        
+        # Validate PDF file
+        if not file.filename.lower().endswith('.pdf'):
+            raise HTTPException(
+                status_code=400,
+                detail="File must be a PDF"
+            )
+        
+        # Read PDF file
+        pdf_contents = await file.read()
+        
+        # Generator function to process pages and yield results
+        async def process_pages():
+            try:
+                # Open PDF with PyMuPDF
+                pdf_document = fitz.open(stream=pdf_contents, filetype="pdf")
+                total_pages = len(pdf_document)
+                
+                # Send total pages first
+                yield json.dumps({
+                    "type": "metadata",
+                    "total_pages": total_pages
+                }) + "\n"
+                
+                # Process each page
+                for page_num in range(total_pages):
+                    try:
+                        # Get page
+                        page = pdf_document[page_num]
+                        
+                        # Convert page to image (300 DPI for good quality)
+                        mat = fitz.Matrix(300/72, 300/72)  # 300 DPI
+                        pix = page.get_pixmap(matrix=mat)
+                        
+                        # Convert to PIL Image
+                        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                        
+                        # Convert image to base64 for display
+                        buffered_display = io.BytesIO()
+                        img.save(buffered_display, format="PNG")
+                        page_image_base64 = base64.b64encode(buffered_display.getvalue()).decode('utf-8')
+                        
+                        # Convert image to base64 for OCR
+                        buffered_ocr = io.BytesIO()
+                        img.save(buffered_ocr, format="PNG")
+                        img_base64 = base64.b64encode(buffered_ocr.getvalue()).decode('utf-8')
+                        
+                        # Prepare request payload for RunPod
+                        prompt = custom_prompt if custom_prompt and custom_prompt.strip() else DEFAULT_OCR_PROMPT
+                        
+                        payload = {
+                            "input": {
+                                "image": img_base64,
+                                "prompt": prompt,
+                                "max_new_tokens": max_new_tokens,
+                                "min_pixels": min_pixels,
+                                "max_pixels": max_pixels
+                            }
+                        }
+                        
+                        # Call RunPod endpoint
+                        headers = {
+                            "Authorization": f"Bearer {RUNPOD_API_KEY}",
+                            "Content-Type": "application/json"
+                        }
+                        
+                        async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
+                            response = await client.post(
+                                RUNPOD_ENDPOINT,
+                                json=payload,
+                                headers=headers
+                            )
+                            
+                            if response.status_code != 200:
+                                # Yield error for this page
+                                yield json.dumps({
+                                    "type": "page_result",
+                                    "page_number": page_num + 1,
+                                    "status": "error",
+                                    "error": f"Model service error: {response.text}",
+                                    "page_image": page_image_base64
+                                }) + "\n"
+                                continue
+                            
+                            result = response.json()
+                            
+                            # Handle IN_QUEUE status - poll for results
+                            if result.get("status") == "IN_QUEUE":
+                                job_id = result.get("id")
+                                status_url = RUNPOD_ENDPOINT.replace("/runsync", f"/status/{job_id}")
+                                
+                                max_polls = 180
+                                poll_interval = 2
+                                
+                                for i in range(max_polls):
+                                    await asyncio.sleep(poll_interval)
+                                    
+                                    status_response = await client.get(
+                                        status_url,
+                                        headers=headers
+                                    )
+                                    
+                                    if status_response.status_code == 200:
+                                        result = status_response.json()
+                                        
+                                        if result.get("status") == "COMPLETED":
+                                            break
+                                        elif result.get("status") in ["FAILED", "CANCELLED"]:
+                                            yield json.dumps({
+                                                "type": "page_result",
+                                                "page_number": page_num + 1,
+                                                "status": "error",
+                                                "error": f"Job {result.get('status')}: {result.get('error', 'Unknown error')}",
+                                                "page_image": page_image_base64
+                                            }) + "\n"
+                                            break
+                                else:
+                                    # Timeout
+                                    yield json.dumps({
+                                        "type": "page_result",
+                                        "page_number": page_num + 1,
+                                        "status": "error",
+                                        "error": "Request timed out while processing",
+                                        "page_image": page_image_base64
+                                    }) + "\n"
+                                    continue
+                            
+                            # Extract text from response
+                            if result.get("status") == "COMPLETED":
+                                extracted_text = result.get("output", {}).get("text", "")
+                                
+                                if not extracted_text:
+                                    extracted_text = "No text extracted from this page"
+                                
+                                # Yield success result
+                                yield json.dumps({
+                                    "type": "page_result",
+                                    "page_number": page_num + 1,
+                                    "status": "success",
+                                    "extracted_text": extracted_text,
+                                    "page_image": page_image_base64
+                                }) + "\n"
+                            else:
+                                yield json.dumps({
+                                    "type": "page_result",
+                                    "page_number": page_num + 1,
+                                    "status": "error",
+                                    "error": result.get("error", "Unknown error from model service"),
+                                    "page_image": page_image_base64
+                                }) + "\n"
+                    
+                    except Exception as e:
+                        # Error processing this specific page
+                        yield json.dumps({
+                            "type": "page_result",
+                            "page_number": page_num + 1,
+                            "status": "error",
+                            "error": f"Error processing page: {str(e)}",
+                            "page_image": ""
+                        }) + "\n"
+                
+                # Close PDF document
+                pdf_document.close()
+                
+                # Send completion message
+                yield json.dumps({
+                    "type": "complete",
+                    "status": "success"
+                }) + "\n"
+                
+            except Exception as e:
+                yield json.dumps({
+                    "type": "error",
+                    "error": f"Error processing PDF: {str(e)}"
+                }) + "\n"
+        
+        return StreamingResponse(
+            process_pages(),
+            media_type="application/x-ndjson"
+        )
+                
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error processing PDF OCR request: {str(e)}")
         traceback.print_exc()
         raise HTTPException(
             status_code=500,

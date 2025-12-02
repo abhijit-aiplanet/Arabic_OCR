@@ -15,6 +15,24 @@ interface OCRResponse {
   error?: string
 }
 
+export interface PDFPageResult {
+  page_number: number
+  extracted_text: string
+  status: string
+  error?: string
+  page_image?: string  // Base64 encoded
+}
+
+export interface PDFStreamMessage {
+  type: 'metadata' | 'page_result' | 'complete' | 'error'
+  total_pages?: number
+  page_number?: number
+  status?: string
+  extracted_text?: string
+  error?: string
+  page_image?: string
+}
+
 export async function processOCR(
   imageFile: File,
   settings: OCRSettings
@@ -73,6 +91,86 @@ export async function checkHealth(): Promise<boolean> {
   } catch (error) {
     console.error('Health check failed:', error)
     return false
+  }
+}
+
+export async function processPDFOCR(
+  pdfFile: File,
+  settings: OCRSettings,
+  onPageComplete: (result: PDFPageResult) => void,
+  onMetadata: (totalPages: number) => void
+): Promise<void> {
+  try {
+    const formData = new FormData()
+    formData.append('file', pdfFile)
+    
+    if (settings.customPrompt) {
+      formData.append('custom_prompt', settings.customPrompt)
+    }
+    
+    formData.append('max_new_tokens', settings.maxTokens.toString())
+    formData.append('min_pixels', settings.minPixels.toString())
+    formData.append('max_pixels', settings.maxPixels.toString())
+
+    const response = await fetch(`${API_URL}/api/ocr-pdf`, {
+      method: 'POST',
+      body: formData,
+    })
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`)
+    }
+
+    const reader = response.body?.getReader()
+    const decoder = new TextDecoder()
+
+    if (!reader) {
+      throw new Error('No response body')
+    }
+
+    let buffer = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+      
+      // Process complete lines
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || '' // Keep the incomplete line in buffer
+
+      for (const line of lines) {
+        if (line.trim()) {
+          try {
+            const message: PDFStreamMessage = JSON.parse(line)
+            
+            if (message.type === 'metadata' && message.total_pages) {
+              onMetadata(message.total_pages)
+            } else if (message.type === 'page_result') {
+              const pageResult: PDFPageResult = {
+                page_number: message.page_number!,
+                extracted_text: message.extracted_text || '',
+                status: message.status || 'error',
+                error: message.error,
+                page_image: message.page_image
+              }
+              onPageComplete(pageResult)
+            } else if (message.type === 'error') {
+              throw new Error(message.error || 'Unknown error')
+            }
+          } catch (e) {
+            console.error('Error parsing line:', line, e)
+          }
+        }
+      }
+    }
+  } catch (error) {
+    if (error instanceof Error) {
+      throw error
+    }
+    throw new Error('Failed to process PDF')
   }
 }
 

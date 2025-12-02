@@ -2,19 +2,21 @@
 
 import { useCallback } from 'react'
 import { useDropzone } from 'react-dropzone'
-import { Upload, Image as ImageIcon } from 'lucide-react'
+import { Upload, Image as ImageIcon, FileText } from 'lucide-react'
 import Image from 'next/image'
 
 interface ImageUploaderProps {
   onImageSelect: (file: File) => void
   imagePreview: string | null
   isProcessing: boolean
+  acceptPDF?: boolean
 }
 
 export default function ImageUploader({
   onImageSelect,
   imagePreview,
   isProcessing,
+  acceptPDF = true,
 }: ImageUploaderProps) {
   const onDrop = useCallback((acceptedFiles: File[]) => {
     if (acceptedFiles.length > 0) {
@@ -22,11 +24,18 @@ export default function ImageUploader({
     }
   }, [onImageSelect])
 
+  const acceptTypes = acceptPDF
+    ? {
+        'image/*': ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'],
+        'application/pdf': ['.pdf']
+      }
+    : {
+        'image/*': ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp']
+      }
+
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
-    accept: {
-      'image/*': ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp']
-    },
+    accept: acceptTypes,
     multiple: false,
     disabled: isProcessing,
   })
@@ -34,8 +43,17 @@ export default function ImageUploader({
   return (
     <div className="bg-white rounded-xl shadow-lg p-6 border border-gray-200">
       <h2 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
-        <ImageIcon className="w-5 h-5 text-blue-600" />
-        Upload Image
+        {acceptPDF ? (
+          <>
+            <FileText className="w-5 h-5 text-blue-600" />
+            Upload Image or PDF
+          </>
+        ) : (
+          <>
+            <ImageIcon className="w-5 h-5 text-blue-600" />
+            Upload Image
+          </>
+        )}
       </h2>
 
       <div
@@ -77,14 +95,20 @@ export default function ImageUploader({
             </div>
             <div>
               <p className="text-lg font-medium text-gray-900">
-                {isDragActive ? 'Drop image here' : 'Drag & drop an image'}
+                {isDragActive 
+                  ? (acceptPDF ? 'Drop file here' : 'Drop image here')
+                  : (acceptPDF ? 'Drag & drop an image or PDF' : 'Drag & drop an image')
+                }
               </p>
               <p className="text-sm text-gray-600 mt-1">
                 or click to browse
               </p>
             </div>
             <p className="text-xs text-gray-500">
-              Supports: PNG, JPG, JPEG, GIF, WebP, BMP
+              {acceptPDF 
+                ? 'Supports: Images (PNG, JPG, etc.) and PDF documents'
+                : 'Supports: PNG, JPG, JPEG, GIF, WebP, BMP'
+              }
             </p>
           </div>
         )}
