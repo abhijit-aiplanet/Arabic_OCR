@@ -222,12 +222,13 @@ export default function Home() {
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             {/* Left Column - Input */}
             <div className="space-y-6">
-              <ImageUploader
-                onImageSelect={handleImageSelect}
-                imagePreview={imagePreview}
-                isProcessing={isProcessing}
-                acceptPDF={true}
-              />
+            <ImageUploader
+              onImageSelect={handleImageSelect}
+              imagePreview={imagePreview}
+              isProcessing={isProcessing}
+              acceptPDF={true}
+              selectedFile={selectedImage}
+            />
 
               <AdvancedSettings
                 settings={settings}

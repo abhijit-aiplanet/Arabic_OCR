@@ -10,6 +10,7 @@ interface ImageUploaderProps {
   imagePreview: string | null
   isProcessing: boolean
   acceptPDF?: boolean
+  selectedFile?: File | null
 }
 
 export default function ImageUploader({
@@ -17,6 +18,7 @@ export default function ImageUploader({
   imagePreview,
   isProcessing,
   acceptPDF = true,
+  selectedFile = null,
 }: ImageUploaderProps) {
   const onDrop = useCallback((acceptedFiles: File[]) => {
     if (acceptedFiles.length > 0) {
@@ -87,6 +89,25 @@ export default function ImageUploader({
             {!isProcessing && (
               <p className="text-sm text-gray-600">
                 Click or drag to replace image
+              </p>
+            )}
+          </div>
+        ) : selectedFile?.type === 'application/pdf' ? (
+          <div className="space-y-4">
+            <div className="flex flex-col items-center justify-center p-8 bg-blue-50 rounded-lg border-2 border-blue-200">
+              <div className="p-4 bg-blue-100 rounded-full mb-4">
+                <FileText className="w-12 h-12 text-blue-600" />
+              </div>
+              <p className="text-lg font-semibold text-gray-900 text-center">
+                {selectedFile.name}
+              </p>
+              <p className="text-sm text-gray-600 mt-1">
+                PDF Document • {(selectedFile.size / 1024 / 1024).toFixed(2)} MB
+              </p>
+            </div>
+            {!isProcessing && (
+              <p className="text-sm text-gray-600 text-center">
+                Click or drag to replace PDF
               </p>
             )}
           </div>
