@@ -24,18 +24,22 @@ export default function ImageUploader({
     }
   }, [onImageSelect])
 
-  const acceptTypes = acceptPDF
-    ? {
-        'image/*': ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'],
-        'application/pdf': ['.pdf']
-      }
-    : {
-        'image/*': ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp']
-      }
+  // Construct accept types based on acceptPDF prop
+  const getAcceptTypes = () => {
+    const types: Record<string, string[]> = {
+      'image/*': ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp']
+    }
+    
+    if (acceptPDF) {
+      types['application/pdf'] = ['.pdf']
+    }
+    
+    return types
+  }
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
-    accept: acceptTypes,
+    accept: getAcceptTypes(),
     multiple: false,
     disabled: isProcessing,
   })
