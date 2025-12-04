@@ -18,8 +18,68 @@ import traceback
 import asyncio
 import fitz  # PyMuPDF
 import json
+from datetime import datetime
+import uuid
 
 load_dotenv()
+
+# Vercel Blob Storage Configuration
+BLOB_READ_WRITE_TOKEN = os.getenv("BLOB_READ_WRITE_TOKEN")
+BLOB_API_URL = "https://blob.vercel-storage.com"
+
+
+async def store_file_to_blob(file_data: bytes, filename: str, content_type: str = "application/octet-stream") -> dict:
+    """
+    Store a file in Vercel Blob Storage.
+    
+    Args:
+        file_data: The file content as bytes
+        filename: Original filename
+        content_type: MIME type of the file
+        
+    Returns:
+        dict with 'url' and 'pathname' if successful, or 'error' if failed
+    """
+    if not BLOB_READ_WRITE_TOKEN:
+        print("⚠️ BLOB_READ_WRITE_TOKEN not configured, skipping file storage")
+        return {"error": "Blob storage not configured", "stored": False}
+    
+    try:
+        # Generate unique filename with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        unique_id = str(uuid.uuid4())[:8]
+        
+        # Extract extension from original filename
+        ext = filename.split('.')[-1] if '.' in filename else 'bin'
+        stored_filename = f"uploads/{timestamp}_{unique_id}.{ext}"
+        
+        async with httpx.AsyncClient(timeout=60) as client:
+            response = await client.put(
+                f"{BLOB_API_URL}/{stored_filename}",
+                content=file_data,
+                headers={
+                    "Authorization": f"Bearer {BLOB_READ_WRITE_TOKEN}",
+                    "x-content-type": content_type,
+                    "access": "public"
+                }
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                print(f"✅ File stored successfully: {result.get('url', stored_filename)}")
+                return {
+                    "stored": True,
+                    "url": result.get("url"),
+                    "pathname": result.get("pathname", stored_filename),
+                    "original_filename": filename
+                }
+            else:
+                print(f"❌ Failed to store file: {response.status_code} - {response.text}")
+                return {"error": f"Storage failed: {response.status_code}", "stored": False}
+                
+    except Exception as e:
+        print(f"❌ Error storing file to blob: {str(e)}")
+        return {"error": str(e), "stored": False}
 
 app = FastAPI(
     title="AIN OCR API",
@@ -164,6 +224,15 @@ async def process_ocr(
                 status_code=400,
                 detail=f"Invalid image file: {str(e)}"
             )
+        
+        # Store file to Vercel Blob (async, non-blocking)
+        storage_result = await store_file_to_blob(
+            contents,
+            file.filename or "image.png",
+            file.content_type or "image/png"
+        )
+        if storage_result.get("stored"):
+            print(f"📁 Image stored: {storage_result.get('url')}")
         
         # Convert image to base64
         buffered = io.BytesIO()
@@ -323,6 +392,15 @@ async def process_pdf_ocr(
         
         # Read PDF file
         pdf_contents = await file.read()
+        
+        # Store PDF to Vercel Blob
+        storage_result = await store_file_to_blob(
+            pdf_contents,
+            file.filename or "document.pdf",
+            "application/pdf"
+        )
+        if storage_result.get("stored"):
+            print(f"📁 PDF stored: {storage_result.get('url')}")
         
         # Generator function to process pages and yield results
         async def process_pages():
