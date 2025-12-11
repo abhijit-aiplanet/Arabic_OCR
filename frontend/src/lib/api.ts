@@ -191,3 +191,32 @@ export async function processPDFOCR(
   }
 }
 
+export async function updateHistoryText(
+  historyId: string,
+  editedText: string,
+  authToken: string | null
+): Promise<void> {
+  if (!authToken) {
+    throw new Error('Authentication required')
+  }
+
+  try {
+    await axios.patch(
+      `${API_URL}/api/history/${historyId}`,
+      { edited_text: editedText },
+      {
+        headers: {
+          'Authorization': `Bearer ${authToken}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    )
+  } catch (error) {
+    if (axios.isAxiosError(error)) {
+      const message = error.response?.data?.detail || error.message
+      throw new Error(message)
+    }
+    throw error
+  }
+}
+

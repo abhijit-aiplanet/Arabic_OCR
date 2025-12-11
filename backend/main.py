@@ -321,6 +321,8 @@ class OCRHistoryItem(BaseModel):
     file_size: int
     total_pages: int
     extracted_text: str
+    edited_text: Optional[str]
+    edited_at: Optional[str]
     status: str
     error_message: Optional[str]
     processing_time: float
@@ -333,6 +335,11 @@ class OCRHistoryResponse(BaseModel):
     """Response model for OCR history"""
     history: List[OCRHistoryItem]
     total_count: int
+
+
+class UpdateHistoryRequest(BaseModel):
+    """Request model for updating OCR history"""
+    edited_text: str
 
 
 @app.get("/")
@@ -401,6 +408,8 @@ async def get_ocr_history(
                 file_size=item["file_size"],
                 total_pages=item["total_pages"],
                 extracted_text=item["extracted_text"],
+                edited_text=item.get("edited_text"),
+                edited_at=item.get("edited_at"),
                 status=item["status"],
                 error_message=item.get("error_message"),
                 processing_time=item["processing_time"],
@@ -420,6 +429,97 @@ async def get_ocr_history(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to fetch history: {str(e)}"
+        )
+
+
+@app.patch("/api/history/{history_id}", response_model=OCRHistoryItem)
+async def update_ocr_history(
+    history_id: str,
+    update_data: UpdateHistoryRequest,
+    user: dict = Depends(verify_clerk_token)
+):
+    """
+    Update OCR history item (edit the extracted text).
+    
+    Args:
+        history_id: ID of the history item to update
+        update_data: New edited text
+        user: Authenticated user from Clerk
+        
+    Returns:
+        Updated OCRHistoryItem
+    """
+    if not supabase:
+        raise HTTPException(
+            status_code=503,
+            detail="History service not available"
+        )
+    
+    try:
+        user_id = user.get("sub", "anonymous")
+        
+        # First, verify the item belongs to the user
+        check_response = supabase.table("ocr_history")\
+            .select("user_id")\
+            .eq("id", history_id)\
+            .single()\
+            .execute()
+        
+        if not check_response.data:
+            raise HTTPException(
+                status_code=404,
+                detail="History item not found"
+            )
+        
+        if check_response.data["user_id"] != user_id:
+            raise HTTPException(
+                status_code=403,
+                detail="You don't have permission to edit this item"
+            )
+        
+        # Update the item
+        update_response = supabase.table("ocr_history")\
+            .update({
+                "edited_text": update_data.edited_text,
+                "edited_at": datetime.now().isoformat()
+            })\
+            .eq("id", history_id)\
+            .execute()
+        
+        if not update_response.data:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to update history item"
+            )
+        
+        item = update_response.data[0]
+        
+        return OCRHistoryItem(
+            id=item["id"],
+            user_id=item["user_id"],
+            file_name=item["file_name"],
+            file_type=item["file_type"],
+            file_size=item["file_size"],
+            total_pages=item["total_pages"],
+            extracted_text=item["extracted_text"],
+            edited_text=item.get("edited_text"),
+            edited_at=item.get("edited_at"),
+            status=item["status"],
+            error_message=item.get("error_message"),
+            processing_time=item["processing_time"],
+            settings=item["settings"],
+            blob_url=item.get("blob_url"),
+            created_at=item["created_at"]
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error updating OCR history: {str(e)}")
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to update history: {str(e)}"
         )
 
 

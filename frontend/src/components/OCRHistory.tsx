@@ -1,8 +1,10 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { Clock, FileText, CheckCircle, XCircle, Download, Trash2, ChevronDown, ChevronUp } from 'lucide-react'
+import { Clock, FileText, CheckCircle, XCircle, Download, Trash2, ChevronDown, ChevronUp, Edit2, Save, X as XIcon } from 'lucide-react'
 import axios from 'axios'
+import { updateHistoryText } from '@/lib/api'
+import toast from 'react-hot-toast'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
@@ -14,6 +16,8 @@ interface OCRHistoryItem {
   file_size: number
   total_pages: number
   extracted_text: string
+  edited_text?: string
+  edited_at?: string
   status: string
   error_message?: string
   processing_time: number
@@ -32,6 +36,8 @@ export default function OCRHistory({ authToken, onSelectItem }: OCRHistoryProps)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editText, setEditText] = useState('')
 
   useEffect(() => {
     if (authToken) {
@@ -62,7 +68,8 @@ export default function OCRHistory({ authToken, onSelectItem }: OCRHistoryProps)
   }
 
   const downloadAsMarkdown = (item: OCRHistoryItem) => {
-    const markdown = `# ${item.file_name}\n\n**Date:** ${new Date(item.created_at).toLocaleString()}\n**Status:** ${item.status}\n**Processing Time:** ${item.processing_time.toFixed(2)}s\n**Pages:** ${item.total_pages}\n\n## Extracted Text\n\n${item.extracted_text}\n`
+    const textToDownload = item.edited_text || item.extracted_text
+    const markdown = `# ${item.file_name}\n\n**Date:** ${new Date(item.created_at).toLocaleString()}\n**Status:** ${item.status}\n**Processing Time:** ${item.processing_time.toFixed(2)}s\n**Pages:** ${item.total_pages}\n${item.edited_at ? `**Last Edited:** ${new Date(item.edited_at).toLocaleString()}\n` : ''}\n## ${item.edited_text ? 'Edited' : 'Extracted'} Text\n\n${textToDownload}\n`
     
     const blob = new Blob([markdown], { type: 'text/markdown' })
     const url = URL.createObjectURL(blob)
@@ -73,6 +80,40 @@ export default function OCRHistory({ authToken, onSelectItem }: OCRHistoryProps)
     a.click()
     document.body.removeChild(a)
     URL.revokeObjectURL(url)
+  }
+
+  const handleEdit = (item: OCRHistoryItem) => {
+    setEditingId(item.id)
+    setEditText(item.edited_text || item.extracted_text)
+  }
+
+  const handleSaveEdit = async (item: OCRHistoryItem) => {
+    if (!authToken) {
+      toast.error('Authentication required')
+      return
+    }
+
+    try {
+      await updateHistoryText(item.id, editText, authToken)
+      
+      // Update local state
+      setHistory(history.map(h => 
+        h.id === item.id 
+          ? { ...h, edited_text: editText, edited_at: new Date().toISOString() }
+          : h
+      ))
+      
+      setEditingId(null)
+      toast.success('Changes saved!')
+    } catch (err: any) {
+      console.error('Failed to save edit:', err)
+      toast.error(err.message || 'Failed to save changes')
+    }
+  }
+
+  const handleCancelEdit = () => {
+    setEditingId(null)
+    setEditText('')
   }
 
   const formatFileSize = (bytes: number): string => {
@@ -211,43 +252,100 @@ export default function OCRHistory({ authToken, onSelectItem }: OCRHistoryProps)
                     </div>
                   )}
 
-                  {/* Extracted Text Preview */}
+                  {/* Extracted/Edited Text Preview or Editor */}
                   {item.extracted_text && (
                     <div className="p-3 bg-gray-50 rounded-lg">
-                      <p className="text-xs font-semibold text-gray-700 mb-2">Extracted Text:</p>
-                      <p className="text-sm text-gray-600 line-clamp-3">
-                        {item.extracted_text}
-                      </p>
+                      <div className="flex items-center justify-between mb-2">
+                        <p className="text-xs font-semibold text-gray-700">
+                          {item.edited_text ? 'Edited' : 'Extracted'} Text:
+                          {item.edited_at && (
+                            <span className="ml-2 text-xs font-normal text-gray-500">
+                              (Edited {formatDate(item.edited_at)})
+                            </span>
+                          )}
+                        </p>
+                        {editingId !== item.id && item.status === 'success' && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              handleEdit(item)
+                            }}
+                            className="flex items-center gap-1 px-2 py-1 text-xs font-semibold text-gray-600 hover:text-gray-700 hover:bg-gray-200 rounded transition-colors"
+                          >
+                            <Edit2 className="w-3 h-3" />
+                            Edit
+                          </button>
+                        )}
+                      </div>
+                      
+                      {editingId === item.id ? (
+                        <div className="space-y-2">
+                          <textarea
+                            value={editText}
+                            onChange={(e) => setEditText(e.target.value)}
+                            className="w-full min-h-[200px] p-3 text-sm text-gray-700 bg-white border border-gray-300 rounded-lg focus:outline-none focus:border-blue-500 resize-y"
+                            onClick={(e) => e.stopPropagation()}
+                          />
+                          <div className="flex gap-2">
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                handleSaveEdit(item)
+                              }}
+                              className="flex items-center gap-1 px-3 py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors"
+                            >
+                              <Save className="w-3 h-3" />
+                              Save
+                            </button>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                handleCancelEdit()
+                              }}
+                              className="flex items-center gap-1 px-3 py-1.5 text-xs font-semibold text-gray-600 hover:text-gray-700 hover:bg-gray-200 rounded-lg transition-colors"
+                            >
+                              <XIcon className="w-3 h-3" />
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <p className="text-sm text-gray-600 line-clamp-3">
+                          {item.edited_text || item.extracted_text}
+                        </p>
+                      )}
                     </div>
                   )}
 
                   {/* Actions */}
-                  <div className="flex gap-2">
-                    {item.status === 'success' && item.extracted_text && (
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          downloadAsMarkdown(item)
-                        }}
-                        className="flex items-center gap-2 px-3 py-2 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 transition-colors text-sm font-semibold"
-                      >
-                        <Download className="w-4 h-4" />
-                        Download
-                      </button>
-                    )}
-                    {item.blob_url && (
-                      <a
-                        href={item.blob_url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="flex items-center gap-2 px-3 py-2 bg-gray-50 text-gray-600 rounded-lg hover:bg-gray-100 transition-colors text-sm font-semibold"
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        <FileText className="w-4 h-4" />
-                        View File
-                      </a>
-                    )}
-                  </div>
+                  {editingId !== item.id && (
+                    <div className="flex gap-2">
+                      {item.status === 'success' && item.extracted_text && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            downloadAsMarkdown(item)
+                          }}
+                          className="flex items-center gap-2 px-3 py-2 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 transition-colors text-sm font-semibold"
+                        >
+                          <Download className="w-4 h-4" />
+                          Download
+                        </button>
+                      )}
+                      {item.blob_url && (
+                        <a
+                          href={item.blob_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex items-center gap-2 px-3 py-2 bg-gray-50 text-gray-600 rounded-lg hover:bg-gray-100 transition-colors text-sm font-semibold"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <FileText className="w-4 h-4" />
+                          View File
+                        </a>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
             )}
