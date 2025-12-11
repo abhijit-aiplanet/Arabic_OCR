@@ -284,10 +284,10 @@ export default function OCRHistory({ authToken, onSelectItem }: OCRHistoryProps)
                   onChange={(e) => setEditText(e.target.value)}
                   className="w-full min-h-[500px] p-4 text-base text-gray-900 bg-gray-50 border-2 border-blue-300 rounded-lg focus:outline-none focus:border-blue-500 resize-y font-sans leading-relaxed"
                   placeholder="Edit your text here..."
-                  style={{ direction: 'auto' }}
+                  dir="auto"
                 />
               ) : (
-                <pre className="whitespace-pre-wrap font-sans text-base leading-relaxed text-gray-900 text-left bg-gray-50 p-6 rounded-lg" style={{ direction: 'auto' }}>
+                <pre className="whitespace-pre-wrap font-sans text-base leading-relaxed text-gray-900 text-left bg-gray-50 p-6 rounded-lg" dir="auto">
                   {displayText}
                 </pre>
               )}
