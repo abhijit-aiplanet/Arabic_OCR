@@ -22,6 +22,8 @@ from datetime import datetime
 import uuid
 import jwt
 from jwt import PyJWKClient
+from supabase import create_client, Client
+import time
 
 load_dotenv()
 
@@ -32,6 +34,20 @@ BLOB_API_URL = "https://blob.vercel-storage.com"
 # Clerk Configuration
 CLERK_SECRET_KEY = os.getenv("CLERK_SECRET_KEY")
 CLERK_JWKS_URL = "https://rational-coral-39.clerk.accounts.dev/.well-known/jwks.json"
+
+# Supabase Configuration
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")  # Use service key for backend
+supabase: Optional[Client] = None
+
+if SUPABASE_URL and SUPABASE_SERVICE_KEY:
+    try:
+        supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+        print("✅ Supabase client initialized")
+    except Exception as e:
+        print(f"⚠️ Failed to initialize Supabase: {str(e)}")
+else:
+    print("⚠️ Supabase not configured, history will not be saved")
 
 
 async def verify_clerk_token(authorization: Optional[str] = Header(None)) -> dict:
@@ -153,6 +169,67 @@ async def store_file_to_blob(file_data: bytes, filename: str, content_type: str 
         print(f"❌ Error storing file to blob: {str(e)}")
         return {"error": str(e), "stored": False}
 
+
+async def save_ocr_history(
+    user_id: str,
+    file_name: str,
+    file_type: str,
+    file_size: int,
+    total_pages: int,
+    extracted_text: str,
+    status: str,
+    error_message: Optional[str],
+    processing_time: float,
+    settings: dict,
+    blob_url: Optional[str]
+) -> Optional[dict]:
+    """
+    Save OCR history to Supabase.
+    
+    Args:
+        user_id: User ID from Clerk
+        file_name: Original filename
+        file_type: 'image' or 'pdf'
+        file_size: File size in bytes
+        total_pages: Number of pages (1 for images)
+        extracted_text: Extracted OCR text
+        status: 'success' or 'error'
+        error_message: Error message if status is 'error'
+        processing_time: Time taken to process in seconds
+        settings: OCR settings used
+        blob_url: URL of file in Vercel Blob
+        
+    Returns:
+        dict: Saved record or None if failed
+    """
+    if not supabase:
+        print("⚠️ Supabase not configured, skipping history save")
+        return None
+    
+    try:
+        data = {
+            "user_id": user_id,
+            "file_name": file_name,
+            "file_type": file_type,
+            "file_size": file_size,
+            "total_pages": total_pages,
+            "extracted_text": extracted_text,
+            "status": status,
+            "error_message": error_message,
+            "processing_time": processing_time,
+            "settings": settings,
+            "blob_url": blob_url
+        }
+        
+        result = supabase.table("ocr_history").insert(data).execute()
+        print(f"✅ OCR history saved for user {user_id}")
+        return result.data[0] if result.data else None
+        
+    except Exception as e:
+        print(f"❌ Error saving OCR history: {str(e)}")
+        traceback.print_exc()
+        return None
+
 app = FastAPI(
     title="AIN OCR API",
     description="Backend API for Arabic OCR using AIN Vision Language Model",
@@ -235,6 +312,29 @@ class PDFOCRResponse(BaseModel):
     error: Optional[str] = None
 
 
+class OCRHistoryItem(BaseModel):
+    """Model for OCR history item"""
+    id: str
+    user_id: str
+    file_name: str
+    file_type: str
+    file_size: int
+    total_pages: int
+    extracted_text: str
+    status: str
+    error_message: Optional[str]
+    processing_time: float
+    settings: dict
+    blob_url: Optional[str]
+    created_at: str
+
+
+class OCRHistoryResponse(BaseModel):
+    """Response model for OCR history"""
+    history: List[OCRHistoryItem]
+    total_count: int
+
+
 @app.get("/")
 async def root():
     """Root endpoint"""
@@ -253,6 +353,74 @@ async def health_check():
         "status": "healthy",
         "model_service": "configured" if RUNPOD_ENDPOINT else "not_configured"
     }
+
+
+@app.get("/api/history", response_model=OCRHistoryResponse)
+async def get_ocr_history(
+    user: dict = Depends(verify_clerk_token),
+    limit: int = 50,
+    offset: int = 0
+):
+    """
+    Get OCR history for the authenticated user.
+    
+    Args:
+        user: Authenticated user from Clerk
+        limit: Maximum number of records to return (default 50)
+        offset: Offset for pagination (default 0)
+        
+    Returns:
+        OCRHistoryResponse with user's OCR history
+    """
+    if not supabase:
+        raise HTTPException(
+            status_code=503,
+            detail="History service not available"
+        )
+    
+    try:
+        user_id = user.get("sub", "anonymous")
+        
+        # Query history with pagination, ordered by created_at descending
+        response = supabase.table("ocr_history")\
+            .select("*", count="exact")\
+            .eq("user_id", user_id)\
+            .order("created_at", desc=True)\
+            .range(offset, offset + limit - 1)\
+            .execute()
+        
+        total_count = response.count if hasattr(response, 'count') else len(response.data)
+        
+        history_items = []
+        for item in response.data:
+            history_items.append(OCRHistoryItem(
+                id=item["id"],
+                user_id=item["user_id"],
+                file_name=item["file_name"],
+                file_type=item["file_type"],
+                file_size=item["file_size"],
+                total_pages=item["total_pages"],
+                extracted_text=item["extracted_text"],
+                status=item["status"],
+                error_message=item.get("error_message"),
+                processing_time=item["processing_time"],
+                settings=item["settings"],
+                blob_url=item.get("blob_url"),
+                created_at=item["created_at"]
+            ))
+        
+        return OCRHistoryResponse(
+            history=history_items,
+            total_count=total_count
+        )
+        
+    except Exception as e:
+        print(f"❌ Error fetching OCR history: {str(e)}")
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch history: {str(e)}"
+        )
 
 
 @app.post("/api/ocr", response_model=OCRResponse)
@@ -277,6 +445,9 @@ async def process_ocr(
     Returns:
         OCRResponse with extracted text and status
     """
+    start_time = time.time()
+    storage_url = None
+    
     try:
         # Validate RunPod configuration
         if not RUNPOD_ENDPOINT:
@@ -305,7 +476,8 @@ async def process_ocr(
             file.content_type or "image/png"
         )
         if storage_result.get("stored"):
-            print(f"📁 Image stored: {storage_result.get('url')}")
+            storage_url = storage_result.get('url')
+            print(f"📁 Image stored: {storage_url}")
         
         # Convert image to base64
         buffered = io.BytesIO()
@@ -403,16 +575,60 @@ async def process_ocr(
                 if not extracted_text:
                     extracted_text = "No text extracted from image"
                 
+                # Save to history
+                processing_time = time.time() - start_time
+                await save_ocr_history(
+                    user_id=user.get("sub", "anonymous"),
+                    file_name=file.filename or "image.png",
+                    file_type="image",
+                    file_size=len(contents),
+                    total_pages=1,
+                    extracted_text=extracted_text,
+                    status="success",
+                    error_message=None,
+                    processing_time=processing_time,
+                    settings={
+                        "max_new_tokens": max_new_tokens,
+                        "min_pixels": min_pixels,
+                        "max_pixels": max_pixels,
+                        "custom_prompt": custom_prompt if custom_prompt else None
+                    },
+                    blob_url=storage_url
+                )
+                
                 return OCRResponse(
                     extracted_text=extracted_text,
                     status="success"
                 )
             else:
+                error_msg = result.get("error", "Unknown error from model service")
                 print(f"❌ Status not COMPLETED: {result.get('status')}")
+                
+                # Save error to history
+                processing_time = time.time() - start_time
+                await save_ocr_history(
+                    user_id=user.get("sub", "anonymous"),
+                    file_name=file.filename or "image.png",
+                    file_type="image",
+                    file_size=len(contents),
+                    total_pages=1,
+                    extracted_text="",
+                    status="error",
+                    error_message=error_msg,
+                    processing_time=processing_time,
+                    settings={
+                        "max_new_tokens": max_new_tokens,
+                        "min_pixels": min_pixels,
+                        "max_pixels": max_pixels,
+                        "custom_prompt": custom_prompt if custom_prompt else None
+                    },
+                    blob_url=storage_url
+                )
+                
                 return OCRResponse(
                     extracted_text="",
                     status="error",
-                    error=result.get("error", "Unknown error from model service")
+                    error=error_msg
                 )
                 
     except HTTPException:

@@ -1,13 +1,14 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import ImageUploader from '@/components/ImageUploader'
 import ExtractedText from '@/components/ExtractedText'
 import PDFProcessor from '@/components/PDFProcessor'
 import AdvancedSettings from '@/components/AdvancedSettings'
+import OCRHistory from '@/components/OCRHistory'
 import { processOCR, processPDFOCR, PDFPageResult } from '@/lib/api'
 import toast from 'react-hot-toast'
-import { FileText, Sparkles, Lock } from 'lucide-react'
+import { FileText, Sparkles, Lock, History, X } from 'lucide-react'
 import { SignedIn, SignedOut, SignInButton, UserButton, useAuth } from '@clerk/nextjs'
 
 interface OCRSettings {
@@ -35,6 +36,19 @@ export default function Home() {
   const [pdfTotalPages, setPdfTotalPages] = useState(0)
   const [pdfResults, setPdfResults] = useState<PDFPageResult[]>([])
   const [pdfProcessedCount, setPdfProcessedCount] = useState(0)
+
+  // History sidebar state
+  const [showHistory, setShowHistory] = useState(false)
+  const [authToken, setAuthToken] = useState<string | null>(null)
+
+  // Get auth token on mount
+  useEffect(() => {
+    const fetchToken = async () => {
+      const token = await getToken()
+      setAuthToken(token)
+    }
+    fetchToken()
+  }, [getToken])
 
   const handleImageSelect = (file: File) => {
     setSelectedImage(file)
@@ -171,6 +185,13 @@ export default function Home() {
             {/* Authentication UI */}
             <div className="flex items-center gap-4">
               <SignedIn>
+                <button
+                  onClick={() => setShowHistory(!showHistory)}
+                  className="flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg font-semibold hover:bg-gray-200 transition-colors"
+                >
+                  <History className="w-4 h-4" />
+                  History
+                </button>
                 <UserButton 
                   afterSignOutUrl="/"
                   appearance={{
@@ -193,10 +214,12 @@ export default function Home() {
         </div>
       </div>
 
-      {/* Main Content */}
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {/* Signed Out View */}
-        <SignedOut>
+      {/* Main Content Container */}
+      <div className="flex">
+        {/* Main Content */}
+        <div className="flex-1 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+          {/* Signed Out View */}
+          <SignedOut>
           <div className="flex items-center justify-center min-h-[60vh]">
             <div className="text-center max-w-md">
               <div className="p-4 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full w-20 h-20 mx-auto mb-6 flex items-center justify-center">
@@ -333,6 +356,35 @@ export default function Home() {
             </div>
           </div>
         )}
+        </SignedIn>
+        </div>
+
+        {/* History Sidebar */}
+        <SignedIn>
+          <div className={`fixed right-0 top-0 h-full bg-white shadow-2xl border-l border-gray-200 transition-transform duration-300 z-50 ${
+            showHistory ? 'translate-x-0' : 'translate-x-full'
+          } w-96 overflow-y-auto`}>
+            <div className="sticky top-0 bg-white border-b border-gray-200 p-4 flex items-center justify-between z-10">
+              <h2 className="text-xl font-bold text-gray-900">OCR History</h2>
+              <button
+                onClick={() => setShowHistory(false)}
+                className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+              >
+                <X className="w-5 h-5 text-gray-500" />
+              </button>
+            </div>
+            <div className="p-4">
+              <OCRHistory authToken={authToken} />
+            </div>
+          </div>
+
+          {/* Overlay */}
+          {showHistory && (
+            <div 
+              className="fixed inset-0 bg-black bg-opacity-30 z-40"
+              onClick={() => setShowHistory(false)}
+            />
+          )}
         </SignedIn>
       </div>
     </main>
