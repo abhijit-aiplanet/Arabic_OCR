@@ -35,7 +35,8 @@ export interface PDFStreamMessage {
 
 export async function processOCR(
   imageFile: File,
-  settings: OCRSettings
+  settings: OCRSettings,
+  authToken?: string | null
 ): Promise<OCRResponse> {
   try {
     const formData = new FormData()
@@ -49,13 +50,20 @@ export async function processOCR(
     formData.append('min_pixels', settings.minPixels.toString())
     formData.append('max_pixels', settings.maxPixels.toString())
 
+    const headers: Record<string, string> = {
+      'Content-Type': 'multipart/form-data',
+    }
+
+    // Add auth token if provided
+    if (authToken) {
+      headers['Authorization'] = `Bearer ${authToken}`
+    }
+
     const response = await axios.post<OCRResponse>(
       `${API_URL}/api/ocr`,
       formData,
       {
-        headers: {
-          'Content-Type': 'multipart/form-data',
-        },
+        headers,
         timeout: 120000, // 2 minutes timeout
       }
     )
@@ -98,7 +106,8 @@ export async function processPDFOCR(
   pdfFile: File,
   settings: OCRSettings,
   onPageComplete: (result: PDFPageResult) => void,
-  onMetadata: (totalPages: number) => void
+  onMetadata: (totalPages: number) => void,
+  authToken?: string | null
 ): Promise<void> {
   try {
     const formData = new FormData()
@@ -112,9 +121,17 @@ export async function processPDFOCR(
     formData.append('min_pixels', settings.minPixels.toString())
     formData.append('max_pixels', settings.maxPixels.toString())
 
+    const headers: Record<string, string> = {}
+
+    // Add auth token if provided
+    if (authToken) {
+      headers['Authorization'] = `Bearer ${authToken}`
+    }
+
     const response = await fetch(`${API_URL}/api/ocr-pdf`, {
       method: 'POST',
       body: formData,
+      headers,
     })
 
     if (!response.ok) {

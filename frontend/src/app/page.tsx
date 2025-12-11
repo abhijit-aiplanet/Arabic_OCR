@@ -7,7 +7,8 @@ import PDFProcessor from '@/components/PDFProcessor'
 import AdvancedSettings from '@/components/AdvancedSettings'
 import { processOCR, processPDFOCR, PDFPageResult } from '@/lib/api'
 import toast from 'react-hot-toast'
-import { FileText, Sparkles } from 'lucide-react'
+import { FileText, Sparkles, Lock } from 'lucide-react'
+import { SignedIn, SignedOut, SignInButton, UserButton, useAuth } from '@clerk/nextjs'
 
 interface OCRSettings {
   customPrompt: string
@@ -17,6 +18,7 @@ interface OCRSettings {
 }
 
 export default function Home() {
+  const { getToken } = useAuth()
   const [selectedImage, setSelectedImage] = useState<File | null>(null)
   const [imagePreview, setImagePreview] = useState<string | null>(null)
   const [extractedText, setExtractedText] = useState<string>('')
@@ -68,6 +70,9 @@ export default function Home() {
     setIsProcessing(true)
 
     try {
+      // Get auth token from Clerk
+      const token = await getToken()
+      
       if (isPDF) {
         // Process PDF
         const loadingToast = toast.loading('Processing PDF...')
@@ -97,7 +102,8 @@ export default function Home() {
               id: loadingToast,
               duration: 2000
             })
-          }
+          },
+          token
         )
         
         toast.success('PDF processing complete!', {
@@ -107,7 +113,7 @@ export default function Home() {
         // Process single image
         const loadingToast = toast.loading('Processing image...')
         
-        const result = await processOCR(selectedImage, settings)
+        const result = await processOCR(selectedImage, settings, token)
         
         if (result.status === 'success') {
           setExtractedText(result.extracted_text)
@@ -147,17 +153,41 @@ export default function Home() {
       {/* Header */}
       <div className="bg-white shadow-sm border-b border-gray-200">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-          <div className="flex items-center gap-3">
-            <div className="p-2 bg-gradient-to-br from-blue-500 to-purple-600 rounded-lg">
-              <FileText className="w-8 h-8 text-white" />
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-gradient-to-br from-blue-500 to-purple-600 rounded-lg">
+                <FileText className="w-8 h-8 text-white" />
+              </div>
+              <div>
+                <h1 className="text-3xl font-bold text-gray-900">
+                  Arabic Vision Language Model OCR
+                </h1>
+                <p className="text-gray-600 mt-1">
+                  Advanced OCR for images and PDFs using Vision Language Model
+                </p>
+              </div>
             </div>
-            <div>
-              <h1 className="text-3xl font-bold text-gray-900">
-                Arabic Vision Language Model OCR
-              </h1>
-              <p className="text-gray-600 mt-1">
-                Advanced OCR for images and PDFs using Vision Language Model
-              </p>
+            
+            {/* Authentication UI */}
+            <div className="flex items-center gap-4">
+              <SignedIn>
+                <UserButton 
+                  afterSignOutUrl="/"
+                  appearance={{
+                    elements: {
+                      avatarBox: "w-10 h-10"
+                    }
+                  }}
+                />
+              </SignedIn>
+              <SignedOut>
+                <SignInButton mode="modal">
+                  <button className="flex items-center gap-2 px-6 py-2.5 bg-gradient-to-r from-blue-600 to-purple-600 text-white rounded-lg font-semibold hover:shadow-lg transform hover:-translate-y-0.5 transition-all duration-200">
+                    <Lock className="w-4 h-4" />
+                    Sign In
+                  </button>
+                </SignInButton>
+              </SignedOut>
             </div>
           </div>
         </div>
@@ -165,22 +195,51 @@ export default function Home() {
 
       {/* Main Content */}
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {/* Info Banner */}
-        <div className="bg-blue-50 border-l-4 border-blue-500 p-4 mb-6 rounded-r-lg">
-          <div className="flex items-start">
-            <Sparkles className="w-5 h-5 text-blue-500 mt-0.5 mr-3" />
-            <div>
-              <p className="text-sm font-medium text-blue-900">
-                How it works
+        {/* Signed Out View */}
+        <SignedOut>
+          <div className="flex items-center justify-center min-h-[60vh]">
+            <div className="text-center max-w-md">
+              <div className="p-4 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full w-20 h-20 mx-auto mb-6 flex items-center justify-center">
+                <Lock className="w-10 h-10 text-white" />
+              </div>
+              <h2 className="text-3xl font-bold text-gray-900 mb-4">
+                Sign In Required
+              </h2>
+              <p className="text-gray-600 mb-8">
+                Please sign in to access the Arabic OCR service. Extract text from images and PDFs with high accuracy using our advanced Vision Language Model.
               </p>
-              <p className="text-sm text-blue-700 mt-1">
-                Upload an image or PDF document, click "Process", and get the extracted text.
-                For PDFs, each page is processed sequentially and results are shown as they complete.
-                The VLM model intelligently understands context and can handle handwritten text better than traditional OCR models.
-              </p>
+              <SignInButton mode="modal">
+                <button className="px-8 py-3 bg-gradient-to-r from-blue-600 to-purple-600 text-white rounded-lg font-semibold text-lg hover:shadow-xl transform hover:-translate-y-0.5 transition-all duration-200">
+                  Sign In to Continue
+                </button>
+              </SignInButton>
+              <div className="mt-8 p-4 bg-blue-50 rounded-lg">
+                <p className="text-sm text-gray-700">
+                  <strong>Features:</strong> Upload images or PDFs • Extract Arabic text • Handwritten & typed text support • Page-by-page PDF processing
+                </p>
+              </div>
             </div>
           </div>
-        </div>
+        </SignedOut>
+
+        {/* Signed In View */}
+        <SignedIn>
+          {/* Info Banner */}
+          <div className="bg-blue-50 border-l-4 border-blue-500 p-4 mb-6 rounded-r-lg">
+            <div className="flex items-start">
+              <Sparkles className="w-5 h-5 text-blue-500 mt-0.5 mr-3" />
+              <div>
+                <p className="text-sm font-medium text-blue-900">
+                  How it works
+                </p>
+                <p className="text-sm text-blue-700 mt-1">
+                  Upload an image or PDF document, click "Process", and get the extracted text.
+                  For PDFs, each page is processed sequentially and results are shown as they complete.
+                  The VLM model intelligently understands context and can handle handwritten text better than traditional OCR models.
+                </p>
+              </div>
+            </div>
+          </div>
 
         {/* Main Content - Conditional Layout */}
         {isPDF && pdfTotalPages > 0 ? (
@@ -274,6 +333,7 @@ export default function Home() {
             </div>
           </div>
         )}
+        </SignedIn>
       </div>
     </main>
   )

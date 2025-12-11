@@ -3,7 +3,7 @@ FastAPI Backend for AIN OCR Application
 Handles API requests and communicates with the model service on RunPod
 """
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, Form
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
@@ -20,12 +20,84 @@ import fitz  # PyMuPDF
 import json
 from datetime import datetime
 import uuid
+import jwt
+from jwt import PyJWKClient
 
 load_dotenv()
 
 # Vercel Blob Storage Configuration
 BLOB_READ_WRITE_TOKEN = os.getenv("BLOB_READ_WRITE_TOKEN")
 BLOB_API_URL = "https://blob.vercel-storage.com"
+
+# Clerk Configuration
+CLERK_SECRET_KEY = os.getenv("CLERK_SECRET_KEY")
+CLERK_JWKS_URL = "https://rational-coral-39.clerk.accounts.dev/.well-known/jwks.json"
+
+
+async def verify_clerk_token(authorization: Optional[str] = Header(None)) -> dict:
+    """
+    Verify Clerk JWT token from Authorization header.
+    
+    Args:
+        authorization: Authorization header with Bearer token
+        
+    Returns:
+        dict: Decoded token payload with user information
+        
+    Raises:
+        HTTPException: If token is invalid or missing
+    """
+    if not CLERK_SECRET_KEY:
+        print("⚠️ CLERK_SECRET_KEY not configured, skipping authentication")
+        return {"user_id": "anonymous", "auth_disabled": True}
+    
+    if not authorization:
+        raise HTTPException(
+            status_code=401,
+            detail="Missing authorization header. Please sign in."
+        )
+    
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid authorization format. Expected 'Bearer <token>'"
+        )
+    
+    token = authorization.replace("Bearer ", "")
+    
+    try:
+        # Use PyJWKClient to fetch public keys from Clerk's JWKS endpoint
+        jwks_client = PyJWKClient(CLERK_JWKS_URL)
+        signing_key = jwks_client.get_signing_key_from_jwt(token)
+        
+        # Decode and verify the token
+        payload = jwt.decode(
+            token,
+            signing_key.key,
+            algorithms=["RS256"],
+            options={"verify_aud": False}  # Clerk doesn't always include aud
+        )
+        
+        print(f"✅ Authenticated user: {payload.get('sub', 'unknown')}")
+        return payload
+        
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(
+            status_code=401,
+            detail="Token has expired. Please sign in again."
+        )
+    except jwt.InvalidTokenError as e:
+        print(f"❌ Invalid token: {str(e)}")
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid authentication token. Please sign in again."
+        )
+    except Exception as e:
+        print(f"❌ Authentication error: {str(e)}")
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication failed. Please sign in again."
+        )
 
 
 async def store_file_to_blob(file_data: bytes, filename: str, content_type: str = "application/octet-stream") -> dict:
@@ -190,6 +262,7 @@ async def process_ocr(
     max_new_tokens: int = Form(2048),
     min_pixels: Optional[int] = Form(200704),
     max_pixels: Optional[int] = Form(1003520),
+    user: dict = Depends(verify_clerk_token),
 ):
     """
     Process an image and extract text using OCR.
@@ -360,6 +433,7 @@ async def process_pdf_ocr(
     max_new_tokens: int = Form(2048),
     min_pixels: Optional[int] = Form(200704),
     max_pixels: Optional[int] = Form(1003520),
+    user: dict = Depends(verify_clerk_token),
 ):
     """
     Process a PDF and extract text from each page using OCR.

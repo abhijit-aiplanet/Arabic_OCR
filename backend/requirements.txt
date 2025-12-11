@@ -6,4 +6,6 @@ pillow==10.2.0
 python-dotenv==1.0.0
 pydantic==2.5.3
 PyMuPDF==1.23.8  # For PDF to image conversion
+PyJWT[crypto]==2.8.0  # For Clerk JWT verification
+cryptography==41.0.7  # Required by PyJWT for RS256
 
