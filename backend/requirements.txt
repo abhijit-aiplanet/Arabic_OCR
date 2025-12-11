@@ -1,12 +1,12 @@
-fastapi==0.109.0
+fastapi==0.115.0
 uvicorn[standard]==0.27.0
-python-multipart==0.0.6
-httpx==0.26.0
+python-multipart==0.0.12
+httpx==0.28.1
 pillow==10.2.0
-python-dotenv==1.0.0
-pydantic==2.5.3
+python-dotenv==1.0.1
+pydantic==2.11.9  # Updated for supabase compatibility
 PyMuPDF==1.23.8  # For PDF to image conversion
-PyJWT[crypto]==2.8.0  # For Clerk JWT verification
-cryptography==41.0.7  # Required by PyJWT for RS256
+PyJWT[crypto]==2.10.1  # For Clerk JWT verification
+cryptography==45.0.5  # Required by PyJWT for RS256
 supabase==2.25.1  # For OCR history storage
 
