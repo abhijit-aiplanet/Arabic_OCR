@@ -228,7 +228,7 @@ export default function OCRHistory({ authToken, onSelectItem }: OCRHistoryProps)
         </div>
 
         {/* Content */}
-        <div className="max-w-5xl mx-auto px-6 py-8">
+        <div className="max-w-7xl mx-auto px-6 py-8">
           {/* Metadata */}
           <div className="bg-white rounded-lg border border-gray-200 p-6 mb-6">
             <div className="grid grid-cols-4 gap-4">
@@ -266,8 +266,65 @@ export default function OCRHistory({ authToken, onSelectItem }: OCRHistoryProps)
             </div>
           )}
 
-          {/* Extracted Text */}
+          {/* Two Column Layout: Image/PDF on Left, Text on Right */}
           {selectedItem.extracted_text && (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* Left: Original File Viewer */}
+              {selectedItem.blob_url && (
+                <div className="bg-white rounded-lg border border-gray-200 p-6">
+                  <h3 className="text-lg font-semibold text-gray-900 mb-4">Original File</h3>
+                  {selectedItem.file_type === 'pdf' ? (
+                    <div className="bg-gray-100 rounded-lg overflow-hidden">
+                      <iframe
+                        src={selectedItem.blob_url}
+                        className="w-full h-[600px] border-0"
+                        title="PDF Viewer"
+                      />
+                    </div>
+                  ) : (
+                    <div className="bg-gray-100 rounded-lg overflow-hidden flex items-center justify-center">
+                      <img
+                        src={selectedItem.blob_url}
+                        alt={selectedItem.file_name}
+                        className="max-w-full h-auto max-h-[600px] object-contain"
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Right: Extracted Text */}
+              <div className="bg-white rounded-lg border border-gray-200 p-6">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-lg font-semibold text-gray-900">
+                    {selectedItem.edited_text ? 'Edited Text' : 'Extracted Text'}
+                  </h3>
+                  <div className="text-sm text-gray-500">
+                    {displayText.length} characters • {displayText.split(/\s+/).filter(Boolean).length} words
+                  </div>
+                </div>
+
+                {editingId === selectedItem.id ? (
+                  <textarea
+                    value={editText}
+                    onChange={(e) => setEditText(e.target.value)}
+                    className="w-full min-h-[500px] p-4 text-base text-gray-900 bg-gray-50 border-2 border-blue-300 rounded-lg focus:outline-none focus:border-blue-500 resize-y font-sans leading-relaxed"
+                    placeholder="Edit your text here..."
+                    dir="auto"
+                  />
+                ) : (
+                  <div className="min-h-[500px] max-h-[600px] overflow-y-auto">
+                    <pre className="whitespace-pre-wrap font-sans text-base leading-relaxed text-gray-900 text-left bg-gray-50 p-6 rounded-lg" dir="auto">
+                      {displayText}
+                    </pre>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* If no blob_url, show text only (full width) */}
+          {selectedItem.extracted_text && !selectedItem.blob_url && (
             <div className="bg-white rounded-lg border border-gray-200 p-6">
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-lg font-semibold text-gray-900">
