@@ -6,7 +6,7 @@ import ExtractedText from '@/components/ExtractedText'
 import PDFProcessor from '@/components/PDFProcessor'
 import AdvancedSettings from '@/components/AdvancedSettings'
 import OCRHistory from '@/components/OCRHistory'
-import { processOCR, processPDFOCR, PDFPageResult } from '@/lib/api'
+import { processOCR, processPDFOCR, PDFPageResult, updateHistoryText } from '@/lib/api'
 import toast from 'react-hot-toast'
 import { FileText, Sparkles, Lock, History, X } from 'lucide-react'
 import { SignedIn, SignedOut, SignInButton, UserButton, useAuth } from '@clerk/nextjs'
@@ -37,9 +37,10 @@ export default function Home() {
   const [pdfResults, setPdfResults] = useState<PDFPageResult[]>([])
   const [pdfProcessedCount, setPdfProcessedCount] = useState(0)
 
-  // History sidebar state
+  // History state
   const [showHistory, setShowHistory] = useState(false)
   const [authToken, setAuthToken] = useState<string | null>(null)
+  const [currentHistoryId, setCurrentHistoryId] = useState<string | null>(null)
 
   // Get auth token on mount
   useEffect(() => {
@@ -49,6 +50,22 @@ export default function Home() {
     }
     fetchToken()
   }, [getToken])
+
+  // Handle live text edit
+  const handleLiveTextEdit = async (newText: string) => {
+    if (!authToken || !currentHistoryId) {
+      toast.error('Unable to save changes')
+      return
+    }
+
+    try {
+      await updateHistoryText(currentHistoryId, newText, authToken)
+      setExtractedText(newText)
+      toast.success('Changes saved to history!')
+    } catch (error: any) {
+      toast.error(error.message || 'Failed to save changes')
+    }
+  }
 
   const handleImageSelect = (file: File) => {
     setSelectedImage(file)
@@ -131,6 +148,9 @@ export default function Home() {
         
         if (result.status === 'success') {
           setExtractedText(result.extracted_text)
+          // Note: We'll get history ID from backend response once we add it
+          // For now, clear it so user can edit after processing
+          setCurrentHistoryId(null)
           toast.success('Text extracted successfully!', { id: loadingToast })
         } else {
           throw new Error(result.error || 'Failed to extract text')
@@ -352,6 +372,8 @@ export default function Home() {
               <ExtractedText
                 text={extractedText}
                 isProcessing={isProcessing}
+                onTextEdit={handleLiveTextEdit}
+                isEditable={true}
               />
             </div>
           </div>
@@ -359,31 +381,36 @@ export default function Home() {
         </SignedIn>
         </div>
 
-        {/* History Sidebar */}
+        {/* History Full-Screen Modal */}
         <SignedIn>
-          <div className={`fixed right-0 top-0 h-full bg-white shadow-2xl border-l border-gray-200 transition-transform duration-300 z-50 ${
-            showHistory ? 'translate-x-0' : 'translate-x-full'
-          } w-96 overflow-y-auto`}>
-            <div className="sticky top-0 bg-white border-b border-gray-200 p-4 flex items-center justify-between z-10">
-              <h2 className="text-xl font-bold text-gray-900">OCR History</h2>
-              <button
-                onClick={() => setShowHistory(false)}
-                className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
-              >
-                <X className="w-5 h-5 text-gray-500" />
-              </button>
-            </div>
-            <div className="p-4">
-              <OCRHistory authToken={authToken} />
-            </div>
-          </div>
-
-          {/* Overlay */}
           {showHistory && (
-            <div 
-              className="fixed inset-0 bg-black bg-opacity-30 z-40"
-              onClick={() => setShowHistory(false)}
-            />
+            <div className="fixed inset-0 bg-white z-50 overflow-y-auto">
+              {/* Header */}
+              <div className="sticky top-0 bg-white border-b border-gray-200 px-6 py-4 z-10 shadow-sm">
+                <div className="max-w-7xl mx-auto flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 bg-gradient-to-br from-blue-500 to-purple-600 rounded-lg">
+                      <History className="w-6 h-6 text-white" />
+                    </div>
+                    <div>
+                      <h2 className="text-2xl font-bold text-gray-900">OCR History</h2>
+                      <p className="text-sm text-gray-600">View and manage all your processed files</p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setShowHistory(false)}
+                    className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+                  >
+                    <X className="w-6 h-6 text-gray-500" />
+                  </button>
+                </div>
+              </div>
+
+              {/* Content */}
+              <div className="max-w-7xl mx-auto px-6 py-8">
+                <OCRHistory authToken={authToken} />
+              </div>
+            </div>
           )}
         </SignedIn>
       </div>

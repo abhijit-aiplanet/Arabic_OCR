@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { Clock, FileText, CheckCircle, XCircle, Download, Trash2, ChevronDown, ChevronUp, Edit2, Save, X as XIcon } from 'lucide-react'
+import { Clock, FileText, CheckCircle, XCircle, Download, Trash2, ChevronDown, ChevronUp, Edit2, Save, X as XIcon, ArrowLeft } from 'lucide-react'
 import axios from 'axios'
 import { updateHistoryText } from '@/lib/api'
 import toast from 'react-hot-toast'
@@ -35,7 +35,7 @@ export default function OCRHistory({ authToken, onSelectItem }: OCRHistoryProps)
   const [history, setHistory] = useState<OCRHistoryItem[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [selectedItem, setSelectedItem] = useState<OCRHistoryItem | null>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editText, setEditText] = useState('')
 
@@ -137,6 +137,168 @@ export default function OCRHistory({ authToken, onSelectItem }: OCRHistoryProps)
     return date.toLocaleDateString()
   }
 
+  // If item is selected, show detail view
+  if (selectedItem) {
+    const displayText = selectedItem.edited_text || selectedItem.extracted_text
+
+    return (
+      <div className="min-h-screen bg-gray-50">
+        {/* Header */}
+        <div className="bg-white border-b border-gray-200 px-6 py-4 sticky top-0 z-10">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <button
+                onClick={() => {
+                  setSelectedItem(null)
+                  setEditingId(null)
+                }}
+                className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+              >
+                <ArrowLeft className="w-5 h-5 text-gray-600" />
+              </button>
+              <div>
+                <h2 className="text-xl font-bold text-gray-900">{selectedItem.file_name}</h2>
+                <div className="flex items-center gap-2 mt-1 text-sm text-gray-500">
+                  <Clock className="w-4 h-4" />
+                  <span>{formatDate(selectedItem.created_at)}</span>
+                  {selectedItem.edited_at && (
+                    <>
+                      <span>•</span>
+                      <span>Edited {formatDate(selectedItem.edited_at)}</span>
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              {editingId !== selectedItem.id && (
+                <>
+                  {selectedItem.status === 'success' && (
+                    <>
+                      <button
+                        onClick={() => handleEdit(selectedItem)}
+                        className="flex items-center gap-2 px-4 py-2 text-sm font-semibold text-gray-600 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
+                      >
+                        <Edit2 className="w-4 h-4" />
+                        Edit
+                      </button>
+                      <button
+                        onClick={() => downloadAsMarkdown(selectedItem)}
+                        className="flex items-center gap-2 px-4 py-2 text-sm font-semibold text-blue-600 hover:text-blue-700 hover:bg-blue-50 rounded-lg transition-colors"
+                      >
+                        <Download className="w-4 h-4" />
+                        Download
+                      </button>
+                    </>
+                  )}
+                  {selectedItem.blob_url && (
+                    <a
+                      href={selectedItem.blob_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center gap-2 px-4 py-2 text-sm font-semibold text-gray-600 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
+                    >
+                      <FileText className="w-4 h-4" />
+                      View File
+                    </a>
+                  )}
+                </>
+              )}
+              {editingId === selectedItem.id && (
+                <>
+                  <button
+                    onClick={() => handleCancelEdit()}
+                    className="flex items-center gap-2 px-4 py-2 text-sm font-semibold text-gray-600 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
+                  >
+                    <XIcon className="w-4 h-4" />
+                    Cancel
+                  </button>
+                  <button
+                    onClick={() => handleSaveEdit(selectedItem)}
+                    className="flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors"
+                  >
+                    <Save className="w-4 h-4" />
+                    Save Changes
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Content */}
+        <div className="max-w-5xl mx-auto px-6 py-8">
+          {/* Metadata */}
+          <div className="bg-white rounded-lg border border-gray-200 p-6 mb-6">
+            <div className="grid grid-cols-4 gap-4">
+              <div>
+                <p className="text-xs text-gray-500 mb-1">Status</p>
+                <div className="flex items-center gap-2">
+                  {selectedItem.status === 'success' ? (
+                    <CheckCircle className="w-4 h-4 text-green-600" />
+                  ) : (
+                    <XCircle className="w-4 h-4 text-red-600" />
+                  )}
+                  <span className="text-sm font-semibold capitalize">{selectedItem.status}</span>
+                </div>
+              </div>
+              <div>
+                <p className="text-xs text-gray-500 mb-1">File Size</p>
+                <p className="text-sm font-semibold">{formatFileSize(selectedItem.file_size)}</p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-500 mb-1">Processing Time</p>
+                <p className="text-sm font-semibold">{selectedItem.processing_time.toFixed(2)}s</p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-500 mb-1">Pages</p>
+                <p className="text-sm font-semibold">{selectedItem.total_pages}</p>
+              </div>
+            </div>
+          </div>
+
+          {/* Error message if failed */}
+          {selectedItem.status === 'error' && selectedItem.error_message && (
+            <div className="bg-red-50 border border-red-200 rounded-lg p-6 mb-6">
+              <p className="text-sm font-semibold text-red-600 mb-2">Error:</p>
+              <p className="text-sm text-red-500">{selectedItem.error_message}</p>
+            </div>
+          )}
+
+          {/* Extracted Text */}
+          {selectedItem.extracted_text && (
+            <div className="bg-white rounded-lg border border-gray-200 p-6">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-semibold text-gray-900">
+                  {selectedItem.edited_text ? 'Edited Text' : 'Extracted Text'}
+                </h3>
+                <div className="text-sm text-gray-500">
+                  {displayText.length} characters • {displayText.split(/\s+/).filter(Boolean).length} words
+                </div>
+              </div>
+
+              {editingId === selectedItem.id ? (
+                <textarea
+                  value={editText}
+                  onChange={(e) => setEditText(e.target.value)}
+                  className="w-full min-h-[500px] p-4 text-base text-gray-900 bg-gray-50 border-2 border-blue-300 rounded-lg focus:outline-none focus:border-blue-500 resize-y font-sans leading-relaxed"
+                  placeholder="Edit your text here..."
+                  style={{ direction: 'auto' }}
+                />
+              ) : (
+                <pre className="whitespace-pre-wrap font-sans text-base leading-relaxed text-gray-900 text-left bg-gray-50 p-6 rounded-lg" style={{ direction: 'auto' }}>
+                  {displayText}
+                </pre>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  // List view
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -185,170 +347,53 @@ export default function OCRHistory({ authToken, onSelectItem }: OCRHistoryProps)
         {history.map((item) => (
           <div
             key={item.id}
-            className="bg-white rounded-lg border border-gray-200 hover:border-blue-300 transition-all shadow-sm overflow-hidden"
+            onClick={() => setSelectedItem(item)}
+            className="bg-white rounded-lg border border-gray-200 hover:border-blue-300 hover:shadow-md cursor-pointer transition-all p-4"
           >
-            {/* Header */}
-            <div 
-              className="p-4 cursor-pointer"
-              onClick={() => setExpandedId(expandedId === item.id ? null : item.id)}
-            >
-              <div className="flex items-start justify-between">
-                <div className="flex items-start gap-3 flex-1">
-                  {/* Icon */}
-                  <div className={`p-2 rounded-lg ${
-                    item.status === 'success' 
-                      ? 'bg-green-100' 
-                      : 'bg-red-100'
-                  }`}>
-                    {item.status === 'success' ? (
-                      <CheckCircle className="w-5 h-5 text-green-600" />
-                    ) : (
-                      <XCircle className="w-5 h-5 text-red-600" />
-                    )}
-                  </div>
+            <div className="flex items-start gap-3">
+              {/* Icon */}
+              <div className={`p-2 rounded-lg ${
+                item.status === 'success' 
+                  ? 'bg-green-100' 
+                  : 'bg-red-100'
+              }`}>
+                {item.status === 'success' ? (
+                  <CheckCircle className="w-5 h-5 text-green-600" />
+                ) : (
+                  <XCircle className="w-5 h-5 text-red-600" />
+                )}
+              </div>
 
-                  {/* Info */}
-                  <div className="flex-1 min-w-0">
-                    <p className="font-semibold text-gray-900 truncate">
-                      {item.file_name}
-                    </p>
-                    <div className="flex items-center gap-2 mt-1 text-xs text-gray-500">
-                      <Clock className="w-3 h-3" />
-                      <span>{formatDate(item.created_at)}</span>
+              {/* Info */}
+              <div className="flex-1 min-w-0">
+                <p className="font-semibold text-gray-900 truncate">
+                  {item.file_name}
+                </p>
+                <p className="text-sm text-gray-600 line-clamp-2 mt-1">
+                  {item.edited_text || item.extracted_text || item.error_message || 'No text'}
+                </p>
+                <div className="flex items-center gap-2 mt-2 text-xs text-gray-500">
+                  <Clock className="w-3 h-3" />
+                  <span>{formatDate(item.created_at)}</span>
+                  <span>•</span>
+                  <span>{formatFileSize(item.file_size)}</span>
+                  <span>•</span>
+                  <span>{item.processing_time.toFixed(1)}s</span>
+                  {item.total_pages > 1 && (
+                    <>
                       <span>•</span>
-                      <span>{formatFileSize(item.file_size)}</span>
+                      <span>{item.total_pages} pages</span>
+                    </>
+                  )}
+                  {item.edited_at && (
+                    <>
                       <span>•</span>
-                      <span>{item.processing_time.toFixed(1)}s</span>
-                      {item.total_pages > 1 && (
-                        <>
-                          <span>•</span>
-                          <span>{item.total_pages} pages</span>
-                        </>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Expand icon */}
-                  <div>
-                    {expandedId === item.id ? (
-                      <ChevronUp className="w-5 h-5 text-gray-400" />
-                    ) : (
-                      <ChevronDown className="w-5 h-5 text-gray-400" />
-                    )}
-                  </div>
+                      <span className="text-blue-600">Edited</span>
+                    </>
+                  )}
                 </div>
               </div>
             </div>
-
-            {/* Expanded Content */}
-            {expandedId === item.id && (
-              <div className="px-4 pb-4 border-t border-gray-100">
-                <div className="mt-3 space-y-3">
-                  {/* Status and Error */}
-                  {item.status === 'error' && item.error_message && (
-                    <div className="p-3 bg-red-50 rounded-lg">
-                      <p className="text-sm text-red-600 font-semibold">Error:</p>
-                      <p className="text-sm text-red-500 mt-1">{item.error_message}</p>
-                    </div>
-                  )}
-
-                  {/* Extracted/Edited Text Preview or Editor */}
-                  {item.extracted_text && (
-                    <div className="p-3 bg-gray-50 rounded-lg">
-                      <div className="flex items-center justify-between mb-2">
-                        <p className="text-xs font-semibold text-gray-700">
-                          {item.edited_text ? 'Edited' : 'Extracted'} Text:
-                          {item.edited_at && (
-                            <span className="ml-2 text-xs font-normal text-gray-500">
-                              (Edited {formatDate(item.edited_at)})
-                            </span>
-                          )}
-                        </p>
-                        {editingId !== item.id && item.status === 'success' && (
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              handleEdit(item)
-                            }}
-                            className="flex items-center gap-1 px-2 py-1 text-xs font-semibold text-gray-600 hover:text-gray-700 hover:bg-gray-200 rounded transition-colors"
-                          >
-                            <Edit2 className="w-3 h-3" />
-                            Edit
-                          </button>
-                        )}
-                      </div>
-                      
-                      {editingId === item.id ? (
-                        <div className="space-y-2">
-                          <textarea
-                            value={editText}
-                            onChange={(e) => setEditText(e.target.value)}
-                            className="w-full min-h-[200px] p-3 text-sm text-gray-700 bg-white border border-gray-300 rounded-lg focus:outline-none focus:border-blue-500 resize-y"
-                            onClick={(e) => e.stopPropagation()}
-                          />
-                          <div className="flex gap-2">
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                handleSaveEdit(item)
-                              }}
-                              className="flex items-center gap-1 px-3 py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors"
-                            >
-                              <Save className="w-3 h-3" />
-                              Save
-                            </button>
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                handleCancelEdit()
-                              }}
-                              className="flex items-center gap-1 px-3 py-1.5 text-xs font-semibold text-gray-600 hover:text-gray-700 hover:bg-gray-200 rounded-lg transition-colors"
-                            >
-                              <XIcon className="w-3 h-3" />
-                              Cancel
-                            </button>
-                          </div>
-                        </div>
-                      ) : (
-                        <p className="text-sm text-gray-600 line-clamp-3">
-                          {item.edited_text || item.extracted_text}
-                        </p>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Actions */}
-                  {editingId !== item.id && (
-                    <div className="flex gap-2">
-                      {item.status === 'success' && item.extracted_text && (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            downloadAsMarkdown(item)
-                          }}
-                          className="flex items-center gap-2 px-3 py-2 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 transition-colors text-sm font-semibold"
-                        >
-                          <Download className="w-4 h-4" />
-                          Download
-                        </button>
-                      )}
-                      {item.blob_url && (
-                        <a
-                          href={item.blob_url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="flex items-center gap-2 px-3 py-2 bg-gray-50 text-gray-600 rounded-lg hover:bg-gray-100 transition-colors text-sm font-semibold"
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          <FileText className="w-4 h-4" />
-                          View File
-                        </a>
-                      )}
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
           </div>
         ))}
       </div>
