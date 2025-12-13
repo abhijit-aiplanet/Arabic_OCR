@@ -6,7 +6,10 @@ import ExtractedText from '@/components/ExtractedText'
 import PDFProcessor from '@/components/PDFProcessor'
 import AdvancedSettings from '@/components/AdvancedSettings'
 import OCRHistory from '@/components/OCRHistory'
-import { processOCR, processPDFOCR, PDFPageResult, updateHistoryText } from '@/lib/api'
+import TemplateSelector from '@/components/TemplateSelector'
+import UniversalRenderer from '@/components/UniversalRenderer'
+import { processOCR, processPDFOCR, PDFPageResult, updateHistoryText, type ContentType, type OCRTemplate } from '@/lib/api'
+import { getEffectivePrompt } from '@/lib/promptGenerator'
 import toast from 'react-hot-toast'
 import { FileText, Sparkles, Lock, History, X } from 'lucide-react'
 import { SignedIn, SignedOut, SignInButton, UserButton, useAuth } from '@clerk/nextjs'
@@ -41,6 +44,10 @@ export default function Home() {
   const [showHistory, setShowHistory] = useState(false)
   const [authToken, setAuthToken] = useState<string | null>(null)
   const [currentHistoryId, setCurrentHistoryId] = useState<string | null>(null)
+
+  // Template + content type routing
+  const [contentTypeOverride, setContentTypeOverride] = useState<ContentType>('auto')
+  const [selectedTemplate, setSelectedTemplate] = useState<OCRTemplate | null>(null)
 
   // Get auth token on mount
   useEffect(() => {
@@ -103,6 +110,18 @@ export default function Home() {
     try {
       // Get auth token from Clerk
       const token = await getToken()
+
+      const effective = getEffectivePrompt({
+        userCustomPrompt: settings.customPrompt,
+        contentType: contentTypeOverride,
+        template: selectedTemplate
+      })
+
+      const settingsForRequest = {
+        ...settings,
+        // If user typed a custom prompt, it remains. Otherwise use template/content-type prompt.
+        customPrompt: effective.prompt
+      }
       
       if (isPDF) {
         // Process PDF
@@ -110,7 +129,7 @@ export default function Home() {
         
         await processPDFOCR(
           selectedImage,
-          settings,
+          settingsForRequest,
           (pageResult: PDFPageResult) => {
             // Called when each page completes
             setPdfResults(prev => [...prev, pageResult])
@@ -144,7 +163,7 @@ export default function Home() {
         // Process single image
         const loadingToast = toast.loading('Processing image...')
         
-        const result = await processOCR(selectedImage, settings, token)
+        const result = await processOCR(selectedImage, settingsForRequest, token)
         
         if (result.status === 'success') {
           setExtractedText(result.extracted_text)
@@ -180,6 +199,8 @@ export default function Home() {
       minPixels: 200704,
       maxPixels: 1003520,  // Reduced for faster processing
     })
+    setSelectedTemplate(null)
+    setContentTypeOverride('auto')
   }
 
   return (
@@ -332,6 +353,14 @@ export default function Home() {
               selectedFile={selectedImage}
             />
 
+              <TemplateSelector
+                authToken={authToken}
+                selectedTemplate={selectedTemplate}
+                onSelectTemplate={setSelectedTemplate}
+                contentTypeOverride={contentTypeOverride}
+                onContentTypeOverrideChange={setContentTypeOverride}
+              />
+
               <AdvancedSettings
                 settings={settings}
                 onSettingsChange={setSettings}
@@ -369,11 +398,12 @@ export default function Home() {
 
             {/* Right Column - Output */}
             <div>
-              <ExtractedText
+              <UniversalRenderer
                 text={extractedText}
                 isProcessing={isProcessing}
                 onTextEdit={handleLiveTextEdit}
                 isEditable={true}
+                preferredType={contentTypeOverride}
               />
             </div>
           </div>

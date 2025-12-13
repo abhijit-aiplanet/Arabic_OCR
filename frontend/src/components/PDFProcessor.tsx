@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react'
 import { PDFPageResult } from '@/lib/api'
 import { ChevronLeft, ChevronRight, Download, FileText } from 'lucide-react'
+import UniversalRenderer from '@/components/UniversalRenderer'
 
 interface PDFProcessorProps {
   totalPages: number
@@ -170,15 +171,11 @@ export default function PDFProcessor({
               OCR Output - Page {currentPage}
             </h3>
             
-            <div className="border border-gray-300 rounded-lg bg-white p-4 min-h-[400px] max-h-[600px] overflow-y-auto">
+            <div className="min-h-[400px]">
               {currentResult.status === 'success' ? (
-                <div className="prose prose-sm max-w-none" dir="auto">
-                  <pre className="whitespace-pre-wrap font-sans text-gray-900">
-                    {currentResult.extracted_text}
-                  </pre>
-                </div>
+                <UniversalRenderer text={currentResult.extracted_text} isProcessing={false} isEditable={false} />
               ) : (
-                <div className="text-red-600">
+                <div className="border border-gray-300 rounded-lg bg-white p-4 min-h-[400px] max-h-[600px] overflow-y-auto text-red-600">
                   <p className="font-semibold">Error processing this page:</p>
                   <p className="mt-2">{currentResult.error || 'Unknown error'}</p>
                 </div>

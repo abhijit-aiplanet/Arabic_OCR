@@ -15,6 +15,63 @@ interface OCRResponse {
   error?: string
 }
 
+export type ContentType =
+  | 'auto'
+  | 'form'
+  | 'document'
+  | 'receipt'
+  | 'invoice'
+  | 'table'
+  | 'id_card'
+  | 'certificate'
+  | 'handwritten'
+  | 'mixed'
+  | 'unknown'
+
+export interface OCRTemplate {
+  id: string
+  user_id: string
+  name: string
+  description?: string | null
+  content_type: Exclude<ContentType, 'auto'>
+  language: 'ar' | 'en' | 'mixed'
+  custom_prompt?: string | null
+  sections?: any
+  tables?: any
+  keywords?: string[] | null
+  is_public: boolean
+  usage_count: number
+  example_image_url?: string | null
+  created_at?: string | null
+  updated_at?: string | null
+}
+
+export interface CreateTemplateRequest {
+  name: string
+  description?: string
+  content_type: Exclude<ContentType, 'auto'>
+  language?: 'ar' | 'en' | 'mixed'
+  custom_prompt?: string
+  sections?: any
+  tables?: any
+  keywords?: string[]
+  is_public?: boolean
+  example_image_url?: string
+}
+
+export interface UpdateTemplateRequest {
+  name?: string
+  description?: string
+  content_type?: Exclude<ContentType, 'auto'>
+  language?: 'ar' | 'en' | 'mixed'
+  custom_prompt?: string
+  sections?: any
+  tables?: any
+  keywords?: string[]
+  is_public?: boolean
+  example_image_url?: string
+}
+
 export interface PDFPageResult {
   page_number: number
   extracted_text: string
@@ -214,6 +271,111 @@ export async function updateHistoryText(
   } catch (error) {
     if (axios.isAxiosError(error)) {
       const message = error.response?.data?.detail || error.message
+      throw new Error(message)
+    }
+    throw error
+  }
+}
+
+export async function fetchTemplates(authToken: string | null): Promise<OCRTemplate[]> {
+  if (!authToken) {
+    throw new Error('Authentication required')
+  }
+
+  try {
+    const response = await axios.get<OCRTemplate[]>(`${API_URL}/api/templates`, {
+      headers: {
+        Authorization: `Bearer ${authToken}`
+      }
+    })
+    return response.data
+  } catch (error) {
+    if (axios.isAxiosError(error)) {
+      const message = (error.response?.data as any)?.detail || error.message
+      throw new Error(message)
+    }
+    throw error
+  }
+}
+
+export async function fetchPublicTemplates(): Promise<OCRTemplate[]> {
+  try {
+    const response = await axios.get<OCRTemplate[]>(`${API_URL}/api/templates/public`)
+    return response.data
+  } catch (error) {
+    if (axios.isAxiosError(error)) {
+      const message = (error.response?.data as any)?.detail || error.message
+      throw new Error(message)
+    }
+    throw error
+  }
+}
+
+export async function createTemplate(
+  payload: CreateTemplateRequest,
+  authToken: string | null
+): Promise<OCRTemplate> {
+  if (!authToken) {
+    throw new Error('Authentication required')
+  }
+
+  try {
+    const response = await axios.post<OCRTemplate>(`${API_URL}/api/templates`, payload, {
+      headers: {
+        Authorization: `Bearer ${authToken}`,
+        'Content-Type': 'application/json'
+      }
+    })
+    return response.data
+  } catch (error) {
+    if (axios.isAxiosError(error)) {
+      const message = (error.response?.data as any)?.detail || error.message
+      throw new Error(message)
+    }
+    throw error
+  }
+}
+
+export async function updateTemplate(
+  templateId: string,
+  payload: UpdateTemplateRequest,
+  authToken: string | null
+): Promise<OCRTemplate> {
+  if (!authToken) {
+    throw new Error('Authentication required')
+  }
+
+  try {
+    const response = await axios.patch<OCRTemplate>(`${API_URL}/api/templates/${templateId}`, payload, {
+      headers: {
+        Authorization: `Bearer ${authToken}`,
+        'Content-Type': 'application/json'
+      }
+    })
+    return response.data
+  } catch (error) {
+    if (axios.isAxiosError(error)) {
+      const message = (error.response?.data as any)?.detail || error.message
+      throw new Error(message)
+    }
+    throw error
+  }
+}
+
+export async function deleteTemplate(templateId: string, authToken: string | null): Promise<void> {
+  if (!authToken) {
+    throw new Error('Authentication required')
+  }
+
+  try {
+    await axios.delete(`${API_URL}/api/templates/${templateId}`, {
+      headers: {
+        Authorization: `Bearer ${authToken}`
+      }
+    })
+  } catch (error) {
+    if (axios.isAxiosError(error)) {
+      const message = (error.response?.data as any)?.detail || error.message
       throw new Error(message)
     }
     throw error

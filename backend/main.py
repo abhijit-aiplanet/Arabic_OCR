@@ -342,6 +342,193 @@ class UpdateHistoryRequest(BaseModel):
     edited_text: str
 
 
+# ----------------------------
+# Templates (Form/Doc presets)
+# ----------------------------
+class OCRTemplate(BaseModel):
+    """Model for an OCR template (prompt preset + optional structure metadata)."""
+    id: str
+    user_id: str
+    name: str
+    description: Optional[str] = None
+    content_type: str  # e.g. form, document, receipt, table, id_card, certificate, handwritten, mixed
+    language: str = "ar"  # ar | en | mixed
+    custom_prompt: Optional[str] = None
+    sections: Dict[str, Any] = {}  # stored as JSONB in DB (MVP: optional)
+    tables: Optional[Dict[str, Any]] = None  # stored as JSONB in DB (MVP: optional)
+    keywords: Optional[List[str]] = None
+    is_public: bool = False
+    usage_count: int = 0
+    example_image_url: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class CreateTemplateRequest(BaseModel):
+    """Request model for creating an OCR template."""
+    name: str
+    description: Optional[str] = None
+    content_type: str
+    language: str = "ar"
+    custom_prompt: Optional[str] = None
+    sections: Optional[Dict[str, Any]] = None
+    tables: Optional[Dict[str, Any]] = None
+    keywords: Optional[List[str]] = None
+    is_public: bool = False
+    example_image_url: Optional[str] = None
+
+
+class UpdateTemplateRequest(BaseModel):
+    """Request model for updating an OCR template."""
+    name: Optional[str] = None
+    description: Optional[str] = None
+    content_type: Optional[str] = None
+    language: Optional[str] = None
+    custom_prompt: Optional[str] = None
+    sections: Optional[Dict[str, Any]] = None
+    tables: Optional[Dict[str, Any]] = None
+    keywords: Optional[List[str]] = None
+    is_public: Optional[bool] = None
+    example_image_url: Optional[str] = None
+
+
+@app.get("/api/templates", response_model=List[OCRTemplate])
+async def list_templates(user: dict = Depends(verify_clerk_token)):
+    """List templates owned by the authenticated user."""
+    if not supabase:
+        raise HTTPException(status_code=503, detail="Templates service not available")
+
+    user_id = user.get("sub", "anonymous")
+    try:
+        response = supabase.table("ocr_templates")\
+            .select("*")\
+            .eq("user_id", user_id)\
+            .order("updated_at", desc=True)\
+            .execute()
+        return [OCRTemplate(**t) for t in (response.data or [])]
+    except Exception as e:
+        print(f"❌ Error listing templates: {str(e)}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to list templates: {str(e)}")
+
+
+@app.get("/api/templates/public", response_model=List[OCRTemplate])
+async def list_public_templates():
+    """List public templates (no auth)."""
+    if not supabase:
+        raise HTTPException(status_code=503, detail="Templates service not available")
+
+    try:
+        response = supabase.table("ocr_templates")\
+            .select("*")\
+            .eq("is_public", True)\
+            .order("usage_count", desc=True)\
+            .limit(100)\
+            .execute()
+        return [OCRTemplate(**t) for t in (response.data or [])]
+    except Exception as e:
+        print(f"❌ Error listing public templates: {str(e)}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to list public templates: {str(e)}")
+
+
+@app.post("/api/templates", response_model=OCRTemplate)
+async def create_template(payload: CreateTemplateRequest, user: dict = Depends(verify_clerk_token)):
+    """Create a new OCR template for the authenticated user."""
+    if not supabase:
+        raise HTTPException(status_code=503, detail="Templates service not available")
+
+    user_id = user.get("sub", "anonymous")
+    try:
+        data = {
+            "user_id": user_id,
+            "name": payload.name,
+            "description": payload.description,
+            "content_type": payload.content_type,
+            "language": payload.language,
+            "custom_prompt": payload.custom_prompt,
+            "sections": payload.sections or {},
+            "tables": payload.tables,
+            "keywords": payload.keywords,
+            "is_public": payload.is_public,
+            "example_image_url": payload.example_image_url,
+            "usage_count": 0,
+        }
+        result = supabase.table("ocr_templates").insert(data).execute()
+        if not result.data:
+            raise HTTPException(status_code=500, detail="Failed to create template")
+        return OCRTemplate(**result.data[0])
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error creating template: {str(e)}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to create template: {str(e)}")
+
+
+@app.patch("/api/templates/{template_id}", response_model=OCRTemplate)
+async def update_template(template_id: str, payload: UpdateTemplateRequest, user: dict = Depends(verify_clerk_token)):
+    """Update an existing template (must be owned by the authenticated user)."""
+    if not supabase:
+        raise HTTPException(status_code=503, detail="Templates service not available")
+
+    user_id = user.get("sub", "anonymous")
+    try:
+        # Ensure ownership
+        existing = supabase.table("ocr_templates").select("*").eq("id", template_id).execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Template not found")
+        if existing.data[0].get("user_id") != user_id:
+            raise HTTPException(status_code=403, detail="Not allowed to update this template")
+
+        update_data: Dict[str, Any] = {}
+        for k, v in payload.model_dump(exclude_unset=True).items():
+            update_data[k] = v
+
+        if not update_data:
+            return OCRTemplate(**existing.data[0])
+
+        update_data["updated_at"] = datetime.now().isoformat()
+
+        updated = supabase.table("ocr_templates")\
+            .update(update_data)\
+            .eq("id", template_id)\
+            .execute()
+        if not updated.data:
+            raise HTTPException(status_code=500, detail="Failed to update template")
+        return OCRTemplate(**updated.data[0])
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error updating template: {str(e)}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to update template: {str(e)}")
+
+
+@app.delete("/api/templates/{template_id}")
+async def delete_template(template_id: str, user: dict = Depends(verify_clerk_token)):
+    """Delete a template (must be owned by the authenticated user)."""
+    if not supabase:
+        raise HTTPException(status_code=503, detail="Templates service not available")
+
+    user_id = user.get("sub", "anonymous")
+    try:
+        existing = supabase.table("ocr_templates").select("*").eq("id", template_id).execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Template not found")
+        if existing.data[0].get("user_id") != user_id:
+            raise HTTPException(status_code=403, detail="Not allowed to delete this template")
+
+        supabase.table("ocr_templates").delete().eq("id", template_id).execute()
+        return {"status": "success"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error deleting template: {str(e)}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to delete template: {str(e)}")
+
+
 @app.get("/")
 async def root():
     """Root endpoint"""
