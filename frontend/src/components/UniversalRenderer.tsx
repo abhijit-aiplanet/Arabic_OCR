@@ -2,8 +2,9 @@
 
 import { useMemo, useState } from 'react'
 import ExtractedText from '@/components/ExtractedText'
-import type { ContentType } from '@/lib/api'
+import type { ContentType, OCRConfidence } from '@/lib/api'
 import { detectContentTypeFromText } from '@/lib/contentHeuristics'
+import ConfidencePanel from '@/components/ConfidencePanel'
 
 interface UniversalRendererProps {
   text: string
@@ -11,6 +12,7 @@ interface UniversalRendererProps {
   onTextEdit?: (newText: string) => void
   isEditable?: boolean
   preferredType?: ContentType // user override (auto allowed)
+  confidence?: OCRConfidence | null
 }
 
 type ViewMode = 'smart' | 'raw'
@@ -20,9 +22,11 @@ export default function UniversalRenderer({
   isProcessing,
   onTextEdit,
   isEditable = true,
-  preferredType = 'auto'
+  preferredType = 'auto',
+  confidence = null
 }: UniversalRendererProps) {
   const [view, setView] = useState<ViewMode>('smart')
+  const [showWordConfidence, setShowWordConfidence] = useState(false)
 
   const detectedType = useMemo(() => detectContentTypeFromText(text), [text])
   const effectiveType: Exclude<ContentType, 'auto'> =
@@ -77,10 +81,20 @@ export default function UniversalRenderer({
           <div className="text-xs text-gray-600">
             type: <span className="font-medium">{effectiveType}</span> · detected: <span className="font-medium">{detectedType}</span>
           </div>
+          <ConfidencePanel confidence={confidence} className="mt-2" />
         </div>
 
         {text && !isProcessing && (
           <div className="flex items-center gap-2">
+            {confidence?.per_word?.length ? (
+              <button
+                onClick={() => setShowWordConfidence((v) => !v)}
+                className="px-3 py-1.5 text-sm font-medium rounded-lg border border-gray-200 bg-white hover:bg-gray-50"
+                title="Toggle word-level confidence highlights"
+              >
+                {showWordConfidence ? 'Hide word confidence' : 'Show word confidence'}
+              </button>
+            ) : null}
             <button
               onClick={() => setView('smart')}
               className={`px-3 py-1.5 text-sm font-medium rounded-lg border transition-colors ${
@@ -107,7 +121,11 @@ export default function UniversalRenderer({
         ) : isProcessing ? (
           <ExtractedText text={text} isProcessing={isProcessing} onTextEdit={onTextEdit} isEditable={isEditable} />
         ) : text ? (
-          smartView || <ExtractedText text={text} isProcessing={false} onTextEdit={onTextEdit} isEditable={isEditable} />
+          showWordConfidence && confidence?.per_word?.length ? (
+            <WordConfidenceView text={text} perWord={confidence.per_word} />
+          ) : (
+            smartView || <ExtractedText text={text} isProcessing={false} onTextEdit={onTextEdit} isEditable={isEditable} />
+          )
         ) : (
           <ExtractedText text={text} isProcessing={isProcessing} onTextEdit={onTextEdit} isEditable={isEditable} />
         )}
@@ -213,6 +231,53 @@ function TableView({ headers, rows }: { headers: string[]; rows: string[][] }) {
       </div>
     </div>
   )
+}
+
+function WordConfidenceView({
+  text,
+  perWord
+}: {
+  text: string
+  perWord: Array<{ word: string; confidence: number | null }>
+}) {
+  // Very simple sequential mapping: split by whitespace and consume confidences in order.
+  const tokens = text.split(/(\s+)/)
+  let idx = 0
+
+  return (
+    <div className="bg-gray-50 rounded-lg p-6 border border-gray-200" dir="auto">
+      <div className="text-sm font-semibold text-gray-800 mb-3">Word-level confidence</div>
+      <div className="leading-relaxed text-gray-900">
+        {tokens.map((tok, i) => {
+          if (!tok.trim()) return <span key={i}>{tok}</span>
+          const c = perWord[idx]?.confidence ?? null
+          idx += 1
+          const cls = confidenceClass(c)
+          const title = c === null ? 'confidence: —' : `confidence: ${Math.round(c * 100)}%`
+          return (
+            <span key={i} className={`px-0.5 rounded ${cls}`} title={title}>
+              {tok}
+            </span>
+          )
+        })}
+      </div>
+      <div className="mt-4 text-xs text-gray-600">
+        <span className="font-semibold">Legend:</span>{' '}
+        <span className="px-1 rounded bg-green-100 text-green-900">High</span>{' '}
+        <span className="px-1 rounded bg-yellow-100 text-yellow-900">Medium</span>{' '}
+        <span className="px-1 rounded bg-orange-100 text-orange-900">Low-Med</span>{' '}
+        <span className="px-1 rounded bg-red-100 text-red-900">Low</span>
+      </div>
+    </div>
+  )
+}
+
+function confidenceClass(c: number | null) {
+  if (c === null || c === undefined || Number.isNaN(c)) return 'bg-gray-100'
+  if (c >= 0.9) return 'bg-green-100'
+  if (c >= 0.75) return 'bg-yellow-100'
+  if (c >= 0.6) return 'bg-orange-100'
+  return 'bg-red-100'
 }
 
 

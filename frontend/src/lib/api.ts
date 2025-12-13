@@ -13,6 +13,7 @@ interface OCRResponse {
   extracted_text: string
   status: string
   error?: string
+  confidence?: OCRConfidence
 }
 
 export type ContentType =
@@ -78,6 +79,7 @@ export interface PDFPageResult {
   status: string
   error?: string
   page_image?: string  // Base64 encoded
+  confidence?: OCRConfidence
 }
 
 export interface PDFStreamMessage {
@@ -88,6 +90,23 @@ export interface PDFStreamMessage {
   extracted_text?: string
   error?: string
   page_image?: string
+  confidence?: OCRConfidence
+}
+
+export interface OCRConfidence {
+  overall_confidence: number
+  confidence_level: 'high' | 'medium' | 'low_medium' | 'low'
+  confidence_sources?: {
+    image_quality?: number | null
+    token_logits?: number | null
+    text_quality?: number | null
+  }
+  image_quality?: any
+  text_quality?: any
+  per_word?: Array<{ word: string; confidence: number | null }>
+  per_line?: Array<any>
+  warnings?: string[]
+  recommendations?: string[]
 }
 
 export async function processOCR(
@@ -228,7 +247,8 @@ export async function processPDFOCR(
                 extracted_text: message.extracted_text || '',
                 status: message.status || 'error',
                 error: message.error,
-                page_image: message.page_image
+                page_image: message.page_image,
+                confidence: message.confidence
               }
               onPageComplete(pageResult)
             } else if (message.type === 'error') {

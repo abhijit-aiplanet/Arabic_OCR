@@ -173,7 +173,12 @@ export default function PDFProcessor({
             
             <div className="min-h-[400px]">
               {currentResult.status === 'success' ? (
-                <UniversalRenderer text={currentResult.extracted_text} isProcessing={false} isEditable={false} />
+                <UniversalRenderer
+                  text={currentResult.extracted_text}
+                  isProcessing={false}
+                  isEditable={false}
+                  confidence={currentResult.confidence || null}
+                />
               ) : (
                 <div className="border border-gray-300 rounded-lg bg-white p-4 min-h-[400px] max-h-[600px] overflow-y-auto text-red-600">
                   <p className="font-semibold">Error processing this page:</p>

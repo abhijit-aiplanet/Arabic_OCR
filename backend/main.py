@@ -13,6 +13,7 @@ import os
 from PIL import Image
 import io
 import base64
+import numpy as np
 from dotenv import load_dotenv
 import traceback
 import asyncio
@@ -293,6 +294,7 @@ class OCRResponse(BaseModel):
     extracted_text: str
     status: str
     error: Optional[str] = None
+    confidence: Optional[Dict[str, Any]] = None
 
 
 class PDFPageResult(BaseModel):
@@ -302,6 +304,7 @@ class PDFPageResult(BaseModel):
     status: str
     error: Optional[str] = None
     page_image: Optional[str] = None  # Base64 encoded image
+    confidence: Optional[Dict[str, Any]] = None
 
 
 class PDFOCRResponse(BaseModel):
@@ -338,6 +341,283 @@ class OCRHistoryResponse(BaseModel):
 
 
 class UpdateHistoryRequest(BaseModel):
+def analyze_image_quality(image: Image.Image) -> Dict[str, Any]:
+    """
+    Simple, fast image quality analysis (no heavy CV deps).
+    Returns per-factor scores in [0,1] and a pre_ocr_confidence.
+    """
+    try:
+        gray = np.array(image.convert("L"), dtype=np.float32)
+        h, w = gray.shape[:2]
+        pixels = int(w * h)
+
+        # Sharpness: Laplacian variance (simple kernel)
+        lap = (
+            -4 * gray
+            + np.roll(gray, 1, axis=0)
+            + np.roll(gray, -1, axis=0)
+            + np.roll(gray, 1, axis=1)
+            + np.roll(gray, -1, axis=1)
+        )
+        sharpness_var = float(np.var(lap))
+        sharpness = float(min(sharpness_var / 500.0, 1.0))  # 500+ ~ excellent
+
+        # Contrast: stddev
+        contrast_std = float(np.std(gray))
+        contrast = float(min(contrast_std / 80.0, 1.0))
+
+        # Brightness: mean (prefer 100-180)
+        brightness_avg = float(np.mean(gray))
+        if brightness_avg < 100:
+            brightness = float(max(brightness_avg / 100.0, 0.0))
+        elif brightness_avg > 180:
+            brightness = float(max(1.0 - ((brightness_avg - 180.0) / 75.0), 0.0))
+        else:
+            brightness = 1.0
+        brightness = float(min(max(brightness, 0.0), 1.0))
+
+        # Resolution adequacy
+        if pixels < 500_000:
+            resolution = pixels / 500_000.0
+        elif pixels < 1_000_000:
+            resolution = 0.8 + (pixels - 500_000) / 500_000.0 * 0.2
+        else:
+            resolution = 1.0
+        resolution = float(min(max(resolution, 0.0), 1.0))
+
+        # Noise estimate: std of (gray - blurred(gray))
+        blurred = (
+            gray
+            + np.roll(gray, 1, axis=0)
+            + np.roll(gray, -1, axis=0)
+            + np.roll(gray, 1, axis=1)
+            + np.roll(gray, -1, axis=1)
+        ) / 5.0
+        noise_level = float(np.std(gray - blurred))
+        # Lower is better; 0-10 is good, 20+ bad
+        noise = float(1.0 - min(noise_level / 20.0, 1.0))
+
+        factors = {
+            "sharpness": sharpness,
+            "contrast": contrast,
+            "brightness": brightness,
+            "resolution": resolution,
+            "noise": noise,
+            "raw": {
+                "sharpness_var": sharpness_var,
+                "contrast_std": contrast_std,
+                "brightness_avg": brightness_avg,
+                "pixels": pixels,
+                "noise_level": noise_level,
+            },
+        }
+
+        pre = (
+            sharpness * 0.25
+            + contrast * 0.25
+            + brightness * 0.20
+            + resolution * 0.15
+            + noise * 0.15
+        )
+        pre = float(min(max(pre, 0.0), 1.0))
+
+        warnings: List[str] = []
+        if sharpness < 0.4:
+            warnings.append("Low sharpness detected (blurry image)")
+        if contrast < 0.4:
+            warnings.append("Low contrast detected (faded text/background)")
+        if brightness < 0.5:
+            warnings.append("Suboptimal brightness detected (too dark/too bright)")
+        if resolution < 0.6:
+            warnings.append("Low resolution detected (small text may be missed)")
+        if noise < 0.5:
+            warnings.append("High noise detected (scan artifacts or compression)")
+
+        recommendation = (
+            "excellent" if pre >= 0.85 else
+            "good" if pre >= 0.7 else
+            "fair" if pre >= 0.5 else
+            "poor"
+        )
+
+        return {
+            "pre_ocr_confidence": pre,
+            "quality_factors": {k: v for k, v in factors.items() if k != "raw"},
+            "raw_metrics": factors["raw"],
+            "recommendation": recommendation,
+            "warnings": warnings,
+        }
+    except Exception as e:
+        print(f"⚠️ Image quality analysis failed: {str(e)}")
+        traceback.print_exc()
+        return {
+            "pre_ocr_confidence": None,
+            "quality_factors": {},
+            "raw_metrics": {},
+            "recommendation": "unknown",
+            "warnings": ["Image quality analysis failed"],
+        }
+
+
+def analyze_text_quality(text: str) -> Dict[str, Any]:
+    """Heuristic text quality analysis for Arabic OCR output."""
+    t = (text or "").strip()
+    if not t:
+        return {
+            "text_quality_confidence": 0.0,
+            "quality_factors": {},
+            "warnings": ["Empty text"],
+            "validation_passed": False,
+        }
+
+    length = len(t)
+    # 1) length score
+    if length < 10:
+        length_score = 0.2
+    elif length < 50:
+        length_score = 0.2 + (length - 10) / 40.0 * 0.5
+    elif length <= 5000:
+        length_score = 1.0
+    else:
+        length_score = 0.9
+
+    # 2) arabic ratio
+    arabic_chars = sum(1 for c in t if "\u0600" <= c <= "\u06FF")
+    arabic_ratio = arabic_chars / max(length, 1)
+    if arabic_ratio > 0.9:
+        arabic_score = 1.0
+    elif arabic_ratio > 0.7:
+        arabic_score = 0.8
+    elif arabic_ratio > 0.5:
+        arabic_score = 0.6
+    else:
+        arabic_score = 0.3
+
+    # 3) special chars ratio
+    special_chars = sum(1 for c in t if (not c.isalnum()) and (not c.isspace()))
+    special_ratio = special_chars / max(length, 1)
+    if special_ratio <= 0.15:
+        special_score = 1.0
+    elif special_ratio <= 0.30:
+        special_score = 0.7
+    elif special_ratio <= 0.50:
+        special_score = 0.4
+    else:
+        special_score = 0.1
+
+    # 4) repetition/uniqueness
+    words = [w for w in t.split() if w.strip()]
+    unique_ratio = (len(set(words)) / len(words)) if words else 0.0
+    if unique_ratio > 0.7:
+        unique_score = 1.0
+    elif unique_ratio > 0.5:
+        unique_score = 0.8
+    elif unique_ratio > 0.3:
+        unique_score = 0.5
+    else:
+        unique_score = 0.2
+
+    # 5) structure
+    lines = [ln for ln in t.split("\n") if ln.strip()]
+    if len(lines) >= 3:
+        structure_score = 1.0
+    elif len(lines) == 2:
+        structure_score = 0.8
+    elif len(lines) == 1:
+        structure_score = 0.6
+    else:
+        structure_score = 0.4
+
+    # 6) simple Arabic pattern presence (very lightweight)
+    common_tokens = ["ال", "في", "من", "على", "إلى", "و", "هذا", "هذه"]
+    common_hits = sum(1 for tok in common_tokens if tok in t)
+    linguistic_score = 1.0 if common_hits >= 3 else 0.7 if common_hits == 2 else 0.4 if common_hits == 1 else 0.2
+
+    score = (
+        float(length_score) * 0.15
+        + float(arabic_score) * 0.30
+        + float(special_score) * 0.15
+        + float(unique_score) * 0.15
+        + float(structure_score) * 0.10
+        + float(linguistic_score) * 0.15
+    )
+    score = float(min(max(score, 0.0), 1.0))
+
+    warnings: List[str] = []
+    if length < 10:
+        warnings.append("Very short text (possible OCR failure)")
+    if arabic_ratio < 0.5:
+        warnings.append("Low Arabic character ratio (possible noise or wrong extraction)")
+    if special_ratio > 0.3:
+        warnings.append("High special-character density (possible OCR artifacts)")
+    if unique_ratio < 0.3 and len(words) >= 10:
+        warnings.append("High repetition detected (possible generation loop)")
+
+    return {
+        "text_quality_confidence": score,
+        "quality_factors": {
+            "length_score": float(length_score),
+            "arabic_ratio": float(arabic_ratio),
+            "special_chars": float(special_score),
+            "uniqueness": float(unique_ratio),
+            "structure": float(structure_score),
+            "linguistic_patterns": float(linguistic_score),
+        },
+        "warnings": warnings,
+        "validation_passed": score >= 0.5,
+    }
+
+
+def calculate_final_confidence(
+    image_quality: Dict[str, Any],
+    token_confidence: Optional[Dict[str, Any]],
+    text_quality: Dict[str, Any],
+) -> Dict[str, Any]:
+    image_conf = image_quality.get("pre_ocr_confidence")
+    token_conf = (token_confidence or {}).get("overall_token_confidence")
+    text_conf = text_quality.get("text_quality_confidence")
+
+    # Weighted combination (fallback if token_conf missing)
+    if token_conf is None:
+        # Reweight image/text to sum=1.0
+        overall = (float(image_conf or 0.0) * 0.4) + (float(text_conf or 0.0) * 0.6)
+        sources = {"image_quality": image_conf, "token_logits": None, "text_quality": text_conf}
+    else:
+        overall = (float(image_conf or 0.0) * 0.20) + (float(token_conf) * 0.50) + (float(text_conf or 0.0) * 0.30)
+        sources = {"image_quality": image_conf, "token_logits": token_conf, "text_quality": text_conf}
+
+    overall = float(min(max(overall, 0.0), 1.0))
+    level = "high" if overall >= 0.9 else "medium" if overall >= 0.75 else "low_medium" if overall >= 0.6 else "low"
+
+    # Pass through word confidences if present
+    per_word = (token_confidence or {}).get("word_confidences") or []
+    # Basic per-line (optional later): keep empty for now
+    per_line = (token_confidence or {}).get("line_confidences") or []
+
+    recommendations: List[str] = []
+    if level in ["high"]:
+        recommendations.append("Overall quality looks excellent")
+    elif level in ["medium"]:
+        recommendations.append("Good quality; minor review recommended")
+    else:
+        recommendations.append("Low confidence; please review carefully")
+
+    warnings = []
+    warnings.extend(image_quality.get("warnings") or [])
+    warnings.extend(text_quality.get("warnings") or [])
+
+    return {
+        "overall_confidence": overall,
+        "confidence_level": level,
+        "confidence_sources": sources,
+        "image_quality": image_quality,
+        "text_quality": text_quality,
+        "per_word": per_word,
+        "per_line": per_line,
+        "warnings": warnings,
+        "recommendations": recommendations,
+    }
+
     """Request model for updating OCR history"""
     edited_text: str
 
@@ -755,6 +1035,8 @@ async def process_ocr(
                 status_code=400,
                 detail=f"Invalid image file: {str(e)}"
             )
+
+        image_quality = analyze_image_quality(image)
         
         # Store file to Vercel Blob (async, non-blocking)
         storage_result = await store_file_to_blob(
@@ -856,11 +1138,16 @@ async def process_ocr(
             # Extract text from response
             # RunPod response format: {"output": {"text": "extracted text"}, "status": "COMPLETED"}
             if result.get("status") == "COMPLETED":
-                extracted_text = result.get("output", {}).get("text", "")
+                output = result.get("output", {}) or {}
+                extracted_text = output.get("text", "")
+                token_confidence = output.get("token_confidence")
                 print(f"✅ Extracted text from output: {extracted_text[:100]}...")
                 
                 if not extracted_text:
                     extracted_text = "No text extracted from image"
+
+                text_quality = analyze_text_quality(extracted_text)
+                confidence = calculate_final_confidence(image_quality, token_confidence, text_quality)
                 
                 # Save to history
                 processing_time = time.time() - start_time
@@ -878,14 +1165,16 @@ async def process_ocr(
                         "max_new_tokens": max_new_tokens,
                         "min_pixels": min_pixels,
                         "max_pixels": max_pixels,
-                        "custom_prompt": custom_prompt if custom_prompt else None
+                        "custom_prompt": custom_prompt if custom_prompt else None,
+                        "confidence": confidence
                     },
                     blob_url=storage_url
                 )
                 
                 return OCRResponse(
                     extracted_text=extracted_text,
-                    status="success"
+                    status="success",
+                    confidence=confidence
                 )
             else:
                 error_msg = result.get("error", "Unknown error from model service")
@@ -915,7 +1204,8 @@ async def process_ocr(
                 return OCRResponse(
                     extracted_text="",
                     status="error",
-                    error=error_msg
+                    error=error_msg,
+                    confidence=None
                 )
                 
     except HTTPException:
@@ -1014,6 +1304,9 @@ async def process_pdf_ocr(
                         buffered_ocr = io.BytesIO()
                         img.save(buffered_ocr, format="PNG")
                         img_base64 = base64.b64encode(buffered_ocr.getvalue()).decode('utf-8')
+
+                        # Pre-OCR image quality (per page)
+                        page_image_quality = analyze_image_quality(img)
                         
                         # Prepare request payload for RunPod
                         prompt = custom_prompt if custom_prompt and custom_prompt.strip() else DEFAULT_OCR_PROMPT
@@ -1097,10 +1390,15 @@ async def process_pdf_ocr(
                             
                             # Extract text from response
                             if result.get("status") == "COMPLETED":
-                                extracted_text = result.get("output", {}).get("text", "")
+                                output = result.get("output", {}) or {}
+                                extracted_text = output.get("text", "")
+                                token_confidence = output.get("token_confidence")
                                 
                                 if not extracted_text:
                                     extracted_text = "No text extracted from this page"
+
+                                text_quality = analyze_text_quality(extracted_text)
+                                confidence = calculate_final_confidence(page_image_quality, token_confidence, text_quality)
                                 
                                 # Yield success result
                                 yield json.dumps({
@@ -1108,7 +1406,8 @@ async def process_pdf_ocr(
                                     "page_number": page_num + 1,
                                     "status": "success",
                                     "extracted_text": extracted_text,
-                                    "page_image": page_image_base64
+                                    "page_image": page_image_base64,
+                                    "confidence": confidence
                                 }) + "\n"
                             else:
                                 yield json.dumps({
@@ -1116,7 +1415,8 @@ async def process_pdf_ocr(
                                     "page_number": page_num + 1,
                                     "status": "error",
                                     "error": result.get("error", "Unknown error from model service"),
-                                    "page_image": page_image_base64
+                                    "page_image": page_image_base64,
+                                    "confidence": None
                                 }) + "\n"
                     
                     except Exception as e:

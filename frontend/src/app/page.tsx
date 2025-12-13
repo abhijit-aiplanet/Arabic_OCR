@@ -8,7 +8,7 @@ import AdvancedSettings from '@/components/AdvancedSettings'
 import OCRHistory from '@/components/OCRHistory'
 import TemplateSelector from '@/components/TemplateSelector'
 import UniversalRenderer from '@/components/UniversalRenderer'
-import { processOCR, processPDFOCR, PDFPageResult, updateHistoryText, type ContentType, type OCRTemplate } from '@/lib/api'
+import { processOCR, processPDFOCR, PDFPageResult, updateHistoryText, type ContentType, type OCRTemplate, type OCRConfidence } from '@/lib/api'
 import { getEffectivePrompt } from '@/lib/promptGenerator'
 import toast from 'react-hot-toast'
 import { FileText, Sparkles, Lock, History, X } from 'lucide-react'
@@ -26,6 +26,7 @@ export default function Home() {
   const [selectedImage, setSelectedImage] = useState<File | null>(null)
   const [imagePreview, setImagePreview] = useState<string | null>(null)
   const [extractedText, setExtractedText] = useState<string>('')
+  const [extractedConfidence, setExtractedConfidence] = useState<OCRConfidence | null>(null)
   const [isProcessing, setIsProcessing] = useState(false)
   const [settings, setSettings] = useState<OCRSettings>({
     customPrompt: '',
@@ -94,6 +95,7 @@ export default function Home() {
     
     // Clear previous results
     setExtractedText('')
+    setExtractedConfidence(null)
     setPdfResults([])
     setPdfTotalPages(0)
     setPdfProcessedCount(0)
@@ -167,6 +169,7 @@ export default function Home() {
         
         if (result.status === 'success') {
           setExtractedText(result.extracted_text)
+          setExtractedConfidence(result.confidence || null)
           // Note: We'll get history ID from backend response once we add it
           // For now, clear it so user can edit after processing
           setCurrentHistoryId(null)
@@ -189,6 +192,7 @@ export default function Home() {
     setSelectedImage(null)
     setImagePreview(null)
     setExtractedText('')
+    setExtractedConfidence(null)
     setIsPDF(false)
     setPdfResults([])
     setPdfTotalPages(0)
@@ -404,6 +408,7 @@ export default function Home() {
                 onTextEdit={handleLiveTextEdit}
                 isEditable={true}
                 preferredType={contentTypeOverride}
+                confidence={extractedConfidence}
               />
             </div>
           </div>

@@ -329,13 +329,102 @@ def preprocess_image(image: Image.Image) -> Image.Image:
         return image
 
 
+def _compute_token_confidences(
+    generated_ids_trimmed: torch.Tensor,
+    scores: list,
+    tokenizer
+) -> dict:
+    """
+    Compute per-token confidence for generated tokens using model output scores.
+
+    Args:
+        generated_ids_trimmed: Tensor [1, T] of generated token ids (new tokens only)
+        scores: list[T] of logits tensors [1, vocab] from generate(output_scores=True)
+        tokenizer: tokenizer to decode token pieces
+
+    Returns:
+        dict with overall_token_confidence, token_confidences, word_confidences, line_confidences
+    """
+    try:
+        token_ids = generated_ids_trimmed[0].tolist() if generated_ids_trimmed is not None else []
+        token_confidences: list[float] = []
+
+        if not scores or not token_ids:
+            return {
+                "overall_token_confidence": None,
+                "token_confidences": [],
+                "word_confidences": [],
+                "line_confidences": [],
+            }
+
+        # scores length should match number of generated tokens
+        steps = min(len(scores), len(token_ids))
+        for i in range(steps):
+            logits = scores[i]  # [1, vocab]
+            tid = token_ids[i]
+            probs = torch.softmax(logits, dim=-1)
+            p = float(probs[0, tid].detach().cpu().item())
+            token_confidences.append(p)
+
+        overall = float(np.mean(token_confidences)) if token_confidences else None
+
+        # Best-effort word confidence: group token pieces by whitespace boundaries
+        word_confidences: list[dict] = []
+        current_word = ""
+        current_scores: list[float] = []
+
+        def flush_word():
+            nonlocal current_word, current_scores
+            w = current_word.strip()
+            if w:
+                word_confidences.append(
+                    {
+                        "word": w,
+                        "confidence": float(np.mean(current_scores)) if current_scores else None,
+                    }
+                )
+            current_word = ""
+            current_scores = []
+
+        for tid, conf in zip(token_ids[:steps], token_confidences[:steps]):
+            piece = tokenizer.decode([tid], skip_special_tokens=True, clean_up_tokenization_spaces=False)
+            if piece is None:
+                piece = ""
+
+            # Start a new word when piece begins with whitespace and we already have content
+            if current_word and piece[:1].isspace():
+                flush_word()
+            current_word += piece
+            current_scores.append(conf)
+
+        flush_word()
+
+        # Best-effort line confidence: average word confidences across lines by sequential assignment
+        line_confidences: list[dict] = []
+        return {
+            "overall_token_confidence": overall,
+            "token_confidences": token_confidences,
+            "word_confidences": word_confidences,
+            "line_confidences": line_confidences,
+        }
+    except Exception as e:
+        print(f"⚠️ Failed to compute token confidences: {str(e)}")
+        traceback.print_exc()
+        return {
+            "overall_token_confidence": None,
+            "token_confidences": [],
+            "word_confidences": [],
+            "line_confidences": [],
+        }
+
+
 def extract_text_from_image(
     image: Image.Image,
     prompt: str,
     max_new_tokens: int = DEFAULT_MAX_TOKENS,
     min_pixels: int = MIN_PIXELS,
     max_pixels: int = MAX_PIXELS
-) -> str:
+) -> dict:
     """
     Extract text from image using Arabic VLM model.
     
@@ -347,7 +436,7 @@ def extract_text_from_image(
         max_pixels: Maximum image resolution
         
     Returns:
-        Extracted text as string
+        dict: {"text": str, "token_confidence": {...}}
     """
     try:
         if model is None or processor is None:
@@ -410,7 +499,7 @@ def extract_text_from_image(
         print(f"🔧 Token IDs - EOS: {eos_token_id}, PAD: {pad_token_id}")
         
         with torch.no_grad():
-            generated_ids = model.generate(
+            generation = model.generate(
                 **inputs,
                 max_new_tokens=max_new_tokens,
                 do_sample=False,  # Pure greedy decoding - deterministic
@@ -418,7 +507,10 @@ def extract_text_from_image(
                 no_repeat_ngram_size=4,  # Block 4-grams (was 3, now more flexible)
                 pad_token_id=pad_token_id,
                 eos_token_id=eos_token_id,
+                return_dict_in_generate=True,
+                output_scores=True,
             )
+            generated_ids = generation.sequences
         
         # Decode output
         generated_ids_trimmed = [
@@ -454,10 +546,26 @@ def extract_text_from_image(
             print("   - Model couldn't extract text from complex layout")
             print("   - Image quality issues")
             print("   - Model needs more tokens to generate properly")
-            return "No text extracted"
+            return {
+                "text": "No text extracted",
+                "token_confidence": {
+                    "overall_token_confidence": None,
+                    "token_confidences": [],
+                    "word_confidences": [],
+                    "line_confidences": [],
+                },
+            }
         
         print(f"✅ Successfully extracted {len(result)} characters")
-        return result
+        token_conf = _compute_token_confidences(
+            generated_ids_trimmed[0] if isinstance(generated_ids_trimmed, list) else generated_ids_trimmed,
+            generation.scores if hasattr(generation, "scores") else [],
+            processor.tokenizer,
+        )
+        return {
+            "text": result,
+            "token_confidence": token_conf,
+        }
         
     except Exception as e:
         error_msg = f"Error during text extraction: {str(e)}"
@@ -522,19 +630,23 @@ def handler(job):
         
         # Process OCR
         print(f"📝 Processing OCR with prompt length: {len(prompt)}")
-        extracted_text = extract_text_from_image(
+        extracted = extract_text_from_image(
             image=image,
             prompt=prompt,
             max_new_tokens=max_new_tokens,
             min_pixels=min_pixels,
             max_pixels=max_pixels
         )
-        
+
+        extracted_text = extracted.get("text", "") if isinstance(extracted, dict) else str(extracted)
+        token_confidence = extracted.get("token_confidence") if isinstance(extracted, dict) else None
+
         print(f"✅ Extracted text length: {len(extracted_text)}")
         print(f"📤 Returning: {extracted_text[:100]}...")
         
         result = {
             "text": extracted_text,
+            "token_confidence": token_confidence,
             "status": "success"
         }
         print(f"📦 Full result: {result}")
