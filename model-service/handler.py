@@ -14,6 +14,8 @@ import traceback
 import io
 import base64
 import numpy as np
+import cv2
+from scipy import ndimage
 
 # Model configuration
 MODEL_ID = "MBZUAI/AIN"
@@ -161,8 +163,8 @@ def _clean_repetition_loops(text: str, max_repeats: int = 5) -> str:
 
 def preprocess_image(image: Image.Image) -> Image.Image:
     """
-    OPTIMIZED preprocessing for Arabic OCR - smaller, cleaner, easier for model.
-    Focuses on making images lightweight and high-contrast for better text extraction.
+    ENHANCED preprocessing for Arabic OCR with VLM best practices.
+    Uses CLAHE, proper Laplacian detection, gamma correction, and adaptive techniques.
     
     Args:
         image: PIL Image to preprocess
@@ -178,79 +180,143 @@ def preprocess_image(image: Image.Image) -> Image.Image:
         if image.mode not in ('RGB', 'L'):
             image = image.convert('RGB')
             print(f"✓ Converted to RGB")
+        elif image.mode == 'L':
+            image = image.convert('RGB')
+            print(f"✓ Converted grayscale to RGB")
         
-        # 1. SMART RESIZING - More aggressive but quality-preserving
-        # Target 1600px max (down from 2048) - still excellent for OCR, but 40% fewer pixels
+        # 1. AUTO-DESKEWING - Correct rotated documents
+        img_array = np.array(image)
+        gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+        
+        # Detect rotation using edge detection and Hough transform
+        edges = cv2.Canny(gray, 50, 150, apertureSize=3)
+        lines = cv2.HoughLines(edges, 1, np.pi/180, 200)
+        
+        if lines is not None and len(lines) > 10:
+            # Calculate dominant angle
+            angles = []
+            for rho, theta in lines[:, 0]:
+                angle = (theta * 180 / np.pi) - 90
+                # Filter out extreme angles
+                if -45 < angle < 45:
+                    angles.append(angle)
+            
+            if angles:
+                median_angle = np.median(angles)
+                
+                # Only rotate if angle > 2 degrees (avoid unnecessary rotation)
+                if abs(median_angle) > 2:
+                    print(f"✓ Rotation detected: {median_angle:.2f}°, correcting...")
+                    image = image.rotate(median_angle, resample=Image.BICUBIC, expand=True, fillcolor='white')
+                    img_array = np.array(image)
+                    gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+                else:
+                    print(f"✓ Image alignment good ({median_angle:.2f}°), no rotation needed")
+        else:
+            print(f"✓ Could not detect rotation (insufficient edges), skipping deskew")
+        
+        # 2. SMART RESIZING - Do this early to speed up subsequent operations
         max_dimension = 1600
         width, height = image.size
         
-        # Always resize if larger than target, even slightly
         if width > max_dimension or height > max_dimension:
             scale = max_dimension / max(width, height)
             new_width = int(width * scale)
             new_height = int(height * scale)
             
-            # Use LANCZOS for high-quality downscaling (preserves text clarity)
+            # Use LANCZOS for high-quality downscaling
             image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
             print(f"✓ Resized: {image.size[0]}x{image.size[1]} (was {width}x{height})")
+            
+            # Update arrays after resize
+            img_array = np.array(image)
+            gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
         
-        # 2. ADAPTIVE CONTRAST - Stronger for low-contrast images
-        # Calculate image contrast level
-        import numpy as np
-        img_array = np.array(image.convert('L'))  # Temporary grayscale for analysis
-        contrast_std = img_array.std()
+        # 3. CLAHE CONTRAST ENHANCEMENT - Better than simple contrast
+        # Convert to LAB color space for better contrast enhancement
+        img_lab = cv2.cvtColor(img_array, cv2.COLOR_RGB2LAB)
+        l, a, b = cv2.split(img_lab)
         
-        # Adaptive contrast enhancement based on image quality
-        if contrast_std < 40:  # Low contrast image
-            contrast_factor = 1.4  # Strong enhancement
-            print(f"✓ Low contrast detected (std={contrast_std:.1f}), applying strong enhancement")
+        # Calculate contrast level to determine CLAHE parameters
+        contrast_std = gray.std()
+        
+        if contrast_std < 40:  # Low contrast
+            clip_limit = 3.0
+            tile_size = (8, 8)
+            print(f"✓ Low contrast detected (std={contrast_std:.1f}), applying strong CLAHE")
         elif contrast_std < 60:  # Medium contrast
-            contrast_factor = 1.25  # Moderate enhancement
-            print(f"✓ Medium contrast detected (std={contrast_std:.1f}), applying moderate enhancement")
+            clip_limit = 2.5
+            tile_size = (8, 8)
+            print(f"✓ Medium contrast detected (std={contrast_std:.1f}), applying moderate CLAHE")
         else:  # Good contrast
-            contrast_factor = 1.15  # Mild enhancement
-            print(f"✓ Good contrast detected (std={contrast_std:.1f}), applying mild enhancement")
+            clip_limit = 2.0
+            tile_size = (8, 8)
+            print(f"✓ Good contrast detected (std={contrast_std:.1f}), applying mild CLAHE")
         
-        enhancer = ImageEnhance.Contrast(image)
-        image = enhancer.enhance(contrast_factor)
+        # Apply CLAHE to L channel only
+        clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_size)
+        l_clahe = clahe.apply(l)
         
-        # 3. ADAPTIVE SHARPNESS - Helps with blurry text
-        # Check for blur using Laplacian variance
-        laplacian_var = img_array.var()
+        # Merge back and convert to RGB
+        img_clahe = cv2.merge([l_clahe, a, b])
+        img_rgb = cv2.cvtColor(img_clahe, cv2.COLOR_LAB2RGB)
+        image = Image.fromarray(img_rgb)
         
-        if laplacian_var < 100:  # Blurry image
-            sharpness_factor = 1.5  # Strong sharpening
-            print(f"✓ Blur detected (var={laplacian_var:.1f}), applying strong sharpening")
-        elif laplacian_var < 300:  # Slightly blurry
-            sharpness_factor = 1.3  # Moderate sharpening
-            print(f"✓ Slight blur detected (var={laplacian_var:.1f}), applying moderate sharpening")
-        else:  # Sharp image
-            sharpness_factor = 1.1  # Minimal sharpening
-            print(f"✓ Sharp image (var={laplacian_var:.1f}), applying minimal sharpening")
-        
-        enhancer = ImageEnhance.Sharpness(image)
-        image = enhancer.enhance(sharpness_factor)
-        
-        # 4. SUBTLE BRIGHTNESS NORMALIZATION (helps with dark/light images)
-        # Calculate average brightness
-        brightness_avg = img_array.mean()
+        # 4. GAMMA CORRECTION - Better than linear brightness adjustment
+        img_array = np.array(image)
+        gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+        brightness_avg = gray.mean()
         
         if brightness_avg < 100:  # Dark image
-            brightness_factor = 1.2
-            print(f"✓ Dark image detected (avg={brightness_avg:.1f}), brightening")
-            enhancer = ImageEnhance.Brightness(image)
-            image = enhancer.enhance(brightness_factor)
-        elif brightness_avg > 180:  # Very bright image
-            brightness_factor = 0.9
-            print(f"✓ Bright image detected (avg={brightness_avg:.1f}), dimming slightly")
-            enhancer = ImageEnhance.Brightness(image)
-            image = enhancer.enhance(brightness_factor)
+            gamma = 0.8  # Brighten (gamma < 1)
+            print(f"✓ Dark image detected (avg={brightness_avg:.1f}), applying gamma correction (γ={gamma})")
+            
+            inv_gamma = 1.0 / gamma
+            table = np.array([((i / 255.0) ** inv_gamma) * 255 for i in range(256)]).astype("uint8")
+            img_array = cv2.LUT(img_array, table)
+            image = Image.fromarray(img_array)
+            
+        elif brightness_avg > 180:  # Bright image
+            gamma = 1.2  # Darken (gamma > 1)
+            print(f"✓ Bright image detected (avg={brightness_avg:.1f}), applying gamma correction (γ={gamma})")
+            
+            inv_gamma = 1.0 / gamma
+            table = np.array([((i / 255.0) ** inv_gamma) * 255 for i in range(256)]).astype("uint8")
+            img_array = cv2.LUT(img_array, table)
+            image = Image.fromarray(img_array)
         else:
-            print(f"✓ Good brightness (avg={brightness_avg:.1f}), no adjustment needed")
+            print(f"✓ Good brightness (avg={brightness_avg:.1f}), no gamma correction needed")
+        
+        # 5. PROPER SHARPNESS DETECTION using Laplacian
+        img_array = np.array(image)
+        gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+        
+        # Calculate Laplacian variance (proper edge-based blur detection)
+        laplacian = cv2.Laplacian(gray, cv2.CV_64F)
+        sharpness_score = laplacian.var()
+        
+        # 6. ADAPTIVE UNSHARP MASK - Better than simple sharpness enhancement
+        if sharpness_score < 50:  # Very blurry
+            radius = 2.0
+            percent = 150
+            threshold = 3
+            print(f"✓ Very blurry image detected (Laplacian var={sharpness_score:.1f}), strong unsharp mask")
+        elif sharpness_score < 200:  # Slightly blurry
+            radius = 1.5
+            percent = 120
+            threshold = 3
+            print(f"✓ Slightly blurry image detected (Laplacian var={sharpness_score:.1f}), moderate unsharp mask")
+        else:  # Sharp enough
+            radius = 0.5
+            percent = 80
+            threshold = 3
+            print(f"✓ Sharp image (Laplacian var={sharpness_score:.1f}), minimal unsharp mask")
+        
+        image = image.filter(ImageFilter.UnsharpMask(radius=radius, percent=percent, threshold=threshold))
         
         final_pixels = image.size[0] * image.size[1]
         reduction = ((original_pixels - final_pixels) / original_pixels) * 100 if original_pixels > final_pixels else 0
-        print(f"✅ Preprocessing complete: {image.size[0]}x{image.size[1]} ({reduction:.1f}% size reduction)")
+        print(f"✅ Enhanced preprocessing complete: {image.size[0]}x{image.size[1]} ({reduction:.1f}% size reduction)")
         print(f"📊 Final image stats: {final_pixels:,} pixels ({final_pixels/1000000:.2f}MP)")
         
         return image
