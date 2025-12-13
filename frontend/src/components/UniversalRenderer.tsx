@@ -155,12 +155,13 @@ function mostCommon(nums: number[]): number {
   for (const n of nums) m.set(n, (m.get(n) || 0) + 1)
   let best = nums[0] || 0
   let bestCount = 0
-  for (const [k, v] of m.entries()) {
+  // Avoid iterating MapIterator directly to keep compatibility with lower TS targets (Vercel builds)
+  m.forEach((v, k) => {
     if (v > bestCount) {
       best = k
       bestCount = v
     }
-  }
+  })
   return best
 }
 
