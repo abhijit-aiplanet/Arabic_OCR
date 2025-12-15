@@ -238,14 +238,20 @@ app = FastAPI(
 )
 
 # CORS middleware - Configure this properly for production
+# Important: do NOT include "*" while allow_credentials=True (browsers will block / omit headers).
+frontend_url_env = (os.getenv("FRONTEND_URL") or "").strip()
+allowed_origins = [
+    "http://localhost:3000",  # Local development
+    "https://arabic-ocr-frontend-beryl.vercel.app",  # Production frontend
+]
+if frontend_url_env and frontend_url_env != "*":
+    allowed_origins.append(frontend_url_env)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",  # Local development
-        "https://arabic-ocr-frontend-beryl.vercel.app",  # Production frontend
-        os.getenv("FRONTEND_URL", "*"),  # Additional frontend URL from env
-    ],
-    allow_credentials=True,
+    allow_origins=allowed_origins,
+    allow_origin_regex=r"https://arabic-ocr-frontend-.*\.vercel\.app",
+    allow_credentials=False,  # We use Bearer tokens, not cross-site cookies
     allow_methods=["*"],
     allow_headers=["*"],
 )

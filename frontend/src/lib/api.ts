@@ -310,11 +310,9 @@ export async function fetchTemplates(authToken: string | null): Promise<OCRTempl
     })
     return response.data
   } catch (error) {
-    if (axios.isAxiosError(error)) {
-      const message = (error.response?.data as any)?.detail || error.message
-      throw new Error(message)
-    }
-    throw error
+    // Templates are optional; fail open so the app doesn't look "down" due to templates.
+    console.warn('Failed to fetch user templates:', error)
+    return []
   }
 }
 
@@ -323,11 +321,9 @@ export async function fetchPublicTemplates(): Promise<OCRTemplate[]> {
     const response = await axios.get<OCRTemplate[]>(`${API_URL}/api/templates/public`)
     return response.data
   } catch (error) {
-    if (axios.isAxiosError(error)) {
-      const message = (error.response?.data as any)?.detail || error.message
-      throw new Error(message)
-    }
-    throw error
+    // Public templates are optional; fail open.
+    console.warn('Failed to fetch public templates:', error)
+    return []
   }
 }
 
