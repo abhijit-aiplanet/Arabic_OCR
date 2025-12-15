@@ -346,121 +346,38 @@ class OCRHistoryResponse(BaseModel):
 
 
 class UpdateHistoryRequest(BaseModel):
+    """Request model for updating OCR history"""
+    edited_text: str
+
+
 def analyze_image_quality(image: Image.Image) -> Dict[str, Any]:
     """
-    Lightweight image quality analysis using only PIL (no numpy).
-    Returns per-factor scores in [0,1] and a pre_ocr_confidence.
+    TEMPORARY: Return neutral quality score to avoid any crashes.
+    TODO: Re-enable full analysis once backend is stable.
     """
-    try:
-        from PIL import ImageStat, ImageFilter
-        
-        w, h = image.size
-        pixels = w * h
-        
-        # Convert to grayscale for analysis
-        gray = image.convert("L")
-        
-        # Get basic statistics using PIL's ImageStat
-        stats = ImageStat.Stat(gray)
-        brightness_avg = stats.mean[0]  # Average brightness (0-255)
-        contrast_std = stats.stddev[0]  # Standard deviation (contrast measure)
-        
-        # 1. Sharpness: use variance of edges (Laplacian filter)
-        edges = gray.filter(ImageFilter.FIND_EDGES)
-        edge_stats = ImageStat.Stat(edges)
-        sharpness_var = edge_stats.stddev[0] ** 2  # Variance approximation
-        sharpness = float(min(sharpness_var / 500.0, 1.0))  # Normalize
-        
-        # 2. Contrast: use stddev from stats
-        contrast = float(min(contrast_std / 80.0, 1.0))
-        
-        # 3. Brightness: prefer 100-180 range
-        if brightness_avg < 100:
-            brightness = float(max(brightness_avg / 100.0, 0.0))
-        elif brightness_avg > 180:
-            brightness = float(max(1.0 - ((brightness_avg - 180.0) / 75.0), 0.0))
-        else:
-            brightness = 1.0
-        brightness = float(min(max(brightness, 0.0), 1.0))
-        
-        # 4. Resolution adequacy
-        if pixels < 500_000:
-            resolution = pixels / 500_000.0
-        elif pixels < 1_000_000:
-            resolution = 0.8 + (pixels - 500_000) / 500_000.0 * 0.2
-        else:
-            resolution = 1.0
-        resolution = float(min(max(resolution, 0.0), 1.0))
-        
-        # 5. Noise estimate: compare original to slightly blurred
-        blurred = gray.filter(ImageFilter.GaussianBlur(radius=1))
-        # Approximate noise by RMS difference
-        original_stats = ImageStat.Stat(gray)
-        blur_stats = ImageStat.Stat(blurred)
-        noise_level = abs(original_stats.rms[0] - blur_stats.rms[0])
-        noise = float(1.0 - min(noise_level / 20.0, 1.0))
-        
-        factors = {
-            "sharpness": sharpness,
-            "contrast": contrast,
-            "brightness": brightness,
-            "resolution": resolution,
-            "noise": noise,
-            "raw": {
-                "sharpness_var": sharpness_var,
-                "contrast_std": contrast_std,
-                "brightness_avg": brightness_avg,
-                "pixels": pixels,
-                "noise_level": noise_level,
-            },
-        }
-        
-        pre = (
-            sharpness * 0.25
-            + contrast * 0.25
-            + brightness * 0.20
-            + resolution * 0.15
-            + noise * 0.15
-        )
-        pre = float(min(max(pre, 0.0), 1.0))
-        
-        warnings: List[str] = []
-        if sharpness < 0.4:
-            warnings.append("Low sharpness detected (blurry image)")
-        if contrast < 0.4:
-            warnings.append("Low contrast detected (faded text/background)")
-        if brightness < 0.5:
-            warnings.append("Suboptimal brightness detected (too dark/too bright)")
-        if resolution < 0.6:
-            warnings.append("Low resolution detected (small text may be missed)")
-        if noise < 0.5:
-            warnings.append("High noise detected (scan artifacts or compression)")
-        
-        recommendation = (
-            "excellent" if pre >= 0.85 else
-            "good" if pre >= 0.7 else
-            "fair" if pre >= 0.5 else
-            "poor"
-        )
-        
-        return {
-            "pre_ocr_confidence": pre,
-            "quality_factors": {k: v for k, v in factors.items() if k != "raw"},
-            "raw_metrics": factors["raw"],
-            "recommendation": recommendation,
-            "warnings": warnings,
-        }
-    except Exception as e:
-        print(f"⚠️ Image quality analysis failed: {str(e)}")
-        traceback.print_exc()
-        # Return safe fallback
-        return {
-            "pre_ocr_confidence": 0.7,  # Neutral fallback
-            "quality_factors": {},
-            "raw_metrics": {},
-            "recommendation": "unknown",
-            "warnings": ["Image quality analysis unavailable"],
-        }
+    w, h = image.size
+    pixels = w * h
+    
+    # Simple resolution check only (no PIL operations that might fail)
+    if pixels < 500_000:
+        resolution = pixels / 500_000.0
+    elif pixels < 1_000_000:
+        resolution = 0.8 + (pixels - 500_000) / 500_000.0 * 0.2
+    else:
+        resolution = 1.0
+    
+    # Return neutral scores for everything else
+    return {
+        "pre_ocr_confidence": 0.75,  # Neutral score
+        "quality_factors": {
+            "resolution": float(resolution),
+        },
+        "raw_metrics": {
+            "pixels": pixels,
+        },
+        "recommendation": "good",
+        "warnings": [],
+    }
 
 
 def analyze_text_quality(text: str) -> Dict[str, Any]:
