@@ -357,13 +357,16 @@ export default function Home() {
               selectedFile={selectedImage}
             />
 
-              <TemplateSelector
-                authToken={authToken}
-                selectedTemplate={selectedTemplate}
-                onSelectTemplate={setSelectedTemplate}
-                contentTypeOverride={contentTypeOverride}
-                onContentTypeOverrideChange={setContentTypeOverride}
-              />
+              {/* Template Selector - TEMPORARILY HIDDEN */}
+              {false && (
+                <TemplateSelector
+                  authToken={authToken}
+                  selectedTemplate={selectedTemplate}
+                  onSelectTemplate={setSelectedTemplate}
+                  contentTypeOverride={contentTypeOverride}
+                  onContentTypeOverrideChange={setContentTypeOverride}
+                />
+              )}
 
               <AdvancedSettings
                 settings={settings}

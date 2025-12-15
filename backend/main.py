@@ -1062,12 +1062,19 @@ async def process_ocr(
                 output = result.get("output", {}) or {}
                 extracted_text = output.get("text", "")
                 token_confidence = output.get("token_confidence")
+                
+                # AGGRESSIVE DEBUG LOGGING
                 print(f"✅ Extracted text from output: {extracted_text[:100]}...")
-                print(f"🔍 DEBUG token_confidence received: {token_confidence is not None}")
+                print(f"🔍 DEBUG - Full output keys: {list(output.keys())}")
+                print(f"🔍 DEBUG - token_confidence received: {token_confidence is not None}")
+                print(f"🔍 DEBUG - token_confidence type: {type(token_confidence)}")
                 if token_confidence:
-                    print(f"   overall_token_confidence: {token_confidence.get('overall_token_confidence')}")
+                    print(f"   ✅ token_confidence keys: {list(token_confidence.keys()) if isinstance(token_confidence, dict) else 'NOT A DICT'}")
+                    print(f"   ✅ overall_token_confidence: {token_confidence.get('overall_token_confidence') if isinstance(token_confidence, dict) else 'N/A'}")
                 else:
-                    print(f"   ⚠️ token_confidence is None - RunPod may not be returning it!")
+                    print(f"   ❌ token_confidence is None/empty!")
+                    print(f"   ❌ This means RunPod is NOT returning token_confidence in the output")
+                    print(f"   ❌ Check RunPod logs - model service may have errors or old code deployed")
                 
                 if not extracted_text:
                     extracted_text = "No text extracted from image"
