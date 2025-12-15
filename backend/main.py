@@ -1057,12 +1057,17 @@ async def process_ocr(
                     )
             
             # Extract text from response
-            # RunPod response format: {"output": {"text": "extracted text"}, "status": "COMPLETED"}
+            # RunPod response format: {"output": {"text": "extracted text", "token_confidence": {...}}, "status": "COMPLETED"}
             if result.get("status") == "COMPLETED":
                 output = result.get("output", {}) or {}
                 extracted_text = output.get("text", "")
                 token_confidence = output.get("token_confidence")
                 print(f"✅ Extracted text from output: {extracted_text[:100]}...")
+                print(f"🔍 DEBUG token_confidence received: {token_confidence is not None}")
+                if token_confidence:
+                    print(f"   overall_token_confidence: {token_confidence.get('overall_token_confidence')}")
+                else:
+                    print(f"   ⚠️ token_confidence is None - RunPod may not be returning it!")
                 
                 if not extracted_text:
                     extracted_text = "No text extracted from image"
@@ -1311,9 +1316,10 @@ async def process_pdf_ocr(
                             
                             # Extract text from response
                             if result.get("status") == "COMPLETED":
-                                output = result.get("output", {}) or {}
-                                extracted_text = output.get("text", "")
-                                token_confidence = output.get("token_confidence")
+                                page_output = result.get("output", {}) or {}
+                                extracted_text = page_output.get("text", "")
+                                token_confidence = page_output.get("token_confidence")
+                                print(f"📄 Page {page_num+1} token_confidence: {token_confidence is not None}")
                                 
                                 if not extracted_text:
                                     extracted_text = "No text extracted from this page"

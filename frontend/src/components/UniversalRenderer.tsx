@@ -137,14 +137,50 @@ export default function UniversalRenderer({
 function tryParseLabelValue(text: string): { items: Array<{ label: string; value: string }> } | null {
   const lines = text.split('\n').map((l) => l.trim()).filter(Boolean)
   const items: Array<{ label: string; value: string }> = []
+  
+  let currentSection = ''
+  
   for (const line of lines) {
-    const m = line.match(/^(.+?):\s*(.*)$/)
-    if (m) {
-      const label = m[1].trim()
-      const value = (m[2] || '').trim()
-      if (label.length >= 1) items.push({ label, value })
+    // Pattern 1: label: value (traditional form field)
+    const labelValue = line.match(/^(.+?):\s*(.+)$/)
+    if (labelValue) {
+      const label = labelValue[1].trim()
+      const value = labelValue[2].trim()
+      if (label.length >= 1 && value.length >= 1) {
+        items.push({ label, value })
+        continue
+      }
+    }
+    
+    // Pattern 2: Section header (ends with colon, no value)
+    const sectionHeader = line.match(/^(.+?):\s*\.?\s*$/)
+    if (sectionHeader) {
+      currentSection = sectionHeader[1].trim()
+      continue
+    }
+    
+    // Pattern 3: Numbered/bulleted list items under a section
+    const listItem = line.match(/^[\d٠-٩]+\s*[-–—]\s*(.+)$/)
+    if (listItem && currentSection) {
+      const value = listItem[1].trim()
+      items.push({ 
+        label: currentSection, 
+        value: value
+      })
+      continue
+    }
+    
+    // Pattern 4: Plain key-value separated by spaces (like "العنم ختم")
+    const spaceSeparated = line.match(/^(\S+)\s{2,}(.+)$/)
+    if (spaceSeparated) {
+      const label = spaceSeparated[1].trim()
+      const value = spaceSeparated[2].trim()
+      if (label.length >= 1 && value.length >= 1) {
+        items.push({ label, value })
+      }
     }
   }
+  
   if (items.length === 0) return null
   return { items }
 }
