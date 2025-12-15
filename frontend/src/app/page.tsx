@@ -446,7 +446,7 @@ export default function Home() {
 
               {/* Content */}
               <div className="max-w-7xl mx-auto px-6 py-8">
-                <OCRHistory authToken={authToken} />
+                <OCRHistory getToken={getToken} />
               </div>
             </div>
           )}

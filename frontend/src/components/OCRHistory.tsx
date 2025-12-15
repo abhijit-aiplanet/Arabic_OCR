@@ -27,11 +27,11 @@ interface OCRHistoryItem {
 }
 
 interface OCRHistoryProps {
-  authToken: string | null
+  getToken: () => Promise<string | null>
   onSelectItem?: (item: OCRHistoryItem) => void
 }
 
-export default function OCRHistory({ authToken, onSelectItem }: OCRHistoryProps) {
+export default function OCRHistory({ getToken, onSelectItem }: OCRHistoryProps) {
   const [history, setHistory] = useState<OCRHistoryItem[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -40,18 +40,21 @@ export default function OCRHistory({ authToken, onSelectItem }: OCRHistoryProps)
   const [editText, setEditText] = useState('')
 
   useEffect(() => {
-    if (authToken) {
-      fetchHistory()
-    }
-  }, [authToken])
+    fetchHistory()
+  }, [])
 
   const fetchHistory = async () => {
-    if (!authToken) return
-
     setLoading(true)
     setError(null)
 
     try {
+      const authToken = await getToken()
+      if (!authToken) {
+        setError('Authentication required. Please sign in.')
+        setLoading(false)
+        return
+      }
+
       const response = await axios.get(`${API_URL}/api/history`, {
         headers: {
           'Authorization': `Bearer ${authToken}`
@@ -88,12 +91,13 @@ export default function OCRHistory({ authToken, onSelectItem }: OCRHistoryProps)
   }
 
   const handleSaveEdit = async (item: OCRHistoryItem) => {
-    if (!authToken) {
-      toast.error('Authentication required')
-      return
-    }
-
     try {
+      const authToken = await getToken()
+      if (!authToken) {
+        toast.error('Authentication required. Please sign in.')
+        return
+      }
+
       await updateHistoryText(item.id, editText, authToken)
       
       // Update local state
