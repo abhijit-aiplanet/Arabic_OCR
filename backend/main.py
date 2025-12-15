@@ -13,7 +13,6 @@ import os
 from PIL import Image
 import io
 import base64
-import numpy as np
 from dotenv import load_dotenv
 import traceback
 import asyncio
@@ -349,31 +348,33 @@ class OCRHistoryResponse(BaseModel):
 class UpdateHistoryRequest(BaseModel):
 def analyze_image_quality(image: Image.Image) -> Dict[str, Any]:
     """
-    Simple, fast image quality analysis (no heavy CV deps).
+    Lightweight image quality analysis using only PIL (no numpy).
     Returns per-factor scores in [0,1] and a pre_ocr_confidence.
     """
     try:
-        gray = np.array(image.convert("L"), dtype=np.float32)
-        h, w = gray.shape[:2]
-        pixels = int(w * h)
-
-        # Sharpness: Laplacian variance (simple kernel)
-        lap = (
-            -4 * gray
-            + np.roll(gray, 1, axis=0)
-            + np.roll(gray, -1, axis=0)
-            + np.roll(gray, 1, axis=1)
-            + np.roll(gray, -1, axis=1)
-        )
-        sharpness_var = float(np.var(lap))
-        sharpness = float(min(sharpness_var / 500.0, 1.0))  # 500+ ~ excellent
-
-        # Contrast: stddev
-        contrast_std = float(np.std(gray))
+        from PIL import ImageStat, ImageFilter
+        
+        w, h = image.size
+        pixels = w * h
+        
+        # Convert to grayscale for analysis
+        gray = image.convert("L")
+        
+        # Get basic statistics using PIL's ImageStat
+        stats = ImageStat.Stat(gray)
+        brightness_avg = stats.mean[0]  # Average brightness (0-255)
+        contrast_std = stats.stddev[0]  # Standard deviation (contrast measure)
+        
+        # 1. Sharpness: use variance of edges (Laplacian filter)
+        edges = gray.filter(ImageFilter.FIND_EDGES)
+        edge_stats = ImageStat.Stat(edges)
+        sharpness_var = edge_stats.stddev[0] ** 2  # Variance approximation
+        sharpness = float(min(sharpness_var / 500.0, 1.0))  # Normalize
+        
+        # 2. Contrast: use stddev from stats
         contrast = float(min(contrast_std / 80.0, 1.0))
-
-        # Brightness: mean (prefer 100-180)
-        brightness_avg = float(np.mean(gray))
+        
+        # 3. Brightness: prefer 100-180 range
         if brightness_avg < 100:
             brightness = float(max(brightness_avg / 100.0, 0.0))
         elif brightness_avg > 180:
@@ -381,8 +382,8 @@ def analyze_image_quality(image: Image.Image) -> Dict[str, Any]:
         else:
             brightness = 1.0
         brightness = float(min(max(brightness, 0.0), 1.0))
-
-        # Resolution adequacy
+        
+        # 4. Resolution adequacy
         if pixels < 500_000:
             resolution = pixels / 500_000.0
         elif pixels < 1_000_000:
@@ -390,19 +391,15 @@ def analyze_image_quality(image: Image.Image) -> Dict[str, Any]:
         else:
             resolution = 1.0
         resolution = float(min(max(resolution, 0.0), 1.0))
-
-        # Noise estimate: std of (gray - blurred(gray))
-        blurred = (
-            gray
-            + np.roll(gray, 1, axis=0)
-            + np.roll(gray, -1, axis=0)
-            + np.roll(gray, 1, axis=1)
-            + np.roll(gray, -1, axis=1)
-        ) / 5.0
-        noise_level = float(np.std(gray - blurred))
-        # Lower is better; 0-10 is good, 20+ bad
+        
+        # 5. Noise estimate: compare original to slightly blurred
+        blurred = gray.filter(ImageFilter.GaussianBlur(radius=1))
+        # Approximate noise by RMS difference
+        original_stats = ImageStat.Stat(gray)
+        blur_stats = ImageStat.Stat(blurred)
+        noise_level = abs(original_stats.rms[0] - blur_stats.rms[0])
         noise = float(1.0 - min(noise_level / 20.0, 1.0))
-
+        
         factors = {
             "sharpness": sharpness,
             "contrast": contrast,
@@ -417,7 +414,7 @@ def analyze_image_quality(image: Image.Image) -> Dict[str, Any]:
                 "noise_level": noise_level,
             },
         }
-
+        
         pre = (
             sharpness * 0.25
             + contrast * 0.25
@@ -426,7 +423,7 @@ def analyze_image_quality(image: Image.Image) -> Dict[str, Any]:
             + noise * 0.15
         )
         pre = float(min(max(pre, 0.0), 1.0))
-
+        
         warnings: List[str] = []
         if sharpness < 0.4:
             warnings.append("Low sharpness detected (blurry image)")
@@ -438,14 +435,14 @@ def analyze_image_quality(image: Image.Image) -> Dict[str, Any]:
             warnings.append("Low resolution detected (small text may be missed)")
         if noise < 0.5:
             warnings.append("High noise detected (scan artifacts or compression)")
-
+        
         recommendation = (
             "excellent" if pre >= 0.85 else
             "good" if pre >= 0.7 else
             "fair" if pre >= 0.5 else
             "poor"
         )
-
+        
         return {
             "pre_ocr_confidence": pre,
             "quality_factors": {k: v for k, v in factors.items() if k != "raw"},
@@ -456,12 +453,13 @@ def analyze_image_quality(image: Image.Image) -> Dict[str, Any]:
     except Exception as e:
         print(f"⚠️ Image quality analysis failed: {str(e)}")
         traceback.print_exc()
+        # Return safe fallback
         return {
-            "pre_ocr_confidence": None,
+            "pre_ocr_confidence": 0.7,  # Neutral fallback
             "quality_factors": {},
             "raw_metrics": {},
             "recommendation": "unknown",
-            "warnings": ["Image quality analysis failed"],
+            "warnings": ["Image quality analysis unavailable"],
         }
 
 
