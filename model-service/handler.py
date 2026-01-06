@@ -346,8 +346,32 @@ def _compute_token_confidences(
         dict with overall_token_confidence, token_confidences, word_confidences, line_confidences
     """
     try:
-        token_ids = generated_ids_trimmed[0].tolist() if generated_ids_trimmed is not None else []
+        # Handle different input formats
+        if generated_ids_trimmed is None:
+            token_ids = []
+        elif isinstance(generated_ids_trimmed, torch.Tensor):
+            # If it's a 2D tensor [1, T], get first sequence
+            if generated_ids_trimmed.dim() == 2:
+                token_ids = generated_ids_trimmed[0].tolist()
+            # If it's a 1D tensor [T], use directly
+            elif generated_ids_trimmed.dim() == 1:
+                token_ids = generated_ids_trimmed.tolist()
+            else:
+                token_ids = []
+        elif isinstance(generated_ids_trimmed, list):
+            token_ids = generated_ids_trimmed
+        else:
+            token_ids = []
+            
         token_confidences: list[float] = []
+        
+        # Validate scores is iterable
+        if scores is None or isinstance(scores, (int, float)):
+            scores = []
+        
+        # Convert tuple to list if needed
+        if isinstance(scores, tuple):
+            scores = list(scores)
 
         if not scores or not token_ids:
             return {
@@ -557,9 +581,18 @@ def extract_text_from_image(
             }
         
         print(f"✅ Successfully extracted {len(result)} characters")
+        
+        # Debug: Check scores format
+        scores_to_pass = generation.scores if hasattr(generation, "scores") else []
+        print(f"🔍 Scores type: {type(scores_to_pass)}, length: {len(scores_to_pass) if hasattr(scores_to_pass, '__len__') else 'N/A'}")
+        
+        # Pass the already-trimmed tensor (1D)
+        ids_to_pass = generated_ids_trimmed[0] if isinstance(generated_ids_trimmed, list) else generated_ids_trimmed
+        print(f"🔍 IDs type: {type(ids_to_pass)}, shape: {ids_to_pass.shape if hasattr(ids_to_pass, 'shape') else 'N/A'}")
+        
         token_conf = _compute_token_confidences(
-            generated_ids_trimmed[0] if isinstance(generated_ids_trimmed, list) else generated_ids_trimmed,
-            generation.scores if hasattr(generation, "scores") else [],
+            ids_to_pass,
+            scores_to_pass,
             processor.tokenizer,
         )
         return {
