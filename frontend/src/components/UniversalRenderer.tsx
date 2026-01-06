@@ -5,6 +5,7 @@ import ExtractedText from '@/components/ExtractedText'
 import type { ContentType, OCRConfidence } from '@/lib/api'
 import { detectContentTypeFromText } from '@/lib/contentHeuristics'
 import ConfidencePanel from '@/components/ConfidencePanel'
+import { Eye, FileText, Sparkles } from 'lucide-react'
 
 interface UniversalRendererProps {
   text: string
@@ -44,28 +45,26 @@ export default function UniversalRenderer({
       const form = tryParseLabelValue(text)
       // Guardrail: if it doesn't really look like a form, fall back
       if (form && form.items.length >= 3) {
-        return <FormView title={effectiveType === 'id_card' ? 'ID Card (structured)' : 'Form (structured)'} items={form.items} />
+        return <FormView title={effectiveType === 'id_card' ? 'ID Card' : 'Form'} items={form.items} />
       }
     }
 
     if (effectiveType === 'receipt' || effectiveType === 'invoice') {
-      // MVP: still raw, but with a better wrapper
       return (
-        <div className="bg-gray-50 rounded-lg p-4 border border-gray-200" dir="auto">
-          <div className="text-sm font-semibold text-gray-800 mb-2">Receipt/Invoice (raw)</div>
-          <pre className="whitespace-pre-wrap font-sans text-sm text-gray-900">{text}</pre>
+        <div className="bg-gradient-to-br from-slate-50 to-gray-50 rounded-xl p-5 border border-gray-200" dir="auto">
+          <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Receipt/Invoice</div>
+          <pre className="whitespace-pre-wrap font-sans text-sm text-gray-900 leading-relaxed">{text}</pre>
         </div>
       )
     }
 
     if (effectiveType === 'document' || effectiveType === 'handwritten' || effectiveType === 'mixed' || effectiveType === 'unknown') {
-      // For non-forms, raw is the best default representation.
       return (
-        <div className="bg-gray-50 rounded-lg p-4 border border-gray-200" dir="auto">
-          <div className="text-sm font-semibold text-gray-800 mb-2">
-            {effectiveType === 'document' ? 'Document' : effectiveType === 'handwritten' ? 'Handwritten' : effectiveType === 'mixed' ? 'Mixed' : 'Text'}
+        <div className="bg-gradient-to-br from-slate-50 to-gray-50 rounded-xl p-5 border border-gray-200" dir="auto">
+          <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">
+            {effectiveType === 'document' ? 'Document' : effectiveType === 'handwritten' ? 'Handwritten' : effectiveType === 'mixed' ? 'Mixed Content' : 'Text'}
           </div>
-          <pre className="whitespace-pre-wrap font-sans text-sm text-gray-900">{text}</pre>
+          <pre className="whitespace-pre-wrap font-sans text-sm text-gray-900 leading-relaxed">{text}</pre>
         </div>
       )
     }
@@ -74,48 +73,68 @@ export default function UniversalRenderer({
   }, [effectiveType, text])
 
   return (
-    <div className="bg-white rounded-xl shadow-lg p-6 border border-gray-200 h-full">
-      <div className="flex items-center justify-between mb-4">
-        <div>
-          <h2 className="text-lg font-semibold text-gray-900">Output</h2>
-          <div className="text-xs text-gray-600">
-            type: <span className="font-medium">{effectiveType}</span> · detected: <span className="font-medium">{detectedType}</span>
+    <div className="bg-white rounded-2xl shadow-lg border border-gray-100 h-full flex flex-col overflow-hidden">
+      {/* Header Section */}
+      <div className="px-6 py-4 border-b border-gray-100 bg-gradient-to-r from-white to-gray-50">
+        <div className="flex items-start justify-between gap-4">
+          {/* Left: Title + Confidence */}
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 mb-2">
+              <Sparkles className="w-5 h-5 text-blue-600" />
+              <h2 className="text-lg font-bold text-gray-900">Output</h2>
+            </div>
+            <ConfidencePanel confidence={confidence} />
           </div>
-          <ConfidencePanel confidence={confidence} className="mt-2" />
-        </div>
 
-        {text && !isProcessing && (
-          <div className="flex items-center gap-2">
-            {confidence?.per_word?.length ? (
-              <button
-                onClick={() => setShowWordConfidence((v) => !v)}
-                className="px-3 py-1.5 text-sm font-medium rounded-lg border border-gray-200 bg-white hover:bg-gray-50"
-                title="Toggle word-level confidence highlights"
-              >
-                {showWordConfidence ? 'Hide word confidence' : 'Show word confidence'}
-              </button>
-            ) : null}
-            <button
-              onClick={() => setView('smart')}
-              className={`px-3 py-1.5 text-sm font-medium rounded-lg border transition-colors ${
-                view === 'smart' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
-              }`}
-            >
-              Smart view
-            </button>
-            <button
-              onClick={() => setView('raw')}
-              className={`px-3 py-1.5 text-sm font-medium rounded-lg border transition-colors ${
-                view === 'raw' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
-              }`}
-            >
-              Raw text
-            </button>
-          </div>
-        )}
+          {/* Right: View Toggle */}
+          {text && !isProcessing && (
+            <div className="flex flex-col items-end gap-2">
+              {/* Toggle Button Group */}
+              <div className="inline-flex rounded-lg border border-gray-200 bg-gray-100 p-1">
+                <button
+                  onClick={() => setView('smart')}
+                  className={`inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium rounded-md transition-all duration-200 ${
+                    view === 'smart' 
+                      ? 'bg-white text-blue-700 shadow-sm' 
+                      : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  <Eye className="w-4 h-4" />
+                  Smart
+                </button>
+                <button
+                  onClick={() => setView('raw')}
+                  className={`inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium rounded-md transition-all duration-200 ${
+                    view === 'raw' 
+                      ? 'bg-white text-blue-700 shadow-sm' 
+                      : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  <FileText className="w-4 h-4" />
+                  Raw
+                </button>
+              </div>
+              
+              {/* Word Confidence Toggle */}
+              {confidence?.per_word?.length ? (
+                <button
+                  onClick={() => setShowWordConfidence((v) => !v)}
+                  className={`text-xs font-medium px-3 py-1.5 rounded-full transition-all ${
+                    showWordConfidence 
+                      ? 'bg-blue-100 text-blue-700' 
+                      : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                  }`}
+                >
+                  {showWordConfidence ? '✓ Word confidence' : 'Word confidence'}
+                </button>
+              ) : null}
+            </div>
+          )}
+        </div>
       </div>
 
-      <div className="relative min-h-[400px] max-h-[600px] overflow-auto">
+      {/* Content Section */}
+      <div className="flex-1 p-6 overflow-auto">
         {view === 'raw' ? (
           <ExtractedText text={text} isProcessing={isProcessing} onTextEdit={onTextEdit} isEditable={isEditable} />
         ) : isProcessing ? (
@@ -221,14 +240,16 @@ function mostCommon(nums: number[]): number {
 
 function FormView({ title, items }: { title: string; items: Array<{ label: string; value: string }> }) {
   return (
-    <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
-      <div className="px-4 py-3 bg-gray-50 border-b border-gray-200 text-sm font-semibold text-gray-900">{title}</div>
-      <div className="p-4 space-y-2" dir="auto">
+    <div className="bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm">
+      <div className="px-5 py-3 bg-gradient-to-r from-blue-50 to-indigo-50 border-b border-gray-200">
+        <div className="text-xs font-semibold text-blue-700 uppercase tracking-wider">{title}</div>
+      </div>
+      <div className="divide-y divide-gray-100" dir="auto">
         {items.map((it, idx) => (
-          <div key={idx} className="grid grid-cols-1 md:grid-cols-3 gap-2 p-2 rounded hover:bg-gray-50">
-            <div className="text-sm font-medium text-gray-700 md:col-span-1">{it.label}</div>
-            <div className="text-sm text-gray-900 md:col-span-2 whitespace-pre-wrap">
-              {it.value ? it.value : <span className="text-gray-400 italic">[فارغ]</span>}
+          <div key={idx} className="flex items-start gap-4 px-5 py-3 hover:bg-gray-50 transition-colors">
+            <div className="text-sm font-medium text-gray-500 min-w-[120px] pt-0.5">{it.label}</div>
+            <div className="text-sm text-gray-900 flex-1 whitespace-pre-wrap font-medium">
+              {it.value ? it.value : <span className="text-gray-300 italic font-normal">[empty]</span>}
             </div>
           </div>
         ))}
@@ -239,24 +260,26 @@ function FormView({ title, items }: { title: string; items: Array<{ label: strin
 
 function TableView({ headers, rows }: { headers: string[]; rows: string[][] }) {
   return (
-    <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
-      <div className="px-4 py-3 bg-gray-50 border-b border-gray-200 text-sm font-semibold text-gray-900">Table (structured)</div>
+    <div className="bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm">
+      <div className="px-5 py-3 bg-gradient-to-r from-emerald-50 to-teal-50 border-b border-gray-200">
+        <div className="text-xs font-semibold text-emerald-700 uppercase tracking-wider">Table</div>
+      </div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm" dir="auto">
-          <thead className="bg-gray-100">
-            <tr>
+          <thead>
+            <tr className="bg-gray-50">
               {headers.map((h, idx) => (
-                <th key={idx} className="px-3 py-2 text-right font-semibold text-gray-700 border-b border-gray-200">
+                <th key={idx} className="px-4 py-3 text-right font-semibold text-gray-700 border-b border-gray-200 first:text-left">
                   {h}
                 </th>
               ))}
             </tr>
           </thead>
-          <tbody>
+          <tbody className="divide-y divide-gray-100">
             {rows.map((r, i) => (
-              <tr key={i} className="hover:bg-gray-50">
+              <tr key={i} className="hover:bg-gray-50 transition-colors">
                 {headers.map((_, j) => (
-                  <td key={j} className="px-3 py-2 text-right text-gray-900 border-b border-gray-100">
+                  <td key={j} className="px-4 py-3 text-right text-gray-900 first:text-left first:font-medium">
                     {r[j] ?? ''}
                   </td>
                 ))}
@@ -276,14 +299,33 @@ function WordConfidenceView({
   text: string
   perWord: Array<{ word: string; confidence: number | null }>
 }) {
-  // Very simple sequential mapping: split by whitespace and consume confidences in order.
   const tokens = text.split(/(\s+)/)
   let idx = 0
 
   return (
-    <div className="bg-gray-50 rounded-lg p-6 border border-gray-200" dir="auto">
-      <div className="text-sm font-semibold text-gray-800 mb-3">Word-level confidence</div>
-      <div className="leading-relaxed text-gray-900">
+    <div className="bg-gradient-to-br from-slate-50 to-gray-50 rounded-xl p-6 border border-gray-200" dir="auto">
+      <div className="flex items-center justify-between mb-4">
+        <div className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Word-level Confidence</div>
+        <div className="flex items-center gap-3 text-xs">
+          <span className="inline-flex items-center gap-1">
+            <span className="w-3 h-3 rounded bg-emerald-200"></span>
+            <span className="text-gray-600">High</span>
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <span className="w-3 h-3 rounded bg-amber-200"></span>
+            <span className="text-gray-600">Medium</span>
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <span className="w-3 h-3 rounded bg-orange-200"></span>
+            <span className="text-gray-600">Low-Med</span>
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <span className="w-3 h-3 rounded bg-red-200"></span>
+            <span className="text-gray-600">Low</span>
+          </span>
+        </div>
+      </div>
+      <div className="leading-loose text-gray-900 text-base">
         {tokens.map((tok, i) => {
           if (!tok.trim()) return <span key={i}>{tok}</span>
           const c = perWord[idx]?.confidence ?? null
@@ -291,18 +333,11 @@ function WordConfidenceView({
           const cls = confidenceClass(c)
           const title = c === null ? 'confidence: —' : `confidence: ${Math.round(c * 100)}%`
           return (
-            <span key={i} className={`px-0.5 rounded ${cls}`} title={title}>
+            <span key={i} className={`px-1 py-0.5 rounded-md ${cls} transition-colors cursor-default`} title={title}>
               {tok}
             </span>
           )
         })}
-      </div>
-      <div className="mt-4 text-xs text-gray-600">
-        <span className="font-semibold">Legend:</span>{' '}
-        <span className="px-1 rounded bg-green-100 text-green-900">High</span>{' '}
-        <span className="px-1 rounded bg-yellow-100 text-yellow-900">Medium</span>{' '}
-        <span className="px-1 rounded bg-orange-100 text-orange-900">Low-Med</span>{' '}
-        <span className="px-1 rounded bg-red-100 text-red-900">Low</span>
       </div>
     </div>
   )
@@ -310,10 +345,10 @@ function WordConfidenceView({
 
 function confidenceClass(c: number | null) {
   if (c === null || c === undefined || Number.isNaN(c)) return 'bg-gray-100'
-  if (c >= 0.9) return 'bg-green-100'
-  if (c >= 0.75) return 'bg-yellow-100'
-  if (c >= 0.6) return 'bg-orange-100'
-  return 'bg-red-100'
+  if (c >= 0.9) return 'bg-emerald-100 hover:bg-emerald-200'
+  if (c >= 0.75) return 'bg-amber-100 hover:bg-amber-200'
+  if (c >= 0.6) return 'bg-orange-100 hover:bg-orange-200'
+  return 'bg-red-100 hover:bg-red-200'
 }
 
 

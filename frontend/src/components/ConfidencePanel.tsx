@@ -2,24 +2,25 @@
 
 import { useMemo, useState } from 'react'
 import type { OCRConfidence } from '@/lib/api'
+import { ChevronDown, ChevronUp, AlertTriangle, CheckCircle, Info } from 'lucide-react'
 
 function pct(x?: number | null) {
   if (x === null || x === undefined || Number.isNaN(x)) return '—'
   return `${Math.round(x * 100)}%`
 }
 
-function levelColor(level?: OCRConfidence['confidence_level']) {
+function levelConfig(level?: OCRConfidence['confidence_level']) {
   switch (level) {
     case 'high':
-      return 'bg-green-100 text-green-800 border-green-200'
+      return { bg: 'bg-emerald-50', text: 'text-emerald-700', border: 'border-emerald-200', icon: CheckCircle }
     case 'medium':
-      return 'bg-yellow-100 text-yellow-800 border-yellow-200'
+      return { bg: 'bg-amber-50', text: 'text-amber-700', border: 'border-amber-200', icon: Info }
     case 'low_medium':
-      return 'bg-orange-100 text-orange-800 border-orange-200'
+      return { bg: 'bg-orange-50', text: 'text-orange-700', border: 'border-orange-200', icon: AlertTriangle }
     case 'low':
-      return 'bg-red-100 text-red-800 border-red-200'
+      return { bg: 'bg-red-50', text: 'text-red-700', border: 'border-red-200', icon: AlertTriangle }
     default:
-      return 'bg-gray-100 text-gray-700 border-gray-200'
+      return { bg: 'bg-gray-50', text: 'text-gray-600', border: 'border-gray-200', icon: Info }
   }
 }
 
@@ -34,54 +35,45 @@ export default function ConfidencePanel({
 
   const overall = confidence?.overall_confidence
   const sources = confidence?.confidence_sources || {}
-
-  const badge = useMemo(() => {
-    if (!confidence) return null
-    return (
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full border text-sm font-semibold transition-colors ${levelColor(
-          confidence.confidence_level
-        )}`}
-        title="Click for confidence breakdown"
-      >
-        Confidence: {pct(overall)}
-        <span className="text-xs font-medium opacity-80">{open ? 'Hide' : 'Details'}</span>
-      </button>
-    )
-  }, [confidence, open, overall])
+  const config = levelConfig(confidence?.confidence_level)
+  const Icon = config.icon
 
   if (!confidence) return null
 
   return (
     <div className={className}>
-      <div className="flex items-center justify-between gap-3">
-        {badge}
-        {confidence.warnings?.length ? (
-          <div className="text-xs text-gray-600">
-            <span className="font-semibold">Warnings:</span> {confidence.warnings.slice(0, 2).join(' · ')}
-            {confidence.warnings.length > 2 ? '…' : ''}
-          </div>
-        ) : null}
-      </div>
+      {/* Compact Badge */}
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full border text-sm font-semibold transition-all hover:shadow-sm ${config.bg} ${config.text} ${config.border}`}
+      >
+        <Icon className="w-4 h-4" />
+        <span>{pct(overall)}</span>
+        {open ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+      </button>
 
+      {/* Expanded Details */}
       {open && (
-        <div className="mt-3 border border-gray-200 rounded-lg bg-white p-4">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            <Metric label="Overall" value={pct(overall)} />
-            <Metric label="Image quality" value={pct(sources.image_quality ?? null)} />
-            <Metric label="Model logits" value={pct(sources.token_logits ?? null)} />
-            <Metric label="Text quality" value={pct(sources.text_quality ?? null)} />
-            <Metric label="Level" value={confidence.confidence_level} />
+        <div className="mt-3 border border-gray-200 rounded-xl bg-white shadow-sm overflow-hidden">
+          {/* Metrics Grid */}
+          <div className="grid grid-cols-5 divide-x divide-gray-100">
+            <MetricCell label="Overall" value={pct(overall)} highlight />
+            <MetricCell label="Image" value={pct(sources.image_quality ?? null)} />
+            <MetricCell label="Model" value={pct(sources.token_logits ?? null)} />
+            <MetricCell label="Text" value={pct(sources.text_quality ?? null)} />
+            <MetricCell label="Level" value={confidence.confidence_level || '—'} />
           </div>
 
+          {/* Recommendations */}
           {(confidence.recommendations?.length || 0) > 0 && (
-            <div className="mt-4">
-              <div className="text-sm font-semibold text-gray-900 mb-1">Recommendations</div>
-              <ul className="list-disc pl-5 text-sm text-gray-700">
+            <div className="px-4 py-3 bg-gray-50 border-t border-gray-100">
+              <ul className="text-sm text-gray-700 space-y-1">
                 {confidence.recommendations?.map((r, i) => (
-                  <li key={i}>{r}</li>
+                  <li key={i} className="flex items-start gap-2">
+                    <span className="text-gray-400 mt-0.5">•</span>
+                    <span>{r}</span>
+                  </li>
                 ))}
               </ul>
             </div>
@@ -92,11 +84,11 @@ export default function ConfidencePanel({
   )
 }
 
-function Metric({ label, value }: { label: string; value: string }) {
+function MetricCell({ label, value, highlight = false }: { label: string; value: string; highlight?: boolean }) {
   return (
-    <div className="border border-gray-200 rounded-lg p-3 bg-gray-50">
-      <div className="text-xs text-gray-500">{label}</div>
-      <div className="text-lg font-bold text-gray-900">{value}</div>
+    <div className={`px-3 py-3 text-center ${highlight ? 'bg-blue-50' : 'bg-white'}`}>
+      <div className="text-xs text-gray-500 font-medium uppercase tracking-wider">{label}</div>
+      <div className={`text-lg font-bold mt-0.5 ${highlight ? 'text-blue-700' : 'text-gray-900'}`}>{value}</div>
     </div>
   )
 }
