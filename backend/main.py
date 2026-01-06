@@ -36,14 +36,19 @@ CLERK_SECRET_KEY = os.getenv("CLERK_SECRET_KEY")
 CLERK_JWKS_URL = "https://rational-coral-39.clerk.accounts.dev/.well-known/jwks.json"
 
 # Supabase Configuration
-SUPABASE_URL = os.getenv("SUPABASE_URL")
+_supabase_url_raw = os.getenv("SUPABASE_URL", "")
+SUPABASE_URL = _supabase_url_raw.strip() if _supabase_url_raw else None
+if SUPABASE_URL and not SUPABASE_URL.startswith(("http://", "https://")):
+    print(f"⚠️ SUPABASE_URL missing protocol, adding https://")
+    SUPABASE_URL = f"https://{SUPABASE_URL}"
+
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")  # Use service key for backend
 supabase: Optional[Client] = None
 
 if SUPABASE_URL and SUPABASE_SERVICE_KEY:
     try:
         supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
-        print("✅ Supabase client initialized")
+        print(f"✅ Supabase client initialized: {SUPABASE_URL[:40]}...")
     except Exception as e:
         print(f"⚠️ Failed to initialize Supabase: {str(e)}")
 else:
@@ -256,7 +261,14 @@ app.add_middleware(
 )
 
 # RunPod Configuration
-RUNPOD_ENDPOINT = os.getenv("RUNPOD_ENDPOINT_URL")
+_runpod_endpoint_raw = os.getenv("RUNPOD_ENDPOINT_URL", "")
+# Strip whitespace and validate URL has protocol
+RUNPOD_ENDPOINT = _runpod_endpoint_raw.strip() if _runpod_endpoint_raw else None
+if RUNPOD_ENDPOINT and not RUNPOD_ENDPOINT.startswith(("http://", "https://")):
+    print(f"⚠️ RUNPOD_ENDPOINT_URL missing protocol, adding https://")
+    RUNPOD_ENDPOINT = f"https://{RUNPOD_ENDPOINT}"
+print(f"🔧 RUNPOD_ENDPOINT configured: {RUNPOD_ENDPOINT[:50] if RUNPOD_ENDPOINT else 'NOT SET'}...")
+
 RUNPOD_API_KEY = os.getenv("RUNPOD_API_KEY")
 TIMEOUT_SECONDS = 600  # 10 minutes - enough for cold starts and large documents
 
@@ -944,6 +956,15 @@ async def process_ocr(
                 detail="Model service endpoint not configured. Please set RUNPOD_ENDPOINT_URL environment variable."
             )
         
+        # Validate URL format
+        if not RUNPOD_ENDPOINT.startswith(("http://", "https://")):
+            raise HTTPException(
+                status_code=500,
+                detail=f"Invalid RUNPOD_ENDPOINT_URL format: {RUNPOD_ENDPOINT[:50]}... Must start with http:// or https://"
+            )
+        
+        print(f"🚀 Using RunPod endpoint: {RUNPOD_ENDPOINT}")
+        
         # Read and validate image
         contents = await file.read()
         try:
@@ -1182,6 +1203,15 @@ async def process_pdf_ocr(
                 status_code=500,
                 detail="Model service endpoint not configured. Please set RUNPOD_ENDPOINT_URL environment variable."
             )
+        
+        # Validate URL format
+        if not RUNPOD_ENDPOINT.startswith(("http://", "https://")):
+            raise HTTPException(
+                status_code=500,
+                detail=f"Invalid RUNPOD_ENDPOINT_URL format: {RUNPOD_ENDPOINT[:50]}... Must start with http:// or https://"
+            )
+        
+        print(f"🚀 Using RunPod endpoint for PDF: {RUNPOD_ENDPOINT}")
         
         # Validate PDF file
         if not file.filename.lower().endswith('.pdf'):
