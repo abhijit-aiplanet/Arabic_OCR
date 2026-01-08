@@ -11,7 +11,7 @@ import UniversalRenderer from '@/components/UniversalRenderer'
 import { processOCR, processPDFOCR, PDFPageResult, updateHistoryText, type ContentType, type OCRTemplate, type OCRConfidence } from '@/lib/api'
 import { getEffectivePrompt } from '@/lib/promptGenerator'
 import toast from 'react-hot-toast'
-import { FileText, Sparkles, Lock, History, X } from 'lucide-react'
+import { FileText, Sparkles, Lock, History, X, Trash2 } from 'lucide-react'
 import { SignedIn, SignedOut, SignInButton, UserButton, useAuth } from '@clerk/nextjs'
 
 interface OCRSettings {
@@ -330,9 +330,10 @@ export default function Home() {
                 <button
                   onClick={handleClear}
                   disabled={isProcessing}
-                  className="bg-gray-200 text-gray-700 px-4 py-2 rounded-lg font-semibold hover:bg-gray-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="flex items-center gap-2 bg-gray-200 text-gray-700 px-4 py-2 rounded-lg font-semibold hover:bg-gray-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  🗑️ Clear
+                  <Trash2 className="w-4 h-4" />
+                  Clear
                 </button>
               </div>
             </div>
@@ -389,16 +390,17 @@ export default function Home() {
                       {isPDF ? `Processing PDF (${pdfProcessedCount}/${pdfTotalPages || '?'})...` : 'Processing...'}
                     </span>
                   ) : (
-                    `🚀 Process ${isPDF ? 'PDF' : 'Image'}`
+                    `Process ${isPDF ? 'PDF' : 'Image'}`
                   )}
                 </button>
 
                 <button
                   onClick={handleClear}
                   disabled={isProcessing}
-                  className="w-full bg-gray-200 text-gray-700 py-3 px-6 rounded-lg font-semibold hover:bg-gray-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="w-full flex items-center justify-center gap-2 bg-gray-200 text-gray-700 py-3 px-6 rounded-lg font-semibold hover:bg-gray-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  🗑️ Clear All
+                  <Trash2 className="w-4 h-4" />
+                  Clear All
                 </button>
               </div>
             </div>

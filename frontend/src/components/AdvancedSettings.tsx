@@ -134,7 +134,7 @@ export default function AdvancedSettings({
           {/* Image Resolution */}
           <div>
             <p className="block text-sm font-medium text-gray-700 mb-3">
-              📐 Image Resolution Settings
+              Image Resolution Settings
             </p>
             <p className="text-xs text-gray-500 mb-3">
               Controls visual token range (4-16384) - balance quality vs speed

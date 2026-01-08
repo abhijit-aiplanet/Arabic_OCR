@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { Clock, FileText, CheckCircle, XCircle, Download, Trash2, ChevronDown, ChevronUp, Edit2, Save, X as XIcon, ArrowLeft } from 'lucide-react'
+import { Clock, FileText, CheckCircle, XCircle, Download, Trash2, Edit2, Save, X as XIcon, ArrowLeft, File, Image, Calendar, Timer, Layers, Search, Filter, ChevronRight } from 'lucide-react'
 import axios from 'axios'
 import { updateHistoryText } from '@/lib/api'
 import toast from 'react-hot-toast'
@@ -38,6 +38,8 @@ export default function OCRHistory({ getToken, onSelectItem }: OCRHistoryProps) 
   const [selectedItem, setSelectedItem] = useState<OCRHistoryItem | null>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editText, setEditText] = useState('')
+  const [searchQuery, setSearchQuery] = useState('')
+  const [filterType, setFilterType] = useState<'all' | 'image' | 'pdf'>('all')
 
   useEffect(() => {
     fetchHistory()
@@ -72,7 +74,7 @@ export default function OCRHistory({ getToken, onSelectItem }: OCRHistoryProps) 
 
   const downloadAsMarkdown = (item: OCRHistoryItem) => {
     const textToDownload = item.edited_text || item.extracted_text
-    const markdown = `# ${item.file_name}\n\n**Date:** ${new Date(item.created_at).toLocaleString()}\n**Status:** ${item.status}\n**Processing Time:** ${item.processing_time.toFixed(2)}s\n**Pages:** ${item.total_pages}\n${item.edited_at ? `**Last Edited:** ${new Date(item.edited_at).toLocaleString()}\n` : ''}\n## ${item.edited_text ? 'Edited' : 'Extracted'} Text\n\n${textToDownload}\n`
+    const markdown = `# ${item.file_name}\n\n**Date:** ${new Date(item.created_at).toLocaleString()}\n**Status:** ${item.status}\n**Processing Time:** ${item.processing_time?.toFixed(2) || 0}s\n**Pages:** ${item.total_pages || 1}\n${item.edited_at ? `**Last Edited:** ${new Date(item.edited_at).toLocaleString()}\n` : ''}\n## ${item.edited_text ? 'Edited' : 'Extracted'} Text\n\n${textToDownload}\n`
     
     const blob = new Blob([markdown], { type: 'text/markdown' })
     const url = URL.createObjectURL(blob)
@@ -107,6 +109,10 @@ export default function OCRHistory({ getToken, onSelectItem }: OCRHistoryProps) 
           : h
       ))
       
+      if (selectedItem?.id === item.id) {
+        setSelectedItem({ ...selectedItem, edited_text: editText, edited_at: new Date().toISOString() })
+      }
+      
       setEditingId(null)
       toast.success('Changes saved!')
     } catch (err: any) {
@@ -121,6 +127,7 @@ export default function OCRHistory({ getToken, onSelectItem }: OCRHistoryProps) 
   }
 
   const formatFileSize = (bytes: number): string => {
+    if (!bytes || bytes === 0) return '-'
     if (bytes < 1024) return `${bytes} B`
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
@@ -141,7 +148,36 @@ export default function OCRHistory({ getToken, onSelectItem }: OCRHistoryProps) 
     return date.toLocaleDateString()
   }
 
-  // If item is selected, show detail view
+  const formatFullDate = (dateString: string): string => {
+    return new Date(dateString).toLocaleString('en-US', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    })
+  }
+
+  const formatProcessingTime = (seconds: number): string => {
+    if (!seconds || seconds === 0) return '-'
+    if (seconds < 60) return `${seconds.toFixed(1)}s`
+    const mins = Math.floor(seconds / 60)
+    const secs = (seconds % 60).toFixed(0)
+    return `${mins}m ${secs}s`
+  }
+
+  // Filter history based on search and type
+  const filteredHistory = history.filter(item => {
+    const matchesSearch = searchQuery === '' || 
+      item.file_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (item.extracted_text || '').toLowerCase().includes(searchQuery.toLowerCase())
+    
+    const matchesType = filterType === 'all' || item.file_type === filterType
+
+    return matchesSearch && matchesType
+  })
+
+  // Detail view when an item is selected
   if (selectedItem) {
     const displayText = selectedItem.edited_text || selectedItem.extracted_text
 
@@ -149,7 +185,7 @@ export default function OCRHistory({ getToken, onSelectItem }: OCRHistoryProps) 
       <div className="min-h-screen bg-gray-50">
         {/* Header */}
         <div className="bg-white border-b border-gray-200 px-6 py-4 sticky top-0 z-10">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between max-w-7xl mx-auto">
             <div className="flex items-center gap-4">
               <button
                 onClick={() => {
@@ -160,17 +196,17 @@ export default function OCRHistory({ getToken, onSelectItem }: OCRHistoryProps) 
               >
                 <ArrowLeft className="w-5 h-5 text-gray-600" />
               </button>
-              <div>
-                <h2 className="text-xl font-bold text-gray-900">{selectedItem.file_name}</h2>
-                <div className="flex items-center gap-2 mt-1 text-sm text-gray-500">
-                  <Clock className="w-4 h-4" />
-                  <span>{formatDate(selectedItem.created_at)}</span>
-                  {selectedItem.edited_at && (
-                    <>
-                      <span>•</span>
-                      <span>Edited {formatDate(selectedItem.edited_at)}</span>
-                    </>
+              <div className="flex items-center gap-3">
+                <div className={`p-2 rounded-lg ${selectedItem.file_type === 'pdf' ? 'bg-red-100' : 'bg-blue-100'}`}>
+                  {selectedItem.file_type === 'pdf' ? (
+                    <File className="w-5 h-5 text-red-600" />
+                  ) : (
+                    <Image className="w-5 h-5 text-blue-600" />
                   )}
+                </div>
+                <div>
+                  <h2 className="text-lg font-semibold text-gray-900 truncate max-w-md">{selectedItem.file_name}</h2>
+                  <p className="text-sm text-gray-500">{formatFullDate(selectedItem.created_at)}</p>
                 </div>
               </div>
             </div>
@@ -182,30 +218,19 @@ export default function OCRHistory({ getToken, onSelectItem }: OCRHistoryProps) 
                     <>
                       <button
                         onClick={() => handleEdit(selectedItem)}
-                        className="flex items-center gap-2 px-4 py-2 text-sm font-semibold text-gray-600 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
+                        className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
                       >
                         <Edit2 className="w-4 h-4" />
                         Edit
                       </button>
                       <button
                         onClick={() => downloadAsMarkdown(selectedItem)}
-                        className="flex items-center gap-2 px-4 py-2 text-sm font-semibold text-blue-600 hover:text-blue-700 hover:bg-blue-50 rounded-lg transition-colors"
+                        className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-gray-900 hover:bg-gray-800 rounded-lg transition-colors"
                       >
                         <Download className="w-4 h-4" />
                         Download
                       </button>
                     </>
-                  )}
-                  {selectedItem.blob_url && (
-                    <a
-                      href={selectedItem.blob_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex items-center gap-2 px-4 py-2 text-sm font-semibold text-gray-600 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
-                    >
-                      <FileText className="w-4 h-4" />
-                      View File
-                    </a>
                   )}
                 </>
               )}
@@ -213,17 +238,17 @@ export default function OCRHistory({ getToken, onSelectItem }: OCRHistoryProps) 
                 <>
                   <button
                     onClick={() => handleCancelEdit()}
-                    className="flex items-center gap-2 px-4 py-2 text-sm font-semibold text-gray-600 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
+                    className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
                   >
                     <XIcon className="w-4 h-4" />
                     Cancel
                   </button>
                   <button
                     onClick={() => handleSaveEdit(selectedItem)}
-                    className="flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors"
+                    className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-gray-900 hover:bg-gray-800 rounded-lg transition-colors"
                   >
                     <Save className="w-4 h-4" />
-                    Save Changes
+                    Save
                   </button>
                 </>
               )}
@@ -232,126 +257,163 @@ export default function OCRHistory({ getToken, onSelectItem }: OCRHistoryProps) 
         </div>
 
         {/* Content */}
-        <div className="max-w-7xl mx-auto px-6 py-8">
-          {/* Metadata */}
-          <div className="bg-white rounded-lg border border-gray-200 p-6 mb-6">
-            <div className="grid grid-cols-4 gap-4">
-              <div>
-                <p className="text-xs text-gray-500 mb-1">Status</p>
-                <div className="flex items-center gap-2">
+        <div className="max-w-7xl mx-auto px-6 py-6">
+          {/* Stats Cards */}
+          <div className="grid grid-cols-4 gap-4 mb-6">
+            <div className="bg-white rounded-xl border border-gray-200 p-4">
+              <div className="flex items-center gap-3">
+                <div className={`p-2 rounded-lg ${selectedItem.status === 'success' ? 'bg-emerald-100' : 'bg-red-100'}`}>
                   {selectedItem.status === 'success' ? (
-                    <CheckCircle className="w-4 h-4 text-green-600" />
+                    <CheckCircle className="w-5 h-5 text-emerald-600" />
                   ) : (
-                    <XCircle className="w-4 h-4 text-red-600" />
+                    <XCircle className="w-5 h-5 text-red-600" />
                   )}
-                  <span className="text-sm font-semibold capitalize">{selectedItem.status}</span>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500 uppercase tracking-wide">Status</p>
+                  <p className="text-sm font-semibold text-gray-900 capitalize">{selectedItem.status}</p>
                 </div>
               </div>
-              <div>
-                <p className="text-xs text-gray-500 mb-1">File Size</p>
-                <p className="text-sm font-semibold">{formatFileSize(selectedItem.file_size)}</p>
+            </div>
+            
+            <div className="bg-white rounded-xl border border-gray-200 p-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-purple-100">
+                  <Layers className="w-5 h-5 text-purple-600" />
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500 uppercase tracking-wide">File Size</p>
+                  <p className="text-sm font-semibold text-gray-900">{formatFileSize(selectedItem.file_size)}</p>
+                </div>
               </div>
-              <div>
-                <p className="text-xs text-gray-500 mb-1">Processing Time</p>
-                <p className="text-sm font-semibold">{selectedItem.processing_time.toFixed(2)}s</p>
+            </div>
+            
+            <div className="bg-white rounded-xl border border-gray-200 p-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-amber-100">
+                  <Timer className="w-5 h-5 text-amber-600" />
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500 uppercase tracking-wide">Processing Time</p>
+                  <p className="text-sm font-semibold text-gray-900">{formatProcessingTime(selectedItem.processing_time)}</p>
+                </div>
               </div>
-              <div>
-                <p className="text-xs text-gray-500 mb-1">Pages</p>
-                <p className="text-sm font-semibold">{selectedItem.total_pages}</p>
+            </div>
+            
+            <div className="bg-white rounded-xl border border-gray-200 p-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-blue-100">
+                  <FileText className="w-5 h-5 text-blue-600" />
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500 uppercase tracking-wide">Pages</p>
+                  <p className="text-sm font-semibold text-gray-900">{selectedItem.total_pages || 1}</p>
+                </div>
               </div>
             </div>
           </div>
 
           {/* Error message if failed */}
           {selectedItem.status === 'error' && selectedItem.error_message && (
-            <div className="bg-red-50 border border-red-200 rounded-lg p-6 mb-6">
-              <p className="text-sm font-semibold text-red-600 mb-2">Error:</p>
-              <p className="text-sm text-red-500">{selectedItem.error_message}</p>
+            <div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-6">
+              <div className="flex items-start gap-3">
+                <XCircle className="w-5 h-5 text-red-500 mt-0.5" />
+                <div>
+                  <p className="text-sm font-medium text-red-800">Error Details</p>
+                  <p className="text-sm text-red-600 mt-1">{selectedItem.error_message}</p>
+                </div>
+              </div>
             </div>
           )}
 
-          {/* Two Column Layout: Image/PDF on Left, Text on Right */}
+          {/* Two Column Layout */}
           {selectedItem.extracted_text && (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               {/* Left: Original File Viewer */}
               {selectedItem.blob_url && (
-                <div className="bg-white rounded-lg border border-gray-200 p-6">
-                  <h3 className="text-lg font-semibold text-gray-900 mb-4">Original File</h3>
-                  {selectedItem.file_type === 'pdf' ? (
-                    <div className="bg-gray-100 rounded-lg overflow-hidden">
-                      <iframe
-                        src={selectedItem.blob_url}
-                        className="w-full h-[600px] border-0"
-                        title="PDF Viewer"
-                      />
-                    </div>
-                  ) : (
-                    <div className="bg-gray-100 rounded-lg overflow-hidden flex items-center justify-center">
-                      <img
-                        src={selectedItem.blob_url}
-                        alt={selectedItem.file_name}
-                        className="max-w-full h-auto max-h-[600px] object-contain"
-                      />
-                    </div>
-                  )}
+                <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+                  <div className="px-4 py-3 border-b border-gray-200 bg-gray-50">
+                    <h3 className="text-sm font-semibold text-gray-900">Original File</h3>
+                  </div>
+                  <div className="p-4">
+                    {selectedItem.file_type === 'pdf' ? (
+                      <div className="bg-gray-100 rounded-lg overflow-hidden">
+                        <iframe
+                          src={selectedItem.blob_url}
+                          className="w-full h-[550px] border-0"
+                          title="PDF Viewer"
+                        />
+                      </div>
+                    ) : (
+                      <div className="bg-gray-100 rounded-lg overflow-hidden flex items-center justify-center">
+                        <img
+                          src={selectedItem.blob_url}
+                          alt={selectedItem.file_name}
+                          className="max-w-full h-auto max-h-[550px] object-contain"
+                        />
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
 
               {/* Right: Extracted Text */}
-              <div className="bg-white rounded-lg border border-gray-200 p-6">
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-lg font-semibold text-gray-900">
+              <div className={`bg-white rounded-xl border border-gray-200 overflow-hidden ${!selectedItem.blob_url ? 'lg:col-span-2' : ''}`}>
+                <div className="px-4 py-3 border-b border-gray-200 bg-gray-50 flex items-center justify-between">
+                  <h3 className="text-sm font-semibold text-gray-900">
                     {selectedItem.edited_text ? 'Edited Text' : 'Extracted Text'}
                   </h3>
-                  <div className="text-sm text-gray-500">
-                    {displayText.length} characters • {displayText.split(/\s+/).filter(Boolean).length} words
-                  </div>
+                  <span className="text-xs text-gray-500">
+                    {displayText.length.toLocaleString()} chars
+                  </span>
                 </div>
-
-                {editingId === selectedItem.id ? (
-                  <textarea
-                    value={editText}
-                    onChange={(e) => setEditText(e.target.value)}
-                    className="w-full min-h-[500px] p-4 text-base text-gray-900 bg-gray-50 border-2 border-blue-300 rounded-lg focus:outline-none focus:border-blue-500 resize-y font-sans leading-relaxed"
-                    placeholder="Edit your text here..."
-                    dir="auto"
-                  />
-                ) : (
-                  <div className="min-h-[500px] max-h-[600px] overflow-y-auto">
-                    <pre className="whitespace-pre-wrap font-sans text-base leading-relaxed text-gray-900 text-left bg-gray-50 p-6 rounded-lg" dir="auto">
-                      {displayText}
-                    </pre>
-                  </div>
-                )}
+                <div className="p-4">
+                  {editingId === selectedItem.id ? (
+                    <textarea
+                      value={editText}
+                      onChange={(e) => setEditText(e.target.value)}
+                      className="w-full min-h-[500px] p-4 text-sm text-gray-900 bg-gray-50 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent resize-y font-mono leading-relaxed"
+                      placeholder="Edit your text here..."
+                      dir="auto"
+                    />
+                  ) : (
+                    <div className="min-h-[500px] max-h-[550px] overflow-y-auto">
+                      <pre className="whitespace-pre-wrap font-mono text-sm leading-relaxed text-gray-900 text-left bg-gray-50 p-4 rounded-lg" dir="auto">
+                        {displayText}
+                      </pre>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           )}
 
-          {/* If no blob_url, show text only (full width) */}
+          {/* Full width text if no blob_url */}
           {selectedItem.extracted_text && !selectedItem.blob_url && (
-            <div className="bg-white rounded-lg border border-gray-200 p-6">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-lg font-semibold text-gray-900">
+            <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+              <div className="px-4 py-3 border-b border-gray-200 bg-gray-50 flex items-center justify-between">
+                <h3 className="text-sm font-semibold text-gray-900">
                   {selectedItem.edited_text ? 'Edited Text' : 'Extracted Text'}
                 </h3>
-                <div className="text-sm text-gray-500">
-                  {displayText.length} characters • {displayText.split(/\s+/).filter(Boolean).length} words
-                </div>
+                <span className="text-xs text-gray-500">
+                  {displayText.length.toLocaleString()} chars
+                </span>
               </div>
-
-              {editingId === selectedItem.id ? (
-                <textarea
-                  value={editText}
-                  onChange={(e) => setEditText(e.target.value)}
-                  className="w-full min-h-[500px] p-4 text-base text-gray-900 bg-gray-50 border-2 border-blue-300 rounded-lg focus:outline-none focus:border-blue-500 resize-y font-sans leading-relaxed"
-                  placeholder="Edit your text here..."
-                  dir="auto"
-                />
-              ) : (
-                <pre className="whitespace-pre-wrap font-sans text-base leading-relaxed text-gray-900 text-left bg-gray-50 p-6 rounded-lg" dir="auto">
-                  {displayText}
-                </pre>
-              )}
+              <div className="p-4">
+                {editingId === selectedItem.id ? (
+                  <textarea
+                    value={editText}
+                    onChange={(e) => setEditText(e.target.value)}
+                    className="w-full min-h-[400px] p-4 text-sm text-gray-900 bg-gray-50 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent resize-y font-mono leading-relaxed"
+                    placeholder="Edit your text here..."
+                    dir="auto"
+                  />
+                ) : (
+                  <pre className="whitespace-pre-wrap font-mono text-sm leading-relaxed text-gray-900 text-left bg-gray-50 p-4 rounded-lg" dir="auto">
+                    {displayText}
+                  </pre>
+                )}
+              </div>
             </div>
           )}
         </div>
@@ -359,106 +421,191 @@ export default function OCRHistory({ getToken, onSelectItem }: OCRHistoryProps) 
     )
   }
 
-  // List view
+  // Loading state
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+      <div className="flex items-center justify-center h-96">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-10 w-10 border-2 border-gray-300 border-t-gray-900 mx-auto"></div>
+          <p className="mt-4 text-sm text-gray-600">Loading history...</p>
+        </div>
       </div>
     )
   }
 
+  // Error state
   if (error) {
     return (
-      <div className="p-6 bg-red-50 border border-red-200 rounded-lg">
-        <p className="text-red-600 font-semibold">Error loading history</p>
-        <p className="text-red-500 text-sm mt-1">{error}</p>
-        <button 
-          onClick={fetchHistory}
-          className="mt-3 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
-        >
-          Retry
-        </button>
+      <div className="max-w-md mx-auto mt-12">
+        <div className="bg-red-50 border border-red-200 rounded-xl p-6 text-center">
+          <XCircle className="w-10 h-10 text-red-400 mx-auto mb-3" />
+          <p className="text-red-800 font-medium">Error loading history</p>
+          <p className="text-red-600 text-sm mt-1">{error}</p>
+          <button 
+            onClick={fetchHistory}
+            className="mt-4 px-4 py-2 bg-red-600 text-white text-sm font-medium rounded-lg hover:bg-red-700 transition-colors"
+          >
+            Try Again
+          </button>
+        </div>
       </div>
     )
   }
 
+  // Empty state
   if (history.length === 0) {
     return (
-      <div className="p-8 text-center bg-gray-50 rounded-lg border border-gray-200">
-        <FileText className="w-12 h-12 text-gray-400 mx-auto mb-3" />
-        <p className="text-gray-600 font-semibold">No OCR history yet</p>
-        <p className="text-gray-500 text-sm mt-1">
-          Your processed files will appear here
-        </p>
+      <div className="max-w-md mx-auto mt-12">
+        <div className="text-center py-12 px-6 bg-gray-50 rounded-xl border border-gray-200">
+          <div className="w-16 h-16 bg-gray-200 rounded-full flex items-center justify-center mx-auto mb-4">
+            <FileText className="w-8 h-8 text-gray-400" />
+          </div>
+          <h3 className="text-lg font-semibold text-gray-900 mb-1">No history yet</h3>
+          <p className="text-sm text-gray-600">
+            Your processed documents will appear here
+          </p>
+        </div>
       </div>
     )
   }
 
+  // List view
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between mb-4">
-        <h3 className="text-lg font-semibold text-gray-900">
-          Recent OCR History
-        </h3>
-        <span className="text-sm text-gray-500">{history.length} items</span>
+    <div className="space-y-6">
+      {/* Search and Filter Bar */}
+      <div className="flex items-center gap-4">
+        <div className="flex-1 relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+          <input
+            type="text"
+            placeholder="Search files..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="w-full pl-10 pr-4 py-2.5 bg-white border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent"
+          />
+        </div>
+        <div className="flex items-center gap-1 bg-gray-100 p-1 rounded-lg">
+          <button
+            onClick={() => setFilterType('all')}
+            className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
+              filterType === 'all' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-600 hover:text-gray-900'
+            }`}
+          >
+            All
+          </button>
+          <button
+            onClick={() => setFilterType('image')}
+            className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
+              filterType === 'image' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-600 hover:text-gray-900'
+            }`}
+          >
+            Images
+          </button>
+          <button
+            onClick={() => setFilterType('pdf')}
+            className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
+              filterType === 'pdf' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-600 hover:text-gray-900'
+            }`}
+          >
+            PDFs
+          </button>
+        </div>
       </div>
 
-      <div className="space-y-3">
-        {history.map((item) => (
+      {/* Results count */}
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-gray-600">
+          {filteredHistory.length} {filteredHistory.length === 1 ? 'document' : 'documents'}
+        </p>
+      </div>
+
+      {/* History List */}
+      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden divide-y divide-gray-100">
+        {filteredHistory.map((item) => (
           <div
             key={item.id}
             onClick={() => setSelectedItem(item)}
-            className="bg-white rounded-lg border border-gray-200 hover:border-blue-300 hover:shadow-md cursor-pointer transition-all p-4"
+            className="flex items-center gap-4 p-4 hover:bg-gray-50 cursor-pointer transition-colors group"
           >
-            <div className="flex items-start gap-3">
-              {/* Icon */}
-              <div className={`p-2 rounded-lg ${
-                item.status === 'success' 
-                  ? 'bg-green-100' 
-                  : 'bg-red-100'
-              }`}>
-                {item.status === 'success' ? (
-                  <CheckCircle className="w-5 h-5 text-green-600" />
-                ) : (
-                  <XCircle className="w-5 h-5 text-red-600" />
-                )}
-              </div>
+            {/* File Type Icon */}
+            <div className={`flex-shrink-0 p-2.5 rounded-lg ${
+              item.file_type === 'pdf' ? 'bg-red-50' : 'bg-blue-50'
+            }`}>
+              {item.file_type === 'pdf' ? (
+                <File className={`w-5 h-5 ${item.file_type === 'pdf' ? 'text-red-500' : 'text-blue-500'}`} />
+              ) : (
+                <Image className="w-5 h-5 text-blue-500" />
+              )}
+            </div>
 
-              {/* Info */}
-              <div className="flex-1 min-w-0">
-                <p className="font-semibold text-gray-900 truncate">
+            {/* File Info */}
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2">
+                <p className="font-medium text-gray-900 truncate">
                   {item.file_name}
                 </p>
-                <p className="text-sm text-gray-600 line-clamp-2 mt-1">
-                  {item.edited_text || item.extracted_text || item.error_message || 'No text'}
-                </p>
-                <div className="flex items-center gap-2 mt-2 text-xs text-gray-500">
-                  <Clock className="w-3 h-3" />
-                  <span>{formatDate(item.created_at)}</span>
-                  <span>•</span>
-                  <span>{formatFileSize(item.file_size)}</span>
-                  <span>•</span>
-                  <span>{item.processing_time.toFixed(1)}s</span>
-                  {item.total_pages > 1 && (
-                    <>
-                      <span>•</span>
-                      <span>{item.total_pages} pages</span>
-                    </>
-                  )}
-                  {item.edited_at && (
-                    <>
-                      <span>•</span>
-                      <span className="text-blue-600">Edited</span>
-                    </>
-                  )}
-                </div>
+                {item.edited_at && (
+                  <span className="flex-shrink-0 px-2 py-0.5 text-xs font-medium text-blue-700 bg-blue-50 rounded-full">
+                    Edited
+                  </span>
+                )}
+              </div>
+              <p className="text-sm text-gray-500 truncate mt-0.5">
+                {(item.edited_text || item.extracted_text || item.error_message || 'No text').slice(0, 80)}
+                {(item.edited_text || item.extracted_text || '').length > 80 ? '...' : ''}
+              </p>
+            </div>
+
+            {/* Meta Info */}
+            <div className="flex-shrink-0 flex items-center gap-6 text-sm text-gray-500">
+              <div className="flex items-center gap-1.5" title="Pages">
+                <FileText className="w-3.5 h-3.5" />
+                <span>{item.total_pages || 1}</span>
+              </div>
+              <div className="flex items-center gap-1.5" title="Processing Time">
+                <Timer className="w-3.5 h-3.5" />
+                <span>{formatProcessingTime(item.processing_time)}</span>
+              </div>
+              <div className="flex items-center gap-1.5 w-20" title="Date">
+                <Calendar className="w-3.5 h-3.5" />
+                <span>{formatDate(item.created_at)}</span>
               </div>
             </div>
+
+            {/* Status */}
+            <div className="flex-shrink-0">
+              {item.status === 'success' ? (
+                <div className="p-1.5 bg-emerald-100 rounded-full">
+                  <CheckCircle className="w-4 h-4 text-emerald-600" />
+                </div>
+              ) : (
+                <div className="p-1.5 bg-red-100 rounded-full">
+                  <XCircle className="w-4 h-4 text-red-600" />
+                </div>
+              )}
+            </div>
+
+            {/* Arrow */}
+            <ChevronRight className="w-4 h-4 text-gray-400 group-hover:text-gray-600 transition-colors" />
           </div>
         ))}
       </div>
+
+      {/* No results from filter */}
+      {filteredHistory.length === 0 && history.length > 0 && (
+        <div className="text-center py-12">
+          <p className="text-gray-600">No documents match your search</p>
+          <button
+            onClick={() => {
+              setSearchQuery('')
+              setFilterType('all')
+            }}
+            className="mt-2 text-sm text-blue-600 hover:text-blue-700 font-medium"
+          >
+            Clear filters
+          </button>
+        </div>
+      )}
     </div>
   )
 }
-

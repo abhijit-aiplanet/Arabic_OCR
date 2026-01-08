@@ -1196,6 +1196,8 @@ async def process_pdf_ocr(
     Returns:
         StreamingResponse with PDFPageResult for each page as JSON lines
     """
+    start_time = time.time()
+    
     try:
         # Validate RunPod configuration
         if not RUNPOD_ENDPOINT:
@@ -1211,7 +1213,7 @@ async def process_pdf_ocr(
                 detail=f"Invalid RUNPOD_ENDPOINT_URL format: {RUNPOD_ENDPOINT[:50]}... Must start with http:// or https://"
             )
         
-        print(f"🚀 Using RunPod endpoint for PDF: {RUNPOD_ENDPOINT}")
+        print(f"Processing PDF OCR: {RUNPOD_ENDPOINT}")
         
         # Validate PDF file
         if not file.filename.lower().endswith('.pdf'):
@@ -1222,18 +1224,27 @@ async def process_pdf_ocr(
         
         # Read PDF file
         pdf_contents = await file.read()
+        pdf_file_size = len(pdf_contents)
+        pdf_filename = file.filename or "document.pdf"
+        user_id = user.get("sub", "anonymous")
         
         # Store PDF to Vercel Blob
         storage_result = await store_file_to_blob(
             pdf_contents,
-            file.filename or "document.pdf",
+            pdf_filename,
             "application/pdf"
         )
-        if storage_result.get("stored"):
-            print(f"📁 PDF stored: {storage_result.get('url')}")
+        storage_url = storage_result.get('url') if storage_result.get("stored") else None
+        if storage_url:
+            print(f"PDF stored: {storage_url}")
         
         # Generator function to process pages and yield results
         async def process_pages():
+            all_extracted_texts = []
+            successful_pages = 0
+            error_pages = 0
+            total_pages = 0
+            
             try:
                 # Open PDF with PyMuPDF
                 pdf_document = fitz.open(stream=pdf_contents, filetype="pdf")
@@ -1247,6 +1258,9 @@ async def process_pdf_ocr(
                 
                 # Process each page
                 for page_num in range(total_pages):
+                    page_text = ""
+                    page_status = "error"
+                    
                     try:
                         # Get page
                         page = pdf_document[page_num]
@@ -1299,6 +1313,7 @@ async def process_pdf_ocr(
                             
                             if response.status_code != 200:
                                 # Yield error for this page
+                                error_pages += 1
                                 yield json.dumps({
                                     "type": "page_result",
                                     "page_number": page_num + 1,
@@ -1332,6 +1347,7 @@ async def process_pdf_ocr(
                                         if result.get("status") == "COMPLETED":
                                             break
                                         elif result.get("status") in ["FAILED", "CANCELLED"]:
+                                            error_pages += 1
                                             yield json.dumps({
                                                 "type": "page_result",
                                                 "page_number": page_num + 1,
@@ -1342,6 +1358,7 @@ async def process_pdf_ocr(
                                             break
                                 else:
                                     # Timeout
+                                    error_pages += 1
                                     yield json.dumps({
                                         "type": "page_result",
                                         "page_number": page_num + 1,
@@ -1356,13 +1373,19 @@ async def process_pdf_ocr(
                                 page_output = result.get("output", {}) or {}
                                 extracted_text = page_output.get("text", "")
                                 token_confidence = page_output.get("token_confidence")
-                                print(f"📄 Page {page_num+1} token_confidence: {token_confidence is not None}")
+                                print(f"Page {page_num+1} token_confidence: {token_confidence is not None}")
                                 
                                 if not extracted_text:
                                     extracted_text = "No text extracted from this page"
 
                                 text_quality = analyze_text_quality(extracted_text)
                                 confidence = calculate_final_confidence(page_image_quality, token_confidence, text_quality)
+                                
+                                # Track for history
+                                page_text = extracted_text
+                                page_status = "success"
+                                successful_pages += 1
+                                all_extracted_texts.append(f"--- Page {page_num + 1} ---\n{extracted_text}")
                                 
                                 # Yield success result
                                 yield json.dumps({
@@ -1374,6 +1397,7 @@ async def process_pdf_ocr(
                                     "confidence": confidence
                                 }) + "\n"
                             else:
+                                error_pages += 1
                                 yield json.dumps({
                                     "type": "page_result",
                                     "page_number": page_num + 1,
@@ -1385,6 +1409,7 @@ async def process_pdf_ocr(
                     
                     except Exception as e:
                         # Error processing this specific page
+                        error_pages += 1
                         yield json.dumps({
                             "type": "page_result",
                             "page_number": page_num + 1,
@@ -1396,6 +1421,39 @@ async def process_pdf_ocr(
                 # Close PDF document
                 pdf_document.close()
                 
+                # Calculate processing time
+                processing_time = time.time() - start_time
+                
+                # Combine all extracted texts
+                combined_text = "\n\n".join(all_extracted_texts) if all_extracted_texts else ""
+                
+                # Save to history after processing all pages
+                history_status = "success" if successful_pages > 0 else "error"
+                error_message = None if successful_pages > 0 else f"Failed to process all {total_pages} pages"
+                
+                await save_ocr_history(
+                    user_id=user_id,
+                    file_name=pdf_filename,
+                    file_type="pdf",
+                    file_size=pdf_file_size,
+                    total_pages=total_pages,
+                    extracted_text=combined_text,
+                    status=history_status,
+                    error_message=error_message,
+                    processing_time=processing_time,
+                    settings={
+                        "max_new_tokens": max_new_tokens,
+                        "min_pixels": min_pixels,
+                        "max_pixels": max_pixels,
+                        "custom_prompt": custom_prompt if custom_prompt else None,
+                        "successful_pages": successful_pages,
+                        "error_pages": error_pages
+                    },
+                    blob_url=storage_url
+                )
+                
+                print(f"PDF history saved: {pdf_filename}, {total_pages} pages, {processing_time:.2f}s")
+                
                 # Send completion message
                 yield json.dumps({
                     "type": "complete",
@@ -1403,6 +1461,27 @@ async def process_pdf_ocr(
                 }) + "\n"
                 
             except Exception as e:
+                # Save error to history
+                processing_time = time.time() - start_time
+                await save_ocr_history(
+                    user_id=user_id,
+                    file_name=pdf_filename,
+                    file_type="pdf",
+                    file_size=pdf_file_size,
+                    total_pages=total_pages,
+                    extracted_text="",
+                    status="error",
+                    error_message=str(e),
+                    processing_time=processing_time,
+                    settings={
+                        "max_new_tokens": max_new_tokens,
+                        "min_pixels": min_pixels,
+                        "max_pixels": max_pixels,
+                        "custom_prompt": custom_prompt if custom_prompt else None
+                    },
+                    blob_url=storage_url
+                )
+                
                 yield json.dumps({
                     "type": "error",
                     "error": f"Error processing PDF: {str(e)}"
