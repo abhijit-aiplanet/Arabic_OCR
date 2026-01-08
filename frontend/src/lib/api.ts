@@ -140,7 +140,7 @@ export async function processOCR(
       formData,
       {
         headers,
-        timeout: 120000, // 2 minutes timeout
+        timeout: 600000, // 10 minutes timeout (handles cold starts)
       }
     )
 
