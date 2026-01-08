@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { Clock, FileText, CheckCircle, XCircle, Download, Trash2, Edit2, Save, X as XIcon, ArrowLeft, File, Image, Calendar, Timer, Layers, Search, Filter, ChevronRight } from 'lucide-react'
+import { Clock, FileText, CheckCircle, XCircle, Download, Edit2, Save, X as XIcon, ArrowLeft, File, Image, Calendar, Timer, Layers, Search, ChevronRight } from 'lucide-react'
 import axios from 'axios'
 import { updateHistoryText } from '@/lib/api'
 import toast from 'react-hot-toast'
@@ -102,7 +102,6 @@ export default function OCRHistory({ getToken, onSelectItem }: OCRHistoryProps) 
 
       await updateHistoryText(item.id, editText, authToken)
       
-      // Update local state
       setHistory(history.map(h => 
         h.id === item.id 
           ? { ...h, edited_text: editText, edited_at: new Date().toISOString() }
@@ -182,9 +181,9 @@ export default function OCRHistory({ getToken, onSelectItem }: OCRHistoryProps) 
     const displayText = selectedItem.edited_text || selectedItem.extracted_text
 
     return (
-      <div className="min-h-screen bg-gray-50">
+      <div className="min-h-screen bg-[#fafafa]">
         {/* Header */}
-        <div className="bg-white border-b border-gray-200 px-6 py-4 sticky top-0 z-10">
+        <div className="bg-white border-b border-gray-100 px-6 py-4 sticky top-0 z-10">
           <div className="flex items-center justify-between max-w-7xl mx-auto">
             <div className="flex items-center gap-4">
               <button
@@ -192,12 +191,12 @@ export default function OCRHistory({ getToken, onSelectItem }: OCRHistoryProps) 
                   setSelectedItem(null)
                   setEditingId(null)
                 }}
-                className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+                className="w-9 h-9 flex items-center justify-center hover:bg-gray-50 rounded-lg transition-colors"
               >
-                <ArrowLeft className="w-5 h-5 text-gray-600" />
+                <ArrowLeft className="w-5 h-5 text-gray-500" />
               </button>
               <div className="flex items-center gap-3">
-                <div className={`p-2 rounded-lg ${selectedItem.file_type === 'pdf' ? 'bg-red-100' : 'bg-blue-100'}`}>
+                <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${selectedItem.file_type === 'pdf' ? 'bg-red-50' : 'bg-blue-50'}`}>
                   {selectedItem.file_type === 'pdf' ? (
                     <File className="w-5 h-5 text-red-600" />
                   ) : (
@@ -205,7 +204,7 @@ export default function OCRHistory({ getToken, onSelectItem }: OCRHistoryProps) 
                   )}
                 </div>
                 <div>
-                  <h2 className="text-lg font-semibold text-gray-900 truncate max-w-md">{selectedItem.file_name}</h2>
+                  <h2 className="font-semibold text-gray-900 truncate max-w-md">{selectedItem.file_name}</h2>
                   <p className="text-sm text-gray-500">{formatFullDate(selectedItem.created_at)}</p>
                 </div>
               </div>
@@ -218,7 +217,7 @@ export default function OCRHistory({ getToken, onSelectItem }: OCRHistoryProps) 
                     <>
                       <button
                         onClick={() => handleEdit(selectedItem)}
-                        className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
+                        className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-600 hover:text-gray-900 hover:bg-gray-50 rounded-lg transition-colors"
                       >
                         <Edit2 className="w-4 h-4" />
                         Edit
@@ -238,7 +237,7 @@ export default function OCRHistory({ getToken, onSelectItem }: OCRHistoryProps) 
                 <>
                   <button
                     onClick={() => handleCancelEdit()}
-                    className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
+                    className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-600 hover:text-gray-900 hover:bg-gray-50 rounded-lg transition-colors"
                   >
                     <XIcon className="w-4 h-4" />
                     Cancel
@@ -260,66 +259,41 @@ export default function OCRHistory({ getToken, onSelectItem }: OCRHistoryProps) 
         <div className="max-w-7xl mx-auto px-6 py-6">
           {/* Stats Cards */}
           <div className="grid grid-cols-4 gap-4 mb-6">
-            <div className="bg-white rounded-xl border border-gray-200 p-4">
-              <div className="flex items-center gap-3">
-                <div className={`p-2 rounded-lg ${selectedItem.status === 'success' ? 'bg-emerald-100' : 'bg-red-100'}`}>
-                  {selectedItem.status === 'success' ? (
-                    <CheckCircle className="w-5 h-5 text-emerald-600" />
-                  ) : (
-                    <XCircle className="w-5 h-5 text-red-600" />
-                  )}
-                </div>
-                <div>
-                  <p className="text-xs text-gray-500 uppercase tracking-wide">Status</p>
-                  <p className="text-sm font-semibold text-gray-900 capitalize">{selectedItem.status}</p>
-                </div>
+            <div className="bg-white rounded-2xl border border-gray-100 p-4">
+              <p className="text-xs text-gray-500 uppercase tracking-wide mb-1">Status</p>
+              <div className="flex items-center gap-2">
+                {selectedItem.status === 'success' ? (
+                  <CheckCircle className="w-4 h-4 text-emerald-500" />
+                ) : (
+                  <XCircle className="w-4 h-4 text-red-500" />
+                )}
+                <span className="text-sm font-medium text-gray-900 capitalize">{selectedItem.status}</span>
               </div>
             </div>
             
-            <div className="bg-white rounded-xl border border-gray-200 p-4">
-              <div className="flex items-center gap-3">
-                <div className="p-2 rounded-lg bg-purple-100">
-                  <Layers className="w-5 h-5 text-purple-600" />
-                </div>
-                <div>
-                  <p className="text-xs text-gray-500 uppercase tracking-wide">File Size</p>
-                  <p className="text-sm font-semibold text-gray-900">{formatFileSize(selectedItem.file_size)}</p>
-                </div>
-              </div>
+            <div className="bg-white rounded-2xl border border-gray-100 p-4">
+              <p className="text-xs text-gray-500 uppercase tracking-wide mb-1">File Size</p>
+              <p className="text-sm font-medium text-gray-900">{formatFileSize(selectedItem.file_size)}</p>
             </div>
             
-            <div className="bg-white rounded-xl border border-gray-200 p-4">
-              <div className="flex items-center gap-3">
-                <div className="p-2 rounded-lg bg-amber-100">
-                  <Timer className="w-5 h-5 text-amber-600" />
-                </div>
-                <div>
-                  <p className="text-xs text-gray-500 uppercase tracking-wide">Processing Time</p>
-                  <p className="text-sm font-semibold text-gray-900">{formatProcessingTime(selectedItem.processing_time)}</p>
-                </div>
-              </div>
+            <div className="bg-white rounded-2xl border border-gray-100 p-4">
+              <p className="text-xs text-gray-500 uppercase tracking-wide mb-1">Processing Time</p>
+              <p className="text-sm font-medium text-gray-900">{formatProcessingTime(selectedItem.processing_time)}</p>
             </div>
             
-            <div className="bg-white rounded-xl border border-gray-200 p-4">
-              <div className="flex items-center gap-3">
-                <div className="p-2 rounded-lg bg-blue-100">
-                  <FileText className="w-5 h-5 text-blue-600" />
-                </div>
-                <div>
-                  <p className="text-xs text-gray-500 uppercase tracking-wide">Pages</p>
-                  <p className="text-sm font-semibold text-gray-900">{selectedItem.total_pages || 1}</p>
-                </div>
-              </div>
+            <div className="bg-white rounded-2xl border border-gray-100 p-4">
+              <p className="text-xs text-gray-500 uppercase tracking-wide mb-1">Pages</p>
+              <p className="text-sm font-medium text-gray-900">{selectedItem.total_pages || 1}</p>
             </div>
           </div>
 
           {/* Error message if failed */}
           {selectedItem.status === 'error' && selectedItem.error_message && (
-            <div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-6">
+            <div className="bg-red-50 border border-red-100 rounded-2xl p-4 mb-6">
               <div className="flex items-start gap-3">
                 <XCircle className="w-5 h-5 text-red-500 mt-0.5" />
                 <div>
-                  <p className="text-sm font-medium text-red-800">Error Details</p>
+                  <p className="text-sm font-medium text-red-900">Error</p>
                   <p className="text-sm text-red-600 mt-1">{selectedItem.error_message}</p>
                 </div>
               </div>
@@ -331,25 +305,25 @@ export default function OCRHistory({ getToken, onSelectItem }: OCRHistoryProps) 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               {/* Left: Original File Viewer */}
               {selectedItem.blob_url && (
-                <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-                  <div className="px-4 py-3 border-b border-gray-200 bg-gray-50">
+                <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
+                  <div className="px-5 py-4 border-b border-gray-100">
                     <h3 className="text-sm font-semibold text-gray-900">Original File</h3>
                   </div>
                   <div className="p-4">
                     {selectedItem.file_type === 'pdf' ? (
-                      <div className="bg-gray-100 rounded-lg overflow-hidden">
+                      <div className="bg-gray-50 rounded-xl overflow-hidden">
                         <iframe
                           src={selectedItem.blob_url}
-                          className="w-full h-[550px] border-0"
+                          className="w-full h-[500px] border-0"
                           title="PDF Viewer"
                         />
                       </div>
                     ) : (
-                      <div className="bg-gray-100 rounded-lg overflow-hidden flex items-center justify-center">
+                      <div className="bg-gray-50 rounded-xl overflow-hidden flex items-center justify-center">
                         <img
                           src={selectedItem.blob_url}
                           alt={selectedItem.file_name}
-                          className="max-w-full h-auto max-h-[550px] object-contain"
+                          className="max-w-full h-auto max-h-[500px] object-contain"
                         />
                       </div>
                     )}
@@ -358,12 +332,12 @@ export default function OCRHistory({ getToken, onSelectItem }: OCRHistoryProps) 
               )}
 
               {/* Right: Extracted Text */}
-              <div className={`bg-white rounded-xl border border-gray-200 overflow-hidden ${!selectedItem.blob_url ? 'lg:col-span-2' : ''}`}>
-                <div className="px-4 py-3 border-b border-gray-200 bg-gray-50 flex items-center justify-between">
+              <div className={`bg-white rounded-2xl border border-gray-100 overflow-hidden ${!selectedItem.blob_url ? 'lg:col-span-2' : ''}`}>
+                <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
                   <h3 className="text-sm font-semibold text-gray-900">
                     {selectedItem.edited_text ? 'Edited Text' : 'Extracted Text'}
                   </h3>
-                  <span className="text-xs text-gray-500">
+                  <span className="text-xs text-gray-400">
                     {displayText.length.toLocaleString()} chars
                   </span>
                 </div>
@@ -372,47 +346,18 @@ export default function OCRHistory({ getToken, onSelectItem }: OCRHistoryProps) 
                     <textarea
                       value={editText}
                       onChange={(e) => setEditText(e.target.value)}
-                      className="w-full min-h-[500px] p-4 text-sm text-gray-900 bg-gray-50 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent resize-y font-mono leading-relaxed"
+                      className="w-full min-h-[450px] p-4 text-sm text-gray-900 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent resize-y font-mono leading-relaxed"
                       placeholder="Edit your text here..."
                       dir="auto"
                     />
                   ) : (
-                    <div className="min-h-[500px] max-h-[550px] overflow-y-auto">
-                      <pre className="whitespace-pre-wrap font-mono text-sm leading-relaxed text-gray-900 text-left bg-gray-50 p-4 rounded-lg" dir="auto">
+                    <div className="min-h-[450px] max-h-[500px] overflow-y-auto">
+                      <pre className="whitespace-pre-wrap font-mono text-sm leading-relaxed text-gray-900 text-left bg-gray-50 p-4 rounded-xl" dir="auto">
                         {displayText}
                       </pre>
                     </div>
                   )}
                 </div>
-              </div>
-            </div>
-          )}
-
-          {/* Full width text if no blob_url */}
-          {selectedItem.extracted_text && !selectedItem.blob_url && (
-            <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-              <div className="px-4 py-3 border-b border-gray-200 bg-gray-50 flex items-center justify-between">
-                <h3 className="text-sm font-semibold text-gray-900">
-                  {selectedItem.edited_text ? 'Edited Text' : 'Extracted Text'}
-                </h3>
-                <span className="text-xs text-gray-500">
-                  {displayText.length.toLocaleString()} chars
-                </span>
-              </div>
-              <div className="p-4">
-                {editingId === selectedItem.id ? (
-                  <textarea
-                    value={editText}
-                    onChange={(e) => setEditText(e.target.value)}
-                    className="w-full min-h-[400px] p-4 text-sm text-gray-900 bg-gray-50 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent resize-y font-mono leading-relaxed"
-                    placeholder="Edit your text here..."
-                    dir="auto"
-                  />
-                ) : (
-                  <pre className="whitespace-pre-wrap font-mono text-sm leading-relaxed text-gray-900 text-left bg-gray-50 p-4 rounded-lg" dir="auto">
-                    {displayText}
-                  </pre>
-                )}
               </div>
             </div>
           )}
@@ -426,8 +371,11 @@ export default function OCRHistory({ getToken, onSelectItem }: OCRHistoryProps) 
     return (
       <div className="flex items-center justify-center h-96">
         <div className="text-center">
-          <div className="animate-spin rounded-full h-10 w-10 border-2 border-gray-300 border-t-gray-900 mx-auto"></div>
-          <p className="mt-4 text-sm text-gray-600">Loading history...</p>
+          <div className="relative w-10 h-10 mx-auto mb-4">
+            <div className="w-10 h-10 border-2 border-gray-200 rounded-full"></div>
+            <div className="absolute inset-0 w-10 h-10 border-2 border-transparent border-t-gray-900 rounded-full animate-spin"></div>
+          </div>
+          <p className="text-sm text-gray-500">Loading history...</p>
         </div>
       </div>
     )
@@ -437,9 +385,9 @@ export default function OCRHistory({ getToken, onSelectItem }: OCRHistoryProps) 
   if (error) {
     return (
       <div className="max-w-md mx-auto mt-12">
-        <div className="bg-red-50 border border-red-200 rounded-xl p-6 text-center">
+        <div className="bg-red-50 border border-red-100 rounded-2xl p-6 text-center">
           <XCircle className="w-10 h-10 text-red-400 mx-auto mb-3" />
-          <p className="text-red-800 font-medium">Error loading history</p>
+          <p className="text-red-900 font-medium">Failed to load history</p>
           <p className="text-red-600 text-sm mt-1">{error}</p>
           <button 
             onClick={fetchHistory}
@@ -456,12 +404,12 @@ export default function OCRHistory({ getToken, onSelectItem }: OCRHistoryProps) 
   if (history.length === 0) {
     return (
       <div className="max-w-md mx-auto mt-12">
-        <div className="text-center py-12 px-6 bg-gray-50 rounded-xl border border-gray-200">
-          <div className="w-16 h-16 bg-gray-200 rounded-full flex items-center justify-center mx-auto mb-4">
-            <FileText className="w-8 h-8 text-gray-400" />
+        <div className="text-center py-12 px-6">
+          <div className="w-16 h-16 bg-gray-100 rounded-2xl flex items-center justify-center mx-auto mb-4">
+            <FileText className="w-7 h-7 text-gray-400" />
           </div>
           <h3 className="text-lg font-semibold text-gray-900 mb-1">No history yet</h3>
-          <p className="text-sm text-gray-600">
+          <p className="text-sm text-gray-500">
             Your processed documents will appear here
           </p>
         </div>
@@ -475,36 +423,36 @@ export default function OCRHistory({ getToken, onSelectItem }: OCRHistoryProps) 
       {/* Search and Filter Bar */}
       <div className="flex items-center gap-4">
         <div className="flex-1 relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+          <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
           <input
             type="text"
             placeholder="Search files..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full pl-10 pr-4 py-2.5 bg-white border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent"
+            className="w-full pl-10 pr-4 py-2.5 bg-white border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent"
           />
         </div>
-        <div className="flex items-center gap-1 bg-gray-100 p-1 rounded-lg">
+        <div className="flex items-center gap-1 bg-gray-100 p-1 rounded-xl">
           <button
             onClick={() => setFilterType('all')}
-            className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
-              filterType === 'all' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-600 hover:text-gray-900'
+            className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
+              filterType === 'all' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
             }`}
           >
             All
           </button>
           <button
             onClick={() => setFilterType('image')}
-            className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
-              filterType === 'image' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-600 hover:text-gray-900'
+            className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
+              filterType === 'image' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
             }`}
           >
             Images
           </button>
           <button
             onClick={() => setFilterType('pdf')}
-            className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
-              filterType === 'pdf' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-600 hover:text-gray-900'
+            className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
+              filterType === 'pdf' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
             }`}
           >
             PDFs
@@ -513,14 +461,12 @@ export default function OCRHistory({ getToken, onSelectItem }: OCRHistoryProps) 
       </div>
 
       {/* Results count */}
-      <div className="flex items-center justify-between">
-        <p className="text-sm text-gray-600">
-          {filteredHistory.length} {filteredHistory.length === 1 ? 'document' : 'documents'}
-        </p>
-      </div>
+      <p className="text-sm text-gray-500">
+        {filteredHistory.length} {filteredHistory.length === 1 ? 'document' : 'documents'}
+      </p>
 
       {/* History List */}
-      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden divide-y divide-gray-100">
+      <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden divide-y divide-gray-100">
         {filteredHistory.map((item) => (
           <div
             key={item.id}
@@ -528,11 +474,11 @@ export default function OCRHistory({ getToken, onSelectItem }: OCRHistoryProps) 
             className="flex items-center gap-4 p-4 hover:bg-gray-50 cursor-pointer transition-colors group"
           >
             {/* File Type Icon */}
-            <div className={`flex-shrink-0 p-2.5 rounded-lg ${
+            <div className={`flex-shrink-0 w-10 h-10 rounded-xl flex items-center justify-center ${
               item.file_type === 'pdf' ? 'bg-red-50' : 'bg-blue-50'
             }`}>
               {item.file_type === 'pdf' ? (
-                <File className={`w-5 h-5 ${item.file_type === 'pdf' ? 'text-red-500' : 'text-blue-500'}`} />
+                <File className="w-5 h-5 text-red-500" />
               ) : (
                 <Image className="w-5 h-5 text-blue-500" />
               )}
@@ -551,42 +497,29 @@ export default function OCRHistory({ getToken, onSelectItem }: OCRHistoryProps) 
                 )}
               </div>
               <p className="text-sm text-gray-500 truncate mt-0.5">
-                {(item.edited_text || item.extracted_text || item.error_message || 'No text').slice(0, 80)}
-                {(item.edited_text || item.extracted_text || '').length > 80 ? '...' : ''}
+                {(item.edited_text || item.extracted_text || item.error_message || 'No text').slice(0, 60)}
+                {(item.edited_text || item.extracted_text || '').length > 60 ? '...' : ''}
               </p>
             </div>
 
             {/* Meta Info */}
-            <div className="flex-shrink-0 flex items-center gap-6 text-sm text-gray-500">
-              <div className="flex items-center gap-1.5" title="Pages">
-                <FileText className="w-3.5 h-3.5" />
-                <span>{item.total_pages || 1}</span>
-              </div>
-              <div className="flex items-center gap-1.5" title="Processing Time">
-                <Timer className="w-3.5 h-3.5" />
-                <span>{formatProcessingTime(item.processing_time)}</span>
-              </div>
-              <div className="flex items-center gap-1.5 w-20" title="Date">
-                <Calendar className="w-3.5 h-3.5" />
-                <span>{formatDate(item.created_at)}</span>
-              </div>
+            <div className="flex-shrink-0 flex items-center gap-6 text-sm text-gray-400">
+              <span className="w-8 text-center">{item.total_pages || 1}p</span>
+              <span className="w-14 text-center">{formatProcessingTime(item.processing_time)}</span>
+              <span className="w-20 text-right">{formatDate(item.created_at)}</span>
             </div>
 
             {/* Status */}
             <div className="flex-shrink-0">
               {item.status === 'success' ? (
-                <div className="p-1.5 bg-emerald-100 rounded-full">
-                  <CheckCircle className="w-4 h-4 text-emerald-600" />
-                </div>
+                <CheckCircle className="w-5 h-5 text-emerald-500" />
               ) : (
-                <div className="p-1.5 bg-red-100 rounded-full">
-                  <XCircle className="w-4 h-4 text-red-600" />
-                </div>
+                <XCircle className="w-5 h-5 text-red-500" />
               )}
             </div>
 
             {/* Arrow */}
-            <ChevronRight className="w-4 h-4 text-gray-400 group-hover:text-gray-600 transition-colors" />
+            <ChevronRight className="w-4 h-4 text-gray-300 group-hover:text-gray-500 transition-colors" />
           </div>
         ))}
       </div>
@@ -594,13 +527,13 @@ export default function OCRHistory({ getToken, onSelectItem }: OCRHistoryProps) 
       {/* No results from filter */}
       {filteredHistory.length === 0 && history.length > 0 && (
         <div className="text-center py-12">
-          <p className="text-gray-600">No documents match your search</p>
+          <p className="text-gray-500">No documents match your search</p>
           <button
             onClick={() => {
               setSearchQuery('')
               setFilterType('all')
             }}
-            className="mt-2 text-sm text-blue-600 hover:text-blue-700 font-medium"
+            className="mt-2 text-sm text-gray-900 font-medium hover:underline"
           >
             Clear filters
           </button>

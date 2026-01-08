@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { PDFPageResult } from '@/lib/api'
-import { ChevronLeft, ChevronRight, Download, FileText } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Download, FileText, CheckCircle, XCircle } from 'lucide-react'
 import UniversalRenderer from '@/components/UniversalRenderer'
 
 interface PDFProcessorProps {
@@ -30,7 +30,6 @@ export default function PDFProcessor({
   }, [results])
 
   const handleDownloadMarkdown = () => {
-    // Combine all successful results
     const markdown = results
       .filter(r => r.status === 'success')
       .sort((a, b) => a.page_number - b.page_number)
@@ -48,85 +47,81 @@ export default function PDFProcessor({
     URL.revokeObjectURL(url)
   }
 
+  const successCount = results.filter(r => r.status === 'success').length
+
   return (
-    <div className="bg-white rounded-xl shadow-lg overflow-hidden">
+    <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
       {/* Header */}
-      <div className="bg-gradient-to-r from-blue-600 to-purple-600 px-6 py-4">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <FileText className="w-6 h-6 text-white" />
-            <div>
-              <h2 className="text-xl font-bold text-white">
-                OCR Results {isProcessing && '(Processing...)'}
-              </h2>
-              <p className="text-blue-100 text-sm">
-                Total Pages: {totalPages} | Completed: {results.length} | Successful: {results.filter(r => r.status === 'success').length}
-              </p>
-            </div>
-          </div>
-          <button
-            onClick={handleDownloadMarkdown}
-            disabled={results.length === 0}
-            className="bg-white/20 hover:bg-white/30 text-white px-4 py-2 rounded-lg flex items-center gap-2 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <Download className="w-4 h-4" />
-            Download Markdown
-          </button>
+      <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+        <div>
+          <h2 className="text-base font-semibold text-gray-900">
+            Results {isProcessing && <span className="text-gray-400 font-normal">(Processing...)</span>}
+          </h2>
+          <p className="text-sm text-gray-500 mt-0.5">
+            {results.length} of {totalPages} pages completed · {successCount} successful
+          </p>
         </div>
+        <button
+          onClick={handleDownloadMarkdown}
+          disabled={results.length === 0}
+          className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-gray-900 hover:bg-gray-800 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          <Download className="w-4 h-4" />
+          Download All
+        </button>
       </div>
 
       {/* Page Thumbnails */}
-      <div className="border-b border-gray-200 bg-gray-50 px-6 py-4 overflow-x-auto">
+      <div className="border-b border-gray-100 bg-gray-50 px-5 py-4 overflow-x-auto">
         <div className="flex gap-3">
           {Array.from({ length: totalPages }, (_, i) => i + 1).map(pageNum => {
             const result = results.find(r => r.page_number === pageNum)
             const isCompleted = !!result
             const isSuccess = result?.status === 'success'
             const isCurrent = pageNum === currentPage
-            const isProcessing = !isCompleted && results.length >= pageNum - 1
+            const isCurrentlyProcessing = !isCompleted && results.length >= pageNum - 1
 
             return (
               <button
                 key={pageNum}
                 onClick={() => setCurrentPage(pageNum)}
                 disabled={!isCompleted}
-                className={`relative flex-shrink-0 w-20 h-24 rounded-lg border-2 transition-all ${
+                className={`relative flex-shrink-0 w-16 h-20 rounded-lg border-2 transition-all overflow-hidden ${
                   isCurrent
-                    ? 'border-blue-500 shadow-lg scale-105'
+                    ? 'border-gray-900 shadow-md'
                     : isCompleted
-                    ? 'border-green-300 hover:border-green-500'
-                    : 'border-gray-300'
-                } ${!isCompleted && 'opacity-50 cursor-not-allowed'}`}
+                    ? 'border-gray-200 hover:border-gray-300'
+                    : 'border-gray-100 opacity-50 cursor-not-allowed'
+                }`}
               >
                 {result?.page_image ? (
                   <img
                     src={`data:image/png;base64,${result.page_image}`}
                     alt={`Page ${pageNum}`}
-                    className="w-full h-full object-cover rounded"
+                    className="w-full h-full object-cover"
                   />
                 ) : (
-                  <div className="w-full h-full flex items-center justify-center bg-gray-100 rounded">
-                    {isProcessing ? (
-                      <div className="animate-spin w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full" />
+                  <div className="w-full h-full flex items-center justify-center bg-gray-100">
+                    {isCurrentlyProcessing ? (
+                      <div className="w-4 h-4 border-2 border-gray-300 border-t-gray-600 rounded-full animate-spin" />
                     ) : (
-                      <span className="text-gray-400 text-sm">Page {pageNum}</span>
+                      <span className="text-xs text-gray-400">{pageNum}</span>
                     )}
                   </div>
                 )}
                 
                 {/* Status Badge */}
                 {isCompleted && (
-                  <div className={`absolute -top-2 -right-2 px-2 py-0.5 rounded-full text-xs font-bold ${
-                    isSuccess ? 'bg-green-500 text-white' : 'bg-red-500 text-white'
+                  <div className={`absolute top-1 right-1 w-4 h-4 rounded-full flex items-center justify-center ${
+                    isSuccess ? 'bg-emerald-500' : 'bg-red-500'
                   }`}>
-                    {isSuccess ? '✓' : '✗'}
+                    {isSuccess ? (
+                      <CheckCircle className="w-3 h-3 text-white" />
+                    ) : (
+                      <XCircle className="w-3 h-3 text-white" />
+                    )}
                   </div>
                 )}
-                
-                {/* Page Number */}
-                <div className="absolute bottom-0 left-0 right-0 bg-black/70 text-white text-xs py-1 text-center rounded-b">
-                  Page {pageNum}
-                </div>
               </button>
             )
           })}
@@ -135,27 +130,28 @@ export default function PDFProcessor({
 
       {/* Main Content */}
       {currentResult ? (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 p-6">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 p-5">
           {/* Left: Original PDF Page */}
           <div className="space-y-3">
             <div className="flex items-center justify-between">
-              <h3 className="text-lg font-semibold text-gray-900">
-                Original PDF - Page {currentPage}
+              <h3 className="text-sm font-medium text-gray-900">
+                Page {currentPage}
               </h3>
-              {currentResult.status === 'success' && (
-                <span className="bg-green-100 text-green-800 px-3 py-1 rounded-full text-sm font-medium">
-                  SUCCESS
+              {currentResult.status === 'success' ? (
+                <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700 bg-emerald-50 px-2 py-1 rounded-full">
+                  <CheckCircle className="w-3 h-3" />
+                  Success
                 </span>
-              )}
-              {currentResult.status === 'error' && (
-                <span className="bg-red-100 text-red-800 px-3 py-1 rounded-full text-sm font-medium">
-                  ERROR
+              ) : (
+                <span className="inline-flex items-center gap-1 text-xs font-medium text-red-700 bg-red-50 px-2 py-1 rounded-full">
+                  <XCircle className="w-3 h-3" />
+                  Error
                 </span>
               )}
             </div>
             
             {currentResult.page_image && (
-              <div className="border border-gray-300 rounded-lg overflow-hidden bg-gray-50">
+              <div className="border border-gray-200 rounded-xl overflow-hidden bg-gray-50">
                 <img
                   src={`data:image/png;base64,${currentResult.page_image}`}
                   alt={`Page ${currentPage}`}
@@ -167,8 +163,8 @@ export default function PDFProcessor({
 
           {/* Right: OCR Output */}
           <div className="space-y-3">
-            <h3 className="text-lg font-semibold text-gray-900">
-              OCR Output - Page {currentPage}
+            <h3 className="text-sm font-medium text-gray-900">
+              Extracted Text
             </h3>
             
             <div className="min-h-[400px]">
@@ -180,46 +176,50 @@ export default function PDFProcessor({
                   confidence={currentResult.confidence || null}
                 />
               ) : (
-                <div className="border border-gray-300 rounded-lg bg-white p-4 min-h-[400px] max-h-[600px] overflow-y-auto text-red-600">
-                  <p className="font-semibold">Error processing this page:</p>
-                  <p className="mt-2">{currentResult.error || 'Unknown error'}</p>
+                <div className="bg-red-50 border border-red-100 rounded-xl p-4 min-h-[400px]">
+                  <div className="flex items-start gap-3">
+                    <XCircle className="w-5 h-5 text-red-500 mt-0.5" />
+                    <div>
+                      <p className="text-sm font-medium text-red-900">Failed to process this page</p>
+                      <p className="text-sm text-red-600 mt-1">{currentResult.error || 'Unknown error'}</p>
+                    </div>
+                  </div>
                 </div>
               )}
             </div>
           </div>
         </div>
       ) : (
-        <div className="p-12 text-center text-gray-500">
-          <div className="animate-pulse">
-            <div className="w-16 h-16 bg-blue-100 rounded-full mx-auto mb-4 flex items-center justify-center">
-              <div className="animate-spin w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full" />
-            </div>
-            <p className="text-lg font-medium">Processing page {currentPage}...</p>
-            <p className="text-sm mt-2">Please wait while we extract the text</p>
+        <div className="p-12 text-center">
+          <div className="relative w-12 h-12 mx-auto mb-4">
+            <div className="w-12 h-12 border-2 border-gray-200 rounded-full"></div>
+            <div className="absolute inset-0 w-12 h-12 border-2 border-transparent border-t-gray-900 rounded-full animate-spin"></div>
           </div>
+          <p className="text-sm font-medium text-gray-900">Processing page {currentPage}...</p>
+          <p className="text-xs text-gray-500 mt-1">This may take a moment</p>
         </div>
       )}
 
       {/* Navigation */}
       {totalPages > 1 && (
-        <div className="border-t border-gray-200 px-6 py-4 flex items-center justify-between bg-gray-50">
+        <div className="border-t border-gray-100 px-5 py-4 flex items-center justify-between">
           <button
             onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
             disabled={currentPage === 1}
-            className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-blue-600"
+            className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-600 hover:text-gray-900 hover:bg-gray-50 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >
             <ChevronLeft className="w-4 h-4" />
             Previous
           </button>
 
-          <span className="text-gray-700 font-medium">
-            Page {currentPage} of {totalPages}
+          <span className="text-sm text-gray-500">
+            {currentPage} of {totalPages}
           </span>
 
           <button
             onClick={() => setCurrentPage(Math.min(totalPages, currentPage + 1))}
             disabled={currentPage === totalPages}
-            className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-blue-600"
+            className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-600 hover:text-gray-900 hover:bg-gray-50 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >
             Next
             <ChevronRight className="w-4 h-4" />
@@ -229,4 +229,3 @@ export default function PDFProcessor({
     </div>
   )
 }
-

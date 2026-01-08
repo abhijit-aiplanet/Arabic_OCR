@@ -11,7 +11,7 @@ import UniversalRenderer from '@/components/UniversalRenderer'
 import { processOCR, processPDFOCR, PDFPageResult, updateHistoryText, type ContentType, type OCRTemplate, type OCRConfidence } from '@/lib/api'
 import { getEffectivePrompt } from '@/lib/promptGenerator'
 import toast from 'react-hot-toast'
-import { FileText, Sparkles, Lock, History, X, Trash2 } from 'lucide-react'
+import { FileText, Lock, History, X, Trash2, ArrowRight, Zap, Shield, Clock } from 'lucide-react'
 import { SignedIn, SignedOut, SignInButton, UserButton, useAuth } from '@clerk/nextjs'
 
 interface OCRSettings {
@@ -30,9 +30,9 @@ export default function Home() {
   const [isProcessing, setIsProcessing] = useState(false)
   const [settings, setSettings] = useState<OCRSettings>({
     customPrompt: '',
-    maxTokens: 4096,  // Balanced for speed and capacity
+    maxTokens: 4096,
     minPixels: 200704,
-    maxPixels: 1003520,  // Reduced for faster processing
+    maxPixels: 1003520,
   })
 
   // PDF-specific state
@@ -78,11 +78,9 @@ export default function Home() {
   const handleImageSelect = (file: File) => {
     setSelectedImage(file)
     
-    // Check if PDF
     const isPDFFile = file.type === 'application/pdf'
     setIsPDF(isPDFFile)
     
-    // Create preview for images only
     if (!isPDFFile) {
       const reader = new FileReader()
       reader.onloadend = () => {
@@ -93,7 +91,6 @@ export default function Home() {
       setImagePreview(null)
     }
     
-    // Clear previous results
     setExtractedText('')
     setExtractedConfidence(null)
     setPdfResults([])
@@ -110,7 +107,6 @@ export default function Home() {
     setIsProcessing(true)
 
     try {
-      // Get auth token from Clerk
       const token = await getToken()
 
       const effective = getEffectivePrompt({
@@ -121,48 +117,34 @@ export default function Home() {
 
       const settingsForRequest = {
         ...settings,
-        // If user typed a custom prompt, it remains. Otherwise use template/content-type prompt.
         customPrompt: effective.prompt
       }
       
       if (isPDF) {
-        // Process PDF
         const loadingToast = toast.loading('Processing PDF...')
         
         await processPDFOCR(
           selectedImage,
           settingsForRequest,
           (pageResult: PDFPageResult) => {
-            // Called when each page completes
             setPdfResults(prev => [...prev, pageResult])
             setPdfProcessedCount(prev => prev + 1)
             
             if (pageResult.status === 'success') {
-              toast.success(`Page ${pageResult.page_number} completed!`, {
-                duration: 2000
-              })
+              toast.success(`Page ${pageResult.page_number} completed!`, { duration: 2000 })
             } else {
-              toast.error(`Page ${pageResult.page_number} failed: ${pageResult.error}`, {
-                duration: 3000
-              })
+              toast.error(`Page ${pageResult.page_number} failed: ${pageResult.error}`, { duration: 3000 })
             }
           },
           (totalPages: number) => {
-            // Called when metadata is received
             setPdfTotalPages(totalPages)
-            toast.success(`PDF loaded: ${totalPages} pages`, {
-              id: loadingToast,
-              duration: 2000
-            })
+            toast.success(`PDF loaded: ${totalPages} pages`, { id: loadingToast, duration: 2000 })
           },
           token
         )
         
-        toast.success('PDF processing complete!', {
-          id: loadingToast
-        })
+        toast.success('PDF processing complete!', { id: loadingToast })
       } else {
-        // Process single image
         const loadingToast = toast.loading('Processing image...')
         
         const result = await processOCR(selectedImage, settingsForRequest, token)
@@ -170,8 +152,6 @@ export default function Home() {
         if (result.status === 'success') {
           setExtractedText(result.extracted_text)
           setExtractedConfidence(result.confidence || null)
-          // Note: We'll get history ID from backend response once we add it
-          // For now, clear it so user can edit after processing
           setCurrentHistoryId(null)
           toast.success('Text extracted successfully!', { id: loadingToast })
         } else {
@@ -180,9 +160,7 @@ export default function Home() {
       }
     } catch (error) {
       console.error('OCR Error:', error)
-      toast.error(
-        error instanceof Error ? error.message : 'Failed to process file'
-      )
+      toast.error(error instanceof Error ? error.message : 'Failed to process file')
     } finally {
       setIsProcessing(false)
     }
@@ -199,92 +177,106 @@ export default function Home() {
     setPdfProcessedCount(0)
     setSettings({
       customPrompt: '',
-      maxTokens: 4096,  // Balanced for speed and capacity
+      maxTokens: 4096,
       minPixels: 200704,
-      maxPixels: 1003520,  // Reduced for faster processing
+      maxPixels: 1003520,
     })
     setSelectedTemplate(null)
     setContentTypeOverride('auto')
   }
 
   return (
-    <main className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50">
+    <main className="min-h-screen bg-[#fafafa]">
       {/* Header */}
-      <div className="bg-white shadow-sm border-b border-gray-200">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-gradient-to-br from-blue-500 to-purple-600 rounded-lg">
-                <FileText className="w-8 h-8 text-white" />
-              </div>
-              <div>
-                <h1 className="text-3xl font-bold text-gray-900">
-                  Arabic Vision Language Model OCR
-                </h1>
-                <p className="text-gray-600 mt-1">
-                  Advanced OCR for images and PDFs using Vision Language Model
-                </p>
-              </div>
+      <header className="bg-white border-b border-gray-100">
+        <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
+          {/* Logo */}
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 bg-black rounded-lg flex items-center justify-center">
+              <FileText className="w-5 h-5 text-white" />
             </div>
-            
-            {/* Authentication UI */}
-            <div className="flex items-center gap-4">
-              <SignedIn>
-                <button
-                  onClick={() => setShowHistory(!showHistory)}
-                  className="flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg font-semibold hover:bg-gray-200 transition-colors"
-                >
-                  <History className="w-4 h-4" />
-                  History
-                </button>
-                <UserButton 
-                  afterSignOutUrl="/"
-                  appearance={{
-                    elements: {
-                      avatarBox: "w-10 h-10"
-                    }
-                  }}
-                />
-              </SignedIn>
-              <SignedOut>
-                <SignInButton mode="modal">
-                  <button className="flex items-center gap-2 px-6 py-2.5 bg-gradient-to-r from-blue-600 to-purple-600 text-white rounded-lg font-semibold hover:shadow-lg transform hover:-translate-y-0.5 transition-all duration-200">
-                    <Lock className="w-4 h-4" />
-                    Sign In
-                  </button>
-                </SignInButton>
-              </SignedOut>
-            </div>
+            <span className="text-xl font-semibold text-gray-900 tracking-tight">Dots OCR</span>
           </div>
-        </div>
-      </div>
-
-      {/* Main Content Container */}
-      <div className="flex">
-        {/* Main Content */}
-        <div className="flex-1 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-          {/* Signed Out View */}
-          <SignedOut>
-          <div className="flex items-center justify-center min-h-[60vh]">
-            <div className="text-center max-w-md">
-              <div className="p-4 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full w-20 h-20 mx-auto mb-6 flex items-center justify-center">
-                <Lock className="w-10 h-10 text-white" />
-              </div>
-              <h2 className="text-3xl font-bold text-gray-900 mb-4">
-                Sign In Required
-              </h2>
-              <p className="text-gray-600 mb-8">
-                Please sign in to access the Arabic OCR service. Extract text from images and PDFs with high accuracy using our advanced Vision Language Model.
-              </p>
+          
+          {/* Navigation */}
+          <div className="flex items-center gap-3">
+            <SignedIn>
+              <button
+                onClick={() => setShowHistory(!showHistory)}
+                className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-600 hover:text-gray-900 hover:bg-gray-50 rounded-lg transition-colors"
+              >
+                <History className="w-4 h-4" />
+                History
+              </button>
+              <div className="w-px h-6 bg-gray-200" />
+              <UserButton 
+                afterSignOutUrl="/"
+                appearance={{
+                  elements: {
+                    avatarBox: "w-9 h-9"
+                  }
+                }}
+              />
+            </SignedIn>
+            <SignedOut>
               <SignInButton mode="modal">
-                <button className="px-8 py-3 bg-gradient-to-r from-blue-600 to-purple-600 text-white rounded-lg font-semibold text-lg hover:shadow-xl transform hover:-translate-y-0.5 transition-all duration-200">
-                  Sign In to Continue
+                <button className="flex items-center gap-2 px-5 py-2 bg-black text-white text-sm font-medium rounded-lg hover:bg-gray-800 transition-colors">
+                  Sign In
                 </button>
               </SignInButton>
-              <div className="mt-8 p-4 bg-blue-50 rounded-lg">
-                <p className="text-sm text-gray-700">
-                  <strong>Features:</strong> Upload images or PDFs • Extract Arabic text • Handwritten & typed text support • Page-by-page PDF processing
-                </p>
+            </SignedOut>
+          </div>
+        </div>
+      </header>
+
+      {/* Main Content */}
+      <div className="max-w-7xl mx-auto px-6 py-8">
+        {/* Signed Out View */}
+        <SignedOut>
+          <div className="flex flex-col items-center justify-center min-h-[70vh] text-center">
+            {/* Hero */}
+            <div className="mb-8">
+              <div className="w-16 h-16 bg-black rounded-2xl flex items-center justify-center mx-auto mb-6">
+                <FileText className="w-8 h-8 text-white" />
+              </div>
+              <h1 className="text-4xl font-bold text-gray-900 tracking-tight mb-3">
+                Dots OCR
+              </h1>
+              <p className="text-lg text-gray-500 max-w-md mx-auto">
+                Extract text from images and PDFs with precision using advanced Vision Language Models
+              </p>
+            </div>
+
+            {/* CTA */}
+            <SignInButton mode="modal">
+              <button className="flex items-center gap-2 px-8 py-3.5 bg-black text-white font-medium rounded-xl hover:bg-gray-800 transition-colors mb-12">
+                Get Started
+                <ArrowRight className="w-4 h-4" />
+              </button>
+            </SignInButton>
+
+            {/* Features */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 max-w-3xl">
+              <div className="p-6 bg-white rounded-2xl border border-gray-100">
+                <div className="w-10 h-10 bg-gray-100 rounded-xl flex items-center justify-center mb-4">
+                  <Zap className="w-5 h-5 text-gray-700" />
+                </div>
+                <h3 className="font-semibold text-gray-900 mb-1">Fast Processing</h3>
+                <p className="text-sm text-gray-500">Extract text in seconds with optimized AI models</p>
+              </div>
+              <div className="p-6 bg-white rounded-2xl border border-gray-100">
+                <div className="w-10 h-10 bg-gray-100 rounded-xl flex items-center justify-center mb-4">
+                  <Shield className="w-5 h-5 text-gray-700" />
+                </div>
+                <h3 className="font-semibold text-gray-900 mb-1">High Accuracy</h3>
+                <p className="text-sm text-gray-500">Handles handwritten and printed text with precision</p>
+              </div>
+              <div className="p-6 bg-white rounded-2xl border border-gray-100">
+                <div className="w-10 h-10 bg-gray-100 rounded-xl flex items-center justify-center mb-4">
+                  <Clock className="w-5 h-5 text-gray-700" />
+                </div>
+                <h3 className="font-semibold text-gray-900 mb-1">History Saved</h3>
+                <p className="text-sm text-gray-500">Access all your processed documents anytime</p>
               </div>
             </div>
           </div>
@@ -292,169 +284,147 @@ export default function Home() {
 
         {/* Signed In View */}
         <SignedIn>
-          {/* Info Banner */}
-          <div className="bg-blue-50 border-l-4 border-blue-500 p-4 mb-6 rounded-r-lg">
-            <div className="flex items-start">
-              <Sparkles className="w-5 h-5 text-blue-500 mt-0.5 mr-3" />
-              <div>
-                <p className="text-sm font-medium text-blue-900">
-                  How it works
-                </p>
-                <p className="text-sm text-blue-700 mt-1">
-                  Upload an image or PDF document, click "Process", and get the extracted text.
-                  For PDFs, each page is processed sequentially and results are shown as they complete.
-                  The VLM model intelligently understands context and can handle handwritten text better than traditional OCR models.
-                </p>
-              </div>
-            </div>
-          </div>
-
-        {/* Main Content - Conditional Layout */}
-        {isPDF && pdfTotalPages > 0 ? (
-          // PDF Processing View - Full Width
-          <div className="space-y-6">
-            {/* Upload and Controls - Collapsed */}
-            <div className="bg-white rounded-xl shadow-lg p-6 border border-gray-200">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <FileText className="w-6 h-6 text-blue-600" />
-                  <div>
-                    <h3 className="font-semibold text-gray-900">
-                      {selectedImage?.name}
-                    </h3>
-                    <p className="text-sm text-gray-600">
-                      {isPDF ? `PDF Document - ${pdfTotalPages} pages` : 'Image File'}
-                    </p>
-                  </div>
-                </div>
-                <button
-                  onClick={handleClear}
-                  disabled={isProcessing}
-                  className="flex items-center gap-2 bg-gray-200 text-gray-700 px-4 py-2 rounded-lg font-semibold hover:bg-gray-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  <Trash2 className="w-4 h-4" />
-                  Clear
-                </button>
-              </div>
-            </div>
-
-            {/* PDF Results */}
-            <PDFProcessor
-              totalPages={pdfTotalPages}
-              results={pdfResults}
-              isProcessing={isProcessing}
-            />
-          </div>
-        ) : (
-          // Image Processing View - Two Columns
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Left Column - Input */}
+          {/* Main Content - Conditional Layout */}
+          {isPDF && pdfTotalPages > 0 ? (
+            // PDF Processing View - Full Width
             <div className="space-y-6">
-            <ImageUploader
-              onImageSelect={handleImageSelect}
-              imagePreview={imagePreview}
-              isProcessing={isProcessing}
-              acceptPDF={true}
-              selectedFile={selectedImage}
-            />
-
-              {/* Template Selector - TEMPORARILY HIDDEN */}
-              {false && (
-                <TemplateSelector
-                  authToken={authToken}
-                  selectedTemplate={selectedTemplate}
-                  onSelectTemplate={setSelectedTemplate}
-                  contentTypeOverride={contentTypeOverride}
-                  onContentTypeOverrideChange={setContentTypeOverride}
-                />
-              )}
-
-              <AdvancedSettings
-                settings={settings}
-                onSettingsChange={setSettings}
-              />
-
-              {/* Action Buttons */}
-              <div className="space-y-3">
-                <button
-                  onClick={handleProcess}
-                  disabled={!selectedImage || isProcessing}
-                  className="w-full bg-gradient-to-r from-blue-600 to-purple-600 text-white py-3 px-6 rounded-lg font-semibold text-lg shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
-                >
-                  {isProcessing ? (
-                    <span className="flex items-center justify-center">
-                      <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                      </svg>
-                      {isPDF ? `Processing PDF (${pdfProcessedCount}/${pdfTotalPages || '?'})...` : 'Processing...'}
-                    </span>
-                  ) : (
-                    `Process ${isPDF ? 'PDF' : 'Image'}`
-                  )}
-                </button>
-
-                <button
-                  onClick={handleClear}
-                  disabled={isProcessing}
-                  className="w-full flex items-center justify-center gap-2 bg-gray-200 text-gray-700 py-3 px-6 rounded-lg font-semibold hover:bg-gray-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  <Trash2 className="w-4 h-4" />
-                  Clear All
-                </button>
-              </div>
-            </div>
-
-            {/* Right Column - Output */}
-            <div>
-              <UniversalRenderer
-                text={extractedText}
-                isProcessing={isProcessing}
-                onTextEdit={handleLiveTextEdit}
-                isEditable={true}
-                preferredType={contentTypeOverride}
-                confidence={extractedConfidence}
-              />
-            </div>
-          </div>
-        )}
-        </SignedIn>
-        </div>
-
-        {/* History Full-Screen Modal */}
-        <SignedIn>
-          {showHistory && (
-            <div className="fixed inset-0 bg-white z-50 overflow-y-auto">
-              {/* Header */}
-              <div className="sticky top-0 bg-white border-b border-gray-200 px-6 py-4 z-10 shadow-sm">
-                <div className="max-w-7xl mx-auto flex items-center justify-between">
+              {/* Upload and Controls - Collapsed */}
+              <div className="bg-white rounded-2xl p-5 border border-gray-100">
+                <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
-                    <div className="p-2 bg-gradient-to-br from-blue-500 to-purple-600 rounded-lg">
-                      <History className="w-6 h-6 text-white" />
+                    <div className="w-10 h-10 bg-red-50 rounded-xl flex items-center justify-center">
+                      <FileText className="w-5 h-5 text-red-600" />
                     </div>
                     <div>
-                      <h2 className="text-2xl font-bold text-gray-900">OCR History</h2>
-                      <p className="text-sm text-gray-600">View and manage all your processed files</p>
+                      <h3 className="font-medium text-gray-900">{selectedImage?.name}</h3>
+                      <p className="text-sm text-gray-500">{pdfTotalPages} pages</p>
                     </div>
                   </div>
                   <button
-                    onClick={() => setShowHistory(false)}
-                    className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+                    onClick={handleClear}
+                    disabled={isProcessing}
+                    className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-600 hover:text-gray-900 hover:bg-gray-50 rounded-lg transition-colors disabled:opacity-50"
                   >
-                    <X className="w-6 h-6 text-gray-500" />
+                    <Trash2 className="w-4 h-4" />
+                    Clear
                   </button>
                 </div>
               </div>
 
-              {/* Content */}
-              <div className="max-w-7xl mx-auto px-6 py-8">
-                <OCRHistory getToken={getToken} />
+              {/* PDF Results */}
+              <PDFProcessor
+                totalPages={pdfTotalPages}
+                results={pdfResults}
+                isProcessing={isProcessing}
+              />
+            </div>
+          ) : (
+            // Image Processing View - Two Columns
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* Left Column - Input */}
+              <div className="space-y-5">
+                <ImageUploader
+                  onImageSelect={handleImageSelect}
+                  imagePreview={imagePreview}
+                  isProcessing={isProcessing}
+                  acceptPDF={true}
+                  selectedFile={selectedImage}
+                />
+
+                {/* Template Selector - TEMPORARILY HIDDEN */}
+                {false && (
+                  <TemplateSelector
+                    authToken={authToken}
+                    selectedTemplate={selectedTemplate}
+                    onSelectTemplate={setSelectedTemplate}
+                    contentTypeOverride={contentTypeOverride}
+                    onContentTypeOverrideChange={setContentTypeOverride}
+                  />
+                )}
+
+                <AdvancedSettings
+                  settings={settings}
+                  onSettingsChange={setSettings}
+                />
+
+                {/* Action Buttons */}
+                <div className="space-y-3">
+                  <button
+                    onClick={handleProcess}
+                    disabled={!selectedImage || isProcessing}
+                    className="w-full bg-black text-white py-3.5 px-6 rounded-xl font-medium text-base hover:bg-gray-800 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    {isProcessing ? (
+                      <span className="flex items-center justify-center gap-2">
+                        <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        {isPDF ? `Processing (${pdfProcessedCount}/${pdfTotalPages || '?'})` : 'Processing...'}
+                      </span>
+                    ) : (
+                      `Process ${isPDF ? 'PDF' : 'Image'}`
+                    )}
+                  </button>
+
+                  {selectedImage && (
+                    <button
+                      onClick={handleClear}
+                      disabled={isProcessing}
+                      className="w-full flex items-center justify-center gap-2 py-3 px-6 text-sm font-medium text-gray-600 hover:text-gray-900 hover:bg-gray-50 rounded-xl transition-colors disabled:opacity-50"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                      Clear
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Right Column - Output */}
+              <div>
+                <UniversalRenderer
+                  text={extractedText}
+                  isProcessing={isProcessing}
+                  onTextEdit={handleLiveTextEdit}
+                  isEditable={true}
+                  preferredType={contentTypeOverride}
+                  confidence={extractedConfidence}
+                />
               </div>
             </div>
           )}
         </SignedIn>
       </div>
+
+      {/* History Modal */}
+      <SignedIn>
+        {showHistory && (
+          <div className="fixed inset-0 bg-white z-50 overflow-y-auto">
+            {/* Header */}
+            <div className="sticky top-0 bg-white border-b border-gray-100 z-10">
+              <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 bg-black rounded-lg flex items-center justify-center">
+                    <History className="w-5 h-5 text-white" />
+                  </div>
+                  <span className="text-xl font-semibold text-gray-900 tracking-tight">History</span>
+                </div>
+                <button
+                  onClick={() => setShowHistory(false)}
+                  className="w-9 h-9 flex items-center justify-center hover:bg-gray-50 rounded-lg transition-colors"
+                >
+                  <X className="w-5 h-5 text-gray-500" />
+                </button>
+              </div>
+            </div>
+
+            {/* Content */}
+            <div className="max-w-7xl mx-auto px-6 py-8">
+              <OCRHistory getToken={getToken} />
+            </div>
+          </div>
+        )}
+      </SignedIn>
     </main>
   )
 }
-

@@ -26,7 +26,6 @@ export default function ImageUploader({
     }
   }, [onImageSelect])
 
-  // Construct accept types based on acceptPDF prop
   const getAcceptTypes = () => {
     const types: Record<string, string[]> = {
       'image/*': ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp']
@@ -47,98 +46,84 @@ export default function ImageUploader({
   })
 
   return (
-    <div className="bg-white rounded-xl shadow-lg p-6 border border-gray-200">
-      <h2 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
-        {acceptPDF ? (
-          <>
-            <FileText className="w-5 h-5 text-blue-600" />
-            Upload Image or PDF
-          </>
-        ) : (
-          <>
-            <ImageIcon className="w-5 h-5 text-blue-600" />
-            Upload Image
-          </>
-        )}
-      </h2>
+    <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
+      <div className="px-5 py-4 border-b border-gray-100">
+        <h2 className="text-base font-semibold text-gray-900">Upload</h2>
+      </div>
 
-      <div
-        {...getRootProps()}
-        className={`
-          border-2 border-dashed rounded-lg p-8 text-center cursor-pointer
-          transition-all duration-200
-          ${isDragActive 
-            ? 'border-blue-500 bg-blue-50' 
-            : 'border-gray-300 hover:border-blue-400 hover:bg-gray-50'
-          }
-          ${isProcessing ? 'opacity-50 cursor-not-allowed' : ''}
-        `}
-      >
-        <input {...getInputProps()} />
+      <div className="p-5">
+        <div
+          {...getRootProps()}
+          className={`
+            relative border-2 border-dashed rounded-xl p-8 text-center cursor-pointer
+            transition-all duration-200
+            ${isDragActive 
+              ? 'border-gray-400 bg-gray-50' 
+              : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'
+            }
+            ${isProcessing ? 'opacity-50 cursor-not-allowed' : ''}
+          `}
+        >
+          <input {...getInputProps()} />
 
-        {imagePreview ? (
-          <div className="space-y-4">
-            <div className="relative w-full h-64 rounded-lg overflow-hidden">
-              <Image
-                src={imagePreview}
-                alt="Preview"
-                fill
-                className="object-contain"
-              />
-            </div>
-            {!isProcessing && (
-              <p className="text-sm text-gray-600">
-                Click or drag to replace image
-              </p>
-            )}
-          </div>
-        ) : selectedFile?.type === 'application/pdf' ? (
-          <div className="space-y-4">
-            <div className="flex flex-col items-center justify-center p-8 bg-blue-50 rounded-lg border-2 border-blue-200">
-              <div className="p-4 bg-blue-100 rounded-full mb-4">
-                <FileText className="w-12 h-12 text-blue-600" />
+          {imagePreview ? (
+            <div className="space-y-4">
+              <div className="relative w-full h-56 rounded-lg overflow-hidden bg-gray-100">
+                <Image
+                  src={imagePreview}
+                  alt="Preview"
+                  fill
+                  className="object-contain"
+                />
               </div>
-              <p className="text-lg font-semibold text-gray-900 text-center">
-                {selectedFile.name}
-              </p>
-              <p className="text-sm text-gray-600 mt-1">
-                PDF Document • {(selectedFile.size / 1024 / 1024).toFixed(2)} MB
-              </p>
+              {!isProcessing && (
+                <p className="text-sm text-gray-500">
+                  Drop a new file to replace
+                </p>
+              )}
             </div>
-            {!isProcessing && (
-              <p className="text-sm text-gray-600 text-center">
-                Click or drag to replace PDF
-              </p>
-            )}
-          </div>
-        ) : (
-          <div className="space-y-4">
-            <div className="flex justify-center">
-              <div className="p-4 bg-blue-100 rounded-full">
-                <Upload className="w-8 h-8 text-blue-600" />
+          ) : selectedFile?.type === 'application/pdf' ? (
+            <div className="space-y-4">
+              <div className="flex flex-col items-center justify-center py-6">
+                <div className="w-14 h-14 bg-red-50 rounded-2xl flex items-center justify-center mb-4">
+                  <FileText className="w-7 h-7 text-red-500" />
+                </div>
+                <p className="font-medium text-gray-900">{selectedFile.name}</p>
+                <p className="text-sm text-gray-500 mt-1">
+                  {(selectedFile.size / 1024 / 1024).toFixed(2)} MB
+                </p>
+              </div>
+              {!isProcessing && (
+                <p className="text-sm text-gray-500">
+                  Drop a new file to replace
+                </p>
+              )}
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div className="flex justify-center">
+                <div className="w-14 h-14 bg-gray-100 rounded-2xl flex items-center justify-center">
+                  <Upload className="w-6 h-6 text-gray-400" />
+                </div>
+              </div>
+              <div>
+                <p className="font-medium text-gray-900">
+                  {isDragActive 
+                    ? 'Drop file here' 
+                    : 'Drop file or click to browse'
+                  }
+                </p>
+                <p className="text-sm text-gray-500 mt-1">
+                  {acceptPDF 
+                    ? 'PNG, JPG, PDF up to 20MB'
+                    : 'PNG, JPG, WebP, BMP'
+                  }
+                </p>
               </div>
             </div>
-            <div>
-              <p className="text-lg font-medium text-gray-900">
-                {isDragActive 
-                  ? (acceptPDF ? 'Drop file here' : 'Drop image here')
-                  : (acceptPDF ? 'Drag & drop an image or PDF' : 'Drag & drop an image')
-                }
-              </p>
-              <p className="text-sm text-gray-600 mt-1">
-                or click to browse
-              </p>
-            </div>
-            <p className="text-xs text-gray-500">
-              {acceptPDF 
-                ? 'Supports: Images (PNG, JPG, etc.) and PDF documents'
-                : 'Supports: PNG, JPG, JPEG, GIF, WebP, BMP'
-              }
-            </p>
-          </div>
-        )}
+          )}
+        </div>
       </div>
     </div>
   )
 }
-
