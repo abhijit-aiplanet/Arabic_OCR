@@ -1,0 +1,431 @@
+/**
+ * Structured Parser for Form Extraction
+ * Handles parsing and validation of structured OCR output
+ */
+
+export type FieldType = 'text' | 'date' | 'number' | 'checkbox' | 'unknown'
+
+export interface ExtractedField {
+  label: string
+  value: string
+  type: FieldType
+  confidence?: number
+}
+
+export interface ExtractedSection {
+  name: string | null
+  fields: ExtractedField[]
+}
+
+export interface ExtractedTable {
+  headers: string[]
+  rows: string[][]
+}
+
+export interface ExtractedCheckbox {
+  label: string
+  checked: boolean
+}
+
+export interface StructuredExtraction {
+  form_title?: string | null
+  sections: ExtractedSection[]
+  tables: ExtractedTable[]
+  checkboxes: ExtractedCheckbox[]
+  raw_text: string
+}
+
+export interface ParseResult {
+  success: boolean
+  data: StructuredExtraction | null
+  error?: string
+}
+
+/**
+ * Try to parse JSON from text that might contain markdown code blocks
+ */
+function extractJsonFromText(text: string): string | null {
+  if (!text || !text.trim()) return null
+  
+  let cleaned = text.trim()
+  
+  // Remove markdown code blocks
+  if (cleaned.startsWith('```json')) {
+    cleaned = cleaned.slice(7)
+  } else if (cleaned.startsWith('```')) {
+    cleaned = cleaned.slice(3)
+  }
+  if (cleaned.endsWith('```')) {
+    cleaned = cleaned.slice(0, -3)
+  }
+  cleaned = cleaned.trim()
+  
+  // Find JSON boundaries
+  const startIdx = cleaned.indexOf('{')
+  const endIdx = cleaned.lastIndexOf('}')
+  
+  if (startIdx === -1 || endIdx === -1 || startIdx >= endIdx) {
+    return null
+  }
+  
+  return cleaned.slice(startIdx, endIdx + 1)
+}
+
+/**
+ * Infer field type from label and value
+ */
+function inferFieldType(label: string, value: string): FieldType {
+  const labelLower = label.toLowerCase()
+  const arabicLabel = label
+  
+  // Date patterns
+  const dateKeywords = ['date', 'تاريخ', 'يوم', 'شهر', 'سنة', 'الميلاد', 'التسجيل', 'الإصدار', 'الانتهاء']
+  if (dateKeywords.some(kw => labelLower.includes(kw) || arabicLabel.includes(kw))) {
+    return 'date'
+  }
+  
+  // Number patterns
+  const numberKeywords = ['number', 'رقم', 'هاتف', 'جوال', 'هوية', 'جواز', 'عدد', 'كمية', 'سعر', 'مبلغ']
+  if (numberKeywords.some(kw => labelLower.includes(kw) || arabicLabel.includes(kw))) {
+    return 'number'
+  }
+  
+  // Check if value looks like a number
+  if (/^[\d٠-٩\s\-\+\.]+$/.test(value.replace(/\s/g, ''))) {
+    return 'number'
+  }
+  
+  // Check if value looks like a date
+  if (/^\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}$/.test(value.trim())) {
+    return 'date'
+  }
+  
+  return 'text'
+}
+
+/**
+ * Parse raw text output from VLM into structured extraction
+ */
+export function parseStructuredOutput(rawText: string): ParseResult {
+  if (!rawText || !rawText.trim()) {
+    return {
+      success: false,
+      data: null,
+      error: 'Empty input text'
+    }
+  }
+  
+  const jsonStr = extractJsonFromText(rawText)
+  
+  if (!jsonStr) {
+    // If no JSON found, try to parse as key-value pairs
+    return parseFallbackKeyValue(rawText)
+  }
+  
+  try {
+    const parsed = JSON.parse(jsonStr)
+    
+    // Validate and transform the parsed data
+    const sections: ExtractedSection[] = []
+    
+    if (Array.isArray(parsed.sections)) {
+      for (const section of parsed.sections) {
+        const fields: ExtractedField[] = []
+        
+        if (Array.isArray(section.fields)) {
+          for (const field of section.fields) {
+            const label = String(field.label || '').trim()
+            const value = String(field.value || '').trim()
+            const type = inferFieldType(label, value)
+            
+            if (label) {
+              fields.push({ label, value, type })
+            }
+          }
+        }
+        
+        sections.push({
+          name: section.name || null,
+          fields
+        })
+      }
+    }
+    
+    // Parse tables
+    const tables: ExtractedTable[] = []
+    if (Array.isArray(parsed.tables)) {
+      for (const table of parsed.tables) {
+        if (Array.isArray(table.headers) && Array.isArray(table.rows)) {
+          tables.push({
+            headers: table.headers.map((h: any) => String(h || '')),
+            rows: table.rows.map((row: any) => 
+              Array.isArray(row) ? row.map((cell: any) => String(cell || '')) : []
+            )
+          })
+        }
+      }
+    }
+    
+    // Parse checkboxes
+    const checkboxes: ExtractedCheckbox[] = []
+    if (Array.isArray(parsed.checkboxes)) {
+      for (const cb of parsed.checkboxes) {
+        const label = String(cb.label || '').trim()
+        if (label) {
+          checkboxes.push({
+            label,
+            checked: Boolean(cb.checked)
+          })
+        }
+      }
+    }
+    
+    return {
+      success: true,
+      data: {
+        form_title: parsed.form_title || null,
+        sections,
+        tables,
+        checkboxes,
+        raw_text: rawText
+      }
+    }
+  } catch (e) {
+    console.error('JSON parse error:', e)
+    // Fallback to key-value parsing
+    return parseFallbackKeyValue(rawText)
+  }
+}
+
+/**
+ * Fallback parser for when JSON parsing fails
+ * Extracts key-value pairs from plain text
+ */
+function parseFallbackKeyValue(text: string): ParseResult {
+  const lines = text.split('\n').map(l => l.trim()).filter(Boolean)
+  const fields: ExtractedField[] = []
+  
+  for (const line of lines) {
+    // Try to match "Label: Value" pattern
+    const colonMatch = line.match(/^(.+?):\s*(.*)$/)
+    if (colonMatch) {
+      const label = colonMatch[1].trim()
+      const value = colonMatch[2].trim()
+      
+      // Skip if it looks like a section header (label only, no value, ends with colon in original)
+      if (label && (value || !line.endsWith(':'))) {
+        const type = inferFieldType(label, value)
+        fields.push({ label, value, type })
+      }
+      continue
+    }
+    
+    // Try to match space-separated pattern "Label    Value"
+    const spaceMatch = line.match(/^(\S+)\s{2,}(.+)$/)
+    if (spaceMatch) {
+      const label = spaceMatch[1].trim()
+      const value = spaceMatch[2].trim()
+      const type = inferFieldType(label, value)
+      fields.push({ label, value, type })
+    }
+  }
+  
+  if (fields.length === 0) {
+    return {
+      success: false,
+      data: {
+        form_title: null,
+        sections: [],
+        tables: [],
+        checkboxes: [],
+        raw_text: text
+      },
+      error: 'Could not parse structured data from text'
+    }
+  }
+  
+  return {
+    success: true,
+    data: {
+      form_title: null,
+      sections: [{
+        name: null,
+        fields
+      }],
+      tables: [],
+      checkboxes: [],
+      raw_text: text
+    }
+  }
+}
+
+/**
+ * Convert structured extraction to plain text format
+ */
+export function structuredToPlainText(data: StructuredExtraction): string {
+  const lines: string[] = []
+  
+  if (data.form_title) {
+    lines.push(`=== ${data.form_title} ===`)
+    lines.push('')
+  }
+  
+  for (const section of data.sections) {
+    if (section.name) {
+      lines.push(`--- ${section.name} ---`)
+    }
+    
+    for (const field of section.fields) {
+      lines.push(`${field.label}: ${field.value || '[empty]'}`)
+    }
+    
+    if (section.fields.length > 0) {
+      lines.push('')
+    }
+  }
+  
+  for (const checkbox of data.checkboxes) {
+    const mark = checkbox.checked ? '☑' : '☐'
+    lines.push(`${mark} ${checkbox.label}`)
+  }
+  
+  for (const table of data.tables) {
+    if (table.headers.length > 0) {
+      lines.push('')
+      lines.push(table.headers.join(' | '))
+      lines.push(table.headers.map(() => '---').join(' | '))
+      for (const row of table.rows) {
+        lines.push(row.join(' | '))
+      }
+    }
+  }
+  
+  return lines.join('\n')
+}
+
+/**
+ * Convert structured extraction to CSV format
+ */
+export function structuredToCSV(data: StructuredExtraction): string {
+  const rows: string[][] = []
+  
+  // Header row
+  rows.push(['Section', 'Label', 'Value', 'Type'])
+  
+  for (const section of data.sections) {
+    const sectionName = section.name || 'General'
+    for (const field of section.fields) {
+      rows.push([
+        sectionName,
+        field.label,
+        field.value,
+        field.type
+      ])
+    }
+  }
+  
+  // Add checkboxes
+  for (const cb of data.checkboxes) {
+    rows.push([
+      'Checkboxes',
+      cb.label,
+      cb.checked ? 'Yes' : 'No',
+      'checkbox'
+    ])
+  }
+  
+  // Convert to CSV string
+  return rows.map(row => 
+    row.map(cell => {
+      // Escape quotes and wrap in quotes if contains comma or newline
+      const escaped = cell.replace(/"/g, '""')
+      return /[,\n"]/.test(cell) ? `"${escaped}"` : escaped
+    }).join(',')
+  ).join('\n')
+}
+
+/**
+ * Convert structured extraction to JSON string
+ */
+export function structuredToJSON(data: StructuredExtraction): string {
+  const exportData = {
+    form_title: data.form_title,
+    fields: data.sections.flatMap(s => 
+      s.fields.map(f => ({
+        section: s.name,
+        label: f.label,
+        value: f.value,
+        type: f.type
+      }))
+    ),
+    tables: data.tables,
+    checkboxes: data.checkboxes
+  }
+  
+  return JSON.stringify(exportData, null, 2)
+}
+
+/**
+ * Merge template field schema with extracted data
+ * Fills in expected fields that weren't extracted
+ */
+export function mergeWithTemplate(
+  extracted: StructuredExtraction,
+  templateSchema: { sections: Array<{ name: string; fields: Array<{ label: string; type: string }> }> }
+): StructuredExtraction {
+  const mergedSections: ExtractedSection[] = []
+  
+  for (const templateSection of templateSchema.sections) {
+    const existingSection = extracted.sections.find(s => 
+      s.name === templateSection.name || 
+      (s.name === null && templateSection.name === '')
+    )
+    
+    const mergedFields: ExtractedField[] = []
+    
+    for (const templateField of templateSection.fields) {
+      const existingField = existingSection?.fields.find(f => 
+        f.label === templateField.label ||
+        f.label.includes(templateField.label) ||
+        templateField.label.includes(f.label)
+      )
+      
+      if (existingField) {
+        mergedFields.push(existingField)
+      } else {
+        // Add placeholder for expected but missing field
+        mergedFields.push({
+          label: templateField.label,
+          value: '',
+          type: templateField.type as FieldType
+        })
+      }
+    }
+    
+    // Add any extra fields that weren't in template
+    if (existingSection) {
+      for (const field of existingSection.fields) {
+        if (!mergedFields.some(f => f.label === field.label)) {
+          mergedFields.push(field)
+        }
+      }
+    }
+    
+    mergedSections.push({
+      name: templateSection.name || null,
+      fields: mergedFields
+    })
+  }
+  
+  // Add sections that weren't in template
+  for (const section of extracted.sections) {
+    if (!mergedSections.some(s => s.name === section.name)) {
+      mergedSections.push(section)
+    }
+  }
+  
+  return {
+    ...extracted,
+    sections: mergedSections
+  }
+}

@@ -2,16 +2,30 @@
 
 import { useState, useEffect } from 'react'
 import ImageUploader from '@/components/ImageUploader'
-import ExtractedText from '@/components/ExtractedText'
 import PDFProcessor from '@/components/PDFProcessor'
 import AdvancedSettings from '@/components/AdvancedSettings'
 import OCRHistory from '@/components/OCRHistory'
 import TemplateSelector from '@/components/TemplateSelector'
 import UniversalRenderer from '@/components/UniversalRenderer'
-import { processOCR, processPDFOCR, PDFPageResult, updateHistoryText, type ContentType, type OCRTemplate, type OCRConfidence } from '@/lib/api'
+import StructuredExtractor from '@/components/StructuredExtractor'
+import TemplateBuilder from '@/components/TemplateBuilder'
+import { 
+  processOCR, 
+  processPDFOCR, 
+  processStructuredOCR,
+  createTemplate,
+  PDFPageResult, 
+  updateHistoryText, 
+  type ContentType, 
+  type OCRTemplate, 
+  type OCRConfidence,
+  type StructuredExtractionData,
+  type CreateTemplateRequest
+} from '@/lib/api'
 import { getEffectivePrompt } from '@/lib/promptGenerator'
+import { parseStructuredOutput, type StructuredExtraction } from '@/lib/structuredParser'
 import toast from 'react-hot-toast'
-import { FileText, Lock, History, X, Trash2, ArrowRight, Zap, Shield, Clock } from 'lucide-react'
+import { FileText, History, X, Trash2, ArrowRight, Zap, Shield, Clock } from 'lucide-react'
 import { SignedIn, SignedOut, SignInButton, UserButton, useAuth } from '@clerk/nextjs'
 
 interface OCRSettings {
@@ -49,6 +63,14 @@ export default function Home() {
   // Template + content type routing
   const [contentTypeOverride, setContentTypeOverride] = useState<ContentType>('auto')
   const [selectedTemplate, setSelectedTemplate] = useState<OCRTemplate | null>(null)
+  
+  // Structured extraction mode
+  const [structuredMode, setStructuredMode] = useState(false)
+  const [structuredData, setStructuredData] = useState<StructuredExtraction | null>(null)
+  const [parsingSuccessful, setParsingSuccessful] = useState(false)
+  
+  // Save as template modal
+  const [showSaveTemplateModal, setShowSaveTemplateModal] = useState(false)
 
   // Get auth token on mount
   useEffect(() => {
@@ -75,6 +97,47 @@ export default function Home() {
     }
   }
 
+  // Handle structured field edit
+  const handleStructuredFieldEdit = (sectionIndex: number, fieldIndex: number, newValue: string) => {
+    if (!structuredData) return
+    
+    const newSections = [...structuredData.sections]
+    if (newSections[sectionIndex] && newSections[sectionIndex].fields[fieldIndex]) {
+      newSections[sectionIndex].fields[fieldIndex] = {
+        ...newSections[sectionIndex].fields[fieldIndex],
+        value: newValue
+      }
+      setStructuredData({
+        ...structuredData,
+        sections: newSections
+      })
+      toast.success('Field updated')
+    }
+  }
+
+  // Handle save as template
+  const handleSaveAsTemplate = () => {
+    if (!structuredData || structuredData.sections.length === 0) {
+      toast.error('No structured data to save as template')
+      return
+    }
+    setShowSaveTemplateModal(true)
+  }
+
+  // Get initial field schema from structured data
+  const getInitialFieldSchema = () => {
+    if (!structuredData) return undefined
+    return {
+      sections: structuredData.sections.map(s => ({
+        name: s.name || 'General',
+        fields: s.fields.map(f => ({
+          label: f.label,
+          type: f.type || 'text'
+        }))
+      }))
+    }
+  }
+
   const handleImageSelect = (file: File) => {
     setSelectedImage(file)
     
@@ -93,6 +156,8 @@ export default function Home() {
     
     setExtractedText('')
     setExtractedConfidence(null)
+    setStructuredData(null)
+    setParsingSuccessful(false)
     setPdfResults([])
     setPdfTotalPages(0)
     setPdfProcessedCount(0)
@@ -108,19 +173,20 @@ export default function Home() {
 
     try {
       const token = await getToken()
-
-      const effective = getEffectivePrompt({
-        userCustomPrompt: settings.customPrompt,
-        contentType: contentTypeOverride,
-        template: selectedTemplate
-      })
-
-      const settingsForRequest = {
-        ...settings,
-        customPrompt: effective.prompt
-      }
       
       if (isPDF) {
+        // PDF processing (same as before)
+        const effective = getEffectivePrompt({
+          userCustomPrompt: settings.customPrompt,
+          contentType: contentTypeOverride,
+          template: selectedTemplate
+        })
+
+        const settingsForRequest = {
+          ...settings,
+          customPrompt: effective.prompt
+        }
+        
         const loadingToast = toast.loading('Processing PDF...')
         
         await processPDFOCR(
@@ -144,7 +210,71 @@ export default function Home() {
         )
         
         toast.success('PDF processing complete!', { id: loadingToast })
+      } else if (structuredMode) {
+        // Structured extraction mode
+        const loadingToast = toast.loading('Extracting form data...')
+        
+        const result = await processStructuredOCR(
+          selectedImage,
+          {
+            maxTokens: settings.maxTokens,
+            minPixels: settings.minPixels,
+            maxPixels: settings.maxPixels,
+            templateId: selectedTemplate?.id || null
+          },
+          token
+        )
+        
+        if (result.status === 'success') {
+          setExtractedText(result.raw_text)
+          setExtractedConfidence(result.confidence || null)
+          setParsingSuccessful(result.parsing_successful)
+          
+          // Convert API response to local structured data format
+          if (result.structured_data) {
+            setStructuredData({
+              form_title: result.structured_data.form_title,
+              sections: result.structured_data.sections.map(s => ({
+                name: s.name,
+                fields: s.fields.map(f => ({
+                  label: f.label,
+                  value: f.value,
+                  type: f.type as any
+                }))
+              })),
+              tables: result.structured_data.tables || [],
+              checkboxes: result.structured_data.checkboxes || [],
+              raw_text: result.raw_text
+            })
+          } else {
+            // Try client-side parsing as fallback
+            const parsed = parseStructuredOutput(result.raw_text)
+            if (parsed.success && parsed.data) {
+              setStructuredData(parsed.data)
+              setParsingSuccessful(true)
+            } else {
+              setStructuredData(null)
+            }
+          }
+          
+          setCurrentHistoryId(null)
+          toast.success('Form data extracted!', { id: loadingToast })
+        } else {
+          throw new Error(result.error || 'Failed to extract form data')
+        }
       } else {
+        // Standard OCR mode
+        const effective = getEffectivePrompt({
+          userCustomPrompt: settings.customPrompt,
+          contentType: contentTypeOverride,
+          template: selectedTemplate
+        })
+
+        const settingsForRequest = {
+          ...settings,
+          customPrompt: effective.prompt
+        }
+        
         const loadingToast = toast.loading('Processing image...')
         
         const result = await processOCR(selectedImage, settingsForRequest, token)
@@ -152,6 +282,7 @@ export default function Home() {
         if (result.status === 'success') {
           setExtractedText(result.extracted_text)
           setExtractedConfidence(result.confidence || null)
+          setStructuredData(null)
           setCurrentHistoryId(null)
           toast.success('Text extracted successfully!', { id: loadingToast })
         } else {
@@ -171,6 +302,8 @@ export default function Home() {
     setImagePreview(null)
     setExtractedText('')
     setExtractedConfidence(null)
+    setStructuredData(null)
+    setParsingSuccessful(false)
     setIsPDF(false)
     setPdfResults([])
     setPdfTotalPages(0)
@@ -331,21 +464,24 @@ export default function Home() {
                   selectedFile={selectedImage}
                 />
 
-                {/* Template Selector - TEMPORARILY HIDDEN */}
-                {false && (
-                  <TemplateSelector
-                    authToken={authToken}
-                    selectedTemplate={selectedTemplate}
-                    onSelectTemplate={setSelectedTemplate}
-                    contentTypeOverride={contentTypeOverride}
-                    onContentTypeOverrideChange={setContentTypeOverride}
+                {/* Template Selector */}
+                <TemplateSelector
+                  authToken={authToken}
+                  selectedTemplate={selectedTemplate}
+                  onSelectTemplate={setSelectedTemplate}
+                  contentTypeOverride={contentTypeOverride}
+                  onContentTypeOverrideChange={setContentTypeOverride}
+                  structuredMode={structuredMode}
+                  onStructuredModeChange={setStructuredMode}
+                />
+
+                {/* Advanced Settings - only show for standard mode */}
+                {!structuredMode && (
+                  <AdvancedSettings
+                    settings={settings}
+                    onSettingsChange={setSettings}
                   />
                 )}
-
-                <AdvancedSettings
-                  settings={settings}
-                  onSettingsChange={setSettings}
-                />
 
                 {/* Action Buttons */}
                 <div className="space-y-3">
@@ -363,7 +499,7 @@ export default function Home() {
                         {isPDF ? `Processing (${pdfProcessedCount}/${pdfTotalPages || '?'})` : 'Processing...'}
                       </span>
                     ) : (
-                      `Process ${isPDF ? 'PDF' : 'Image'}`
+                      structuredMode ? 'Extract Form Data' : `Process ${isPDF ? 'PDF' : 'Image'}`
                     )}
                   </button>
 
@@ -382,14 +518,25 @@ export default function Home() {
 
               {/* Right Column - Output */}
               <div>
-                <UniversalRenderer
-                  text={extractedText}
-                  isProcessing={isProcessing}
-                  onTextEdit={handleLiveTextEdit}
-                  isEditable={true}
-                  preferredType={contentTypeOverride}
-                  confidence={extractedConfidence}
-                />
+                {structuredMode ? (
+                  <StructuredExtractor
+                    imagePreview={imagePreview}
+                    structuredData={structuredData}
+                    isProcessing={isProcessing}
+                    parsingSuccessful={parsingSuccessful}
+                    onFieldEdit={handleStructuredFieldEdit}
+                    onSaveAsTemplate={structuredData ? handleSaveAsTemplate : undefined}
+                  />
+                ) : (
+                  <UniversalRenderer
+                    text={extractedText}
+                    isProcessing={isProcessing}
+                    onTextEdit={handleLiveTextEdit}
+                    isEditable={true}
+                    preferredType={contentTypeOverride}
+                    confidence={extractedConfidence}
+                  />
+                )}
               </div>
             </div>
           )}
@@ -421,6 +568,26 @@ export default function Home() {
             {/* Content */}
             <div className="max-w-7xl mx-auto px-6 py-8">
               <OCRHistory getToken={getToken} />
+            </div>
+          </div>
+        )}
+
+        {/* Save as Template Modal */}
+        {showSaveTemplateModal && (
+          <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+            <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+              <TemplateBuilder
+                onCancel={() => setShowSaveTemplateModal(false)}
+                onCreate={async (payload) => {
+                  if (!authToken) {
+                    throw new Error('Please sign in to create templates')
+                  }
+                  await createTemplate(payload, authToken)
+                  setShowSaveTemplateModal(false)
+                  toast.success('Template saved!')
+                }}
+                initialFieldSchema={getInitialFieldSchema()}
+              />
             </div>
           </div>
         )}

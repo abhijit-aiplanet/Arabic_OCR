@@ -109,6 +109,44 @@ export interface OCRConfidence {
   recommendations?: string[]
 }
 
+// Structured Extraction Types
+export interface ExtractedField {
+  label: string
+  value: string
+  type: string
+}
+
+export interface ExtractedSection {
+  name: string | null
+  fields: ExtractedField[]
+}
+
+export interface ExtractedTable {
+  headers: string[]
+  rows: string[][]
+}
+
+export interface ExtractedCheckbox {
+  label: string
+  checked: boolean
+}
+
+export interface StructuredExtractionData {
+  form_title?: string | null
+  sections: ExtractedSection[]
+  tables: ExtractedTable[]
+  checkboxes: ExtractedCheckbox[]
+}
+
+export interface StructuredOCRResponse {
+  raw_text: string
+  structured_data: StructuredExtractionData | null
+  status: string
+  error?: string
+  confidence?: OCRConfidence
+  parsing_successful: boolean
+}
+
 export async function processOCR(
   imageFile: File,
   settings: OCRSettings,
@@ -392,6 +430,52 @@ export async function deleteTemplate(templateId: string, authToken: string | nul
   } catch (error) {
     if (axios.isAxiosError(error)) {
       const message = (error.response?.data as any)?.detail || error.message
+      throw new Error(message)
+    }
+    throw error
+  }
+}
+
+// Structured OCR Extraction
+export async function processStructuredOCR(
+  imageFile: File,
+  settings: {
+    maxTokens: number
+    minPixels: number
+    maxPixels: number
+    templateId?: string | null
+  },
+  authToken?: string | null
+): Promise<StructuredOCRResponse> {
+  try {
+    const formData = new FormData()
+    formData.append('file', imageFile)
+    formData.append('max_new_tokens', settings.maxTokens.toString())
+    formData.append('min_pixels', settings.minPixels.toString())
+    formData.append('max_pixels', settings.maxPixels.toString())
+    
+    if (settings.templateId) {
+      formData.append('template_id', settings.templateId)
+    }
+
+    const headers: Record<string, string> = {}
+    if (authToken) {
+      headers['Authorization'] = `Bearer ${authToken}`
+    }
+
+    const response = await axios.post<StructuredOCRResponse>(
+      `${API_URL}/api/ocr-structured`,
+      formData,
+      {
+        headers,
+        timeout: 600000, // 10 minutes timeout
+      }
+    )
+
+    return response.data
+  } catch (error) {
+    if (axios.isAxiosError(error)) {
+      const message = error.response?.data?.detail || error.message
       throw new Error(message)
     }
     throw error

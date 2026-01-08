@@ -123,6 +123,49 @@ Requirements:
 
 Output only the extracted Arabic text, nothing else."""
 
+# Structured Extraction Prompt (for forms - returns JSON)
+STRUCTURED_EXTRACTION_PROMPT = """Extract all fields from this Arabic form as structured JSON.
+
+You are analyzing a form image. Extract ALL visible fields, labels, and their values.
+
+OUTPUT FORMAT (strict JSON only, no markdown):
+{
+  "form_title": "title of the form if visible, or null",
+  "sections": [
+    {
+      "name": "section name if visible, or null for ungrouped fields",
+      "fields": [
+        {
+          "label": "the field label exactly as shown",
+          "value": "the handwritten or typed value",
+          "type": "text"
+        }
+      ]
+    }
+  ],
+  "tables": [
+    {
+      "headers": ["column1", "column2"],
+      "rows": [["value1", "value2"]]
+    }
+  ],
+  "checkboxes": [
+    {"label": "checkbox label", "checked": true}
+  ]
+}
+
+EXTRACTION RULES:
+1. Extract EVERY label and its corresponding value (handwritten or typed)
+2. Preserve Arabic text exactly - do NOT translate
+3. For empty fields, use value = ""
+4. For checkboxes: checked = true or false
+5. For tables: extract headers and all rows
+6. Group related fields into sections when there are clear visual separators
+7. If no clear sections, put all fields in one section with name = null
+8. Output ONLY valid JSON - no markdown code blocks, no explanation
+
+IMPORTANT: The output must be parseable JSON. Start with { and end with }"""
+
 
 # =============================================================================
 # RUNPOD CLIENT WITH RETRY LOGIC
@@ -728,6 +771,44 @@ class UpdateTemplateRequest(BaseModel):
     keywords: Optional[List[str]] = None
     is_public: Optional[bool] = None
     example_image_url: Optional[str] = None
+
+
+# Structured Extraction Models
+class ExtractedField(BaseModel):
+    label: str
+    value: str
+    type: str = "text"  # text, date, number, checkbox
+
+
+class ExtractedSection(BaseModel):
+    name: Optional[str] = None
+    fields: List[ExtractedField] = []
+
+
+class ExtractedTable(BaseModel):
+    headers: List[str] = []
+    rows: List[List[str]] = []
+
+
+class ExtractedCheckbox(BaseModel):
+    label: str
+    checked: bool = False
+
+
+class StructuredExtractionData(BaseModel):
+    form_title: Optional[str] = None
+    sections: List[ExtractedSection] = []
+    tables: List[ExtractedTable] = []
+    checkboxes: List[ExtractedCheckbox] = []
+
+
+class StructuredOCRResponse(BaseModel):
+    raw_text: str
+    structured_data: Optional[StructuredExtractionData] = None
+    status: str
+    error: Optional[str] = None
+    confidence: Optional[Dict[str, Any]] = None
+    parsing_successful: bool = False
 
 
 # =============================================================================
@@ -1383,6 +1464,300 @@ async def process_pdf_ocr(
             process_pages(),
             media_type="application/x-ndjson"
         )
+                
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+# =============================================================================
+# STRUCTURED EXTRACTION ENDPOINT
+# =============================================================================
+
+def parse_structured_json(text: str) -> Optional[Dict[str, Any]]:
+    """
+    Parse JSON from VLM output, handling common issues like markdown code blocks.
+    """
+    if not text or not text.strip():
+        return None
+    
+    # Remove markdown code blocks if present
+    cleaned = text.strip()
+    if cleaned.startswith("```json"):
+        cleaned = cleaned[7:]
+    elif cleaned.startswith("```"):
+        cleaned = cleaned[3:]
+    if cleaned.endswith("```"):
+        cleaned = cleaned[:-3]
+    cleaned = cleaned.strip()
+    
+    # Try to find JSON object boundaries
+    start_idx = cleaned.find("{")
+    end_idx = cleaned.rfind("}")
+    
+    if start_idx == -1 or end_idx == -1 or start_idx >= end_idx:
+        return None
+    
+    json_str = cleaned[start_idx:end_idx + 1]
+    
+    try:
+        return json.loads(json_str)
+    except json.JSONDecodeError as e:
+        print(f"JSON parse error: {e}")
+        # Try to fix common issues
+        try:
+            # Replace single quotes with double quotes
+            fixed = json_str.replace("'", '"')
+            return json.loads(fixed)
+        except:
+            pass
+        return None
+
+
+def build_template_enhanced_prompt(template: Optional[Dict[str, Any]]) -> str:
+    """
+    Build a structured extraction prompt, optionally enhanced with template field schema.
+    """
+    base_prompt = STRUCTURED_EXTRACTION_PROMPT
+    
+    if not template:
+        return base_prompt
+    
+    # Get field schema from template sections
+    field_schema = template.get("sections", {})
+    if not field_schema:
+        return base_prompt
+    
+    # Build expected fields list
+    expected_fields = []
+    sections_info = field_schema.get("sections", [])
+    
+    for section in sections_info:
+        section_name = section.get("name", "")
+        fields = section.get("fields", [])
+        for field in fields:
+            label = field.get("label", "")
+            field_type = field.get("type", "text")
+            if label:
+                expected_fields.append(f"- {label} ({field_type})")
+    
+    if not expected_fields:
+        return base_prompt
+    
+    # Enhance prompt with expected fields
+    enhanced_prompt = f"""{base_prompt}
+
+EXPECTED FIELDS (from template):
+{chr(10).join(expected_fields)}
+
+Make sure to extract values for ALL of these expected fields. If a field is not found in the image, set its value to ""."""
+    
+    return enhanced_prompt
+
+
+@app.post("/api/ocr-structured", response_model=StructuredOCRResponse)
+async def process_structured_ocr(
+    file: UploadFile = File(...),
+    template_id: Optional[str] = Form(None),
+    max_new_tokens: int = Form(4096),
+    min_pixels: Optional[int] = Form(200704),
+    max_pixels: Optional[int] = Form(1003520),
+    user: dict = Depends(verify_clerk_token),
+):
+    """
+    Process an image and extract structured data (key-value pairs) from forms.
+    Optionally uses a template to improve extraction accuracy.
+    
+    Returns both raw text and structured JSON data.
+    """
+    start_time = time.time()
+    storage_url = None
+    
+    try:
+        if not RUNPOD_ENDPOINT:
+            raise HTTPException(status_code=500, detail="Model service not configured")
+        
+        # Read and validate image
+        contents = await file.read()
+        try:
+            image = Image.open(io.BytesIO(contents))
+            if image.mode not in ('RGB', 'L'):
+                image = image.convert('RGB')
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid image file: {str(e)}")
+
+        image_quality = analyze_image_quality(image)
+        
+        # Store file
+        storage_result = await store_file_to_blob(
+            contents,
+            file.filename or "form.png",
+            file.content_type or "image/png"
+        )
+        if storage_result.get("stored"):
+            storage_url = storage_result.get('url')
+        
+        # Fetch template if provided
+        template_data = None
+        if template_id and supabase:
+            try:
+                template_response = supabase.table("ocr_templates")\
+                    .select("*")\
+                    .eq("id", template_id)\
+                    .single()\
+                    .execute()
+                if template_response.data:
+                    template_data = template_response.data
+                    # Increment usage count
+                    supabase.table("ocr_templates")\
+                        .update({"usage_count": (template_data.get("usage_count", 0) or 0) + 1})\
+                        .eq("id", template_id)\
+                        .execute()
+            except Exception as e:
+                print(f"Template fetch error: {e}")
+        
+        # Build prompt (enhanced with template if available)
+        prompt = build_template_enhanced_prompt(template_data)
+        
+        # Convert image to base64
+        buffered = io.BytesIO()
+        image.save(buffered, format="PNG")
+        img_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
+        
+        payload = {
+            "input": {
+                "image": img_base64,
+                "prompt": prompt,
+                "max_new_tokens": max_new_tokens,
+                "min_pixels": min_pixels,
+                "max_pixels": max_pixels
+            }
+        }
+        
+        # Call RunPod
+        result, success = await runpod_client.call_runpod(payload, "structured")
+        
+        processing_time = time.time() - start_time
+        
+        if success and result.get("status") == "COMPLETED":
+            output = result.get("output", {}) or {}
+            raw_text = output.get("text", "")
+            token_confidence = output.get("token_confidence")
+            
+            if not raw_text:
+                raw_text = ""
+            
+            # Parse structured data from response
+            structured_data = None
+            parsing_successful = False
+            
+            parsed_json = parse_structured_json(raw_text)
+            if parsed_json:
+                try:
+                    # Convert to our model structure
+                    sections = []
+                    for section in parsed_json.get("sections", []):
+                        fields = []
+                        for field in section.get("fields", []):
+                            fields.append(ExtractedField(
+                                label=field.get("label", ""),
+                                value=field.get("value", ""),
+                                type=field.get("type", "text")
+                            ))
+                        sections.append(ExtractedSection(
+                            name=section.get("name"),
+                            fields=fields
+                        ))
+                    
+                    tables = []
+                    for table in parsed_json.get("tables", []):
+                        tables.append(ExtractedTable(
+                            headers=table.get("headers", []),
+                            rows=table.get("rows", [])
+                        ))
+                    
+                    checkboxes = []
+                    for cb in parsed_json.get("checkboxes", []):
+                        checkboxes.append(ExtractedCheckbox(
+                            label=cb.get("label", ""),
+                            checked=cb.get("checked", False)
+                        ))
+                    
+                    structured_data = StructuredExtractionData(
+                        form_title=parsed_json.get("form_title"),
+                        sections=sections,
+                        tables=tables,
+                        checkboxes=checkboxes
+                    )
+                    parsing_successful = True
+                except Exception as e:
+                    print(f"Structured data parsing error: {e}")
+            
+            text_quality = analyze_text_quality(raw_text)
+            confidence = calculate_final_confidence(image_quality, token_confidence, text_quality)
+            
+            # Save to history
+            await save_ocr_history(
+                user_id=user.get("sub", "anonymous"),
+                file_name=file.filename or "form.png",
+                file_type="structured",
+                file_size=len(contents),
+                total_pages=1,
+                extracted_text=raw_text,
+                status="success",
+                error_message=None,
+                processing_time=processing_time,
+                settings={
+                    "max_new_tokens": max_new_tokens,
+                    "min_pixels": min_pixels,
+                    "max_pixels": max_pixels,
+                    "template_id": template_id,
+                    "structured_extraction": True,
+                    "parsing_successful": parsing_successful
+                },
+                blob_url=storage_url
+            )
+            
+            return StructuredOCRResponse(
+                raw_text=raw_text,
+                structured_data=structured_data,
+                status="success",
+                confidence=confidence,
+                parsing_successful=parsing_successful
+            )
+        else:
+            error_msg = result.get("error", "Processing failed")
+            
+            await save_ocr_history(
+                user_id=user.get("sub", "anonymous"),
+                file_name=file.filename or "form.png",
+                file_type="structured",
+                file_size=len(contents),
+                total_pages=1,
+                extracted_text="",
+                status="error",
+                error_message=error_msg,
+                processing_time=processing_time,
+                settings={
+                    "max_new_tokens": max_new_tokens,
+                    "min_pixels": min_pixels,
+                    "max_pixels": max_pixels,
+                    "template_id": template_id,
+                    "structured_extraction": True
+                },
+                blob_url=storage_url
+            )
+            
+            return StructuredOCRResponse(
+                raw_text="",
+                structured_data=None,
+                status="error",
+                error=error_msg,
+                confidence=None,
+                parsing_successful=False
+            )
                 
     except HTTPException:
         raise
