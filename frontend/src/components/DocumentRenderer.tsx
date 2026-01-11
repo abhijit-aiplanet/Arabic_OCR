@@ -280,9 +280,11 @@ function parseToDocument(text: string): DocumentStructure {
       }
     }
     
-    // List item
-    if (trimmed.match(/^[-•*]\s/) || trimmed.match(/^\d+[.)]\s/)) {
-      lines.push({ type: 'list-item', content: trimmed })
+    // List item (Western and Arabic numerals)
+    if (trimmed.match(/^[-•*]\s/) || trimmed.match(/^[\d١٢٣٤٥٦٧٨٩٠]+[.)\-–]\s*/)) {
+      // Clean the content - remove the list marker for cleaner display
+      const cleanContent = trimmed.replace(/^[-•*]\s*/, '').replace(/^[\d١٢٣٤٥٦٧٨٩٠]+[.)\-–]\s*/, '')
+      lines.push({ type: 'list-item', content: cleanContent || trimmed })
       continue
     }
     
@@ -295,7 +297,9 @@ function parseToDocument(text: string): DocumentStructure {
 
 function isLikelyHeader(text: string): boolean {
   // Arabic section headers often have specific patterns
-  if (/^(بيانات|معلومات|تفاصيل|ملاحظات|المطلوب)/i.test(text)) return true
+  if (/^(بيانات|معلومات|تفاصيل|ملاحظات|المطلوب|طلبات|متطلبات|شروط)/i.test(text)) return true
+  // Headers ending with colon (like "طلبات الإصدار الجديد :")
+  if (/^[\u0600-\u06FF\s]+\s*:\s*$/.test(text) && text.length < 50) return true
   // Short lines with no punctuation
   if (text.length < 40 && !text.includes(':') && !text.includes('.')) {
     // Check if mostly uppercase (for English) or starts with specific Arabic words

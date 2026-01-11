@@ -103,11 +103,52 @@ function inferFieldType(label: string, value: string): FieldType {
 }
 
 /**
- * Parse [FIELD]/[VALUE] format from VLM output
- * Handles multiple line formats:
- * - [FIELD] label \n [VALUE] value
- * - [FIELD] label \n [VALUE] \n value (value on separate line!)
- * - FIELD: label \n VALUE: value
+ * Common garbage patterns to filter out from VLM output
+ */
+const GARBAGE_PATTERNS = [
+  "here's the extracted", "here is the extracted", "i'll extract",
+  "let me extract", "the form contains", "based on the image",
+  "from the form", "extracted data:", "form data:", "your task",
+  "begin extraction", "extract everything", "output format",
+  "instructions:", "important:", "rules:", "critical",
+  "field patterns", "start extracting"
+]
+
+/**
+ * Normalize empty field values
+ */
+function normalizeEmptyValue(value: string): string {
+  if (!value) return ""
+  
+  value = value.trim()
+  
+  // Common empty patterns in Arabic forms
+  const emptyPatterns = [
+    '-', '—', '−',
+    '............', '...........', '..........', '.........', '........', '.......', '......', '.....', '....', '...',
+    '____', '___', '__',
+    '/ / ١٤هـ', '/ / ١٤', '/ /',
+    '[فارغ]', '[empty]', 'فارغ', 'empty', 'n/a', 'N/A', 'none', 'None',
+  ]
+  
+  if (emptyPatterns.includes(value)) return ""
+  
+  // Value is mostly dots or dashes
+  if (/^[\.\-_\s/]+$/.test(value)) return ""
+  
+  // Just a date placeholder
+  if (/^[\s/]*١٤هـ?[\s/]*$/.test(value)) return ""
+  
+  return value
+}
+
+/**
+ * Parse natural VLM output into structured fields.
+ * Handles multiple formats:
+ * - Natural "label: value" format (primary)
+ * - [FIELD]/[VALUE] format with multi-line support
+ * - FIELD:/VALUE: format (legacy)
+ * - Bullet/numbered lists
  */
 function parseFieldValueFormat(text: string): { 
   fields: ExtractedField[], 
@@ -121,113 +162,49 @@ function parseFieldValueFormat(text: string): {
   let formTitle: string | null = null
   let currentSection: string | null = null
   
-  const lines = text.split('\n').map(l => l.trim()).filter(l => l)
+  // Filter garbage intro lines
+  let rawLines = text.split('\n')
+  let started = false
+  const filteredLines: string[] = []
+  
+  for (const line of rawLines) {
+    const lineLower = line.toLowerCase().trim()
+    
+    if (!started) {
+      const isGarbage = GARBAGE_PATTERNS.some(pat => lineLower.includes(pat))
+      const hasArabic = /[\u0600-\u06FF]/.test(line)
+      const hasColon = line.includes(':')
+      const hasFieldMarker = lineLower.includes('[field]') || lineLower.startsWith('field:')
+      const hasBullet = /^[•\-\*١٢٣٤٥٦٧٨٩٠\d]/.test(line.trim())
+      
+      if (hasFieldMarker || (hasArabic && hasColon) || hasBullet) {
+        started = true
+        filteredLines.push(line)
+      } else if (!isGarbage && line.trim() && (hasColon || hasBullet)) {
+        started = true
+        filteredLines.push(line)
+      }
+    } else {
+      filteredLines.push(line)
+    }
+  }
+  
+  const lines = filteredLines.map(l => l.trim())
   
   let i = 0
   while (i < lines.length) {
     const line = lines[i]
+    if (!line) {
+      i++
+      continue
+    }
+    
     const upperLine = line.toUpperCase()
     
-    // Handle [FIELD] format
-    if (line.startsWith('[FIELD]') || upperLine.startsWith('[FIELD]')) {
-      let fieldLabel = line.slice(7).trim()
-      let value = ''
-      
-      // Look ahead for [VALUE]
-      if (i + 1 < lines.length) {
-        const nextLine = lines[i + 1].trim()
-        const nextUpper = nextLine.toUpperCase()
-        
-        if (nextLine.startsWith('[VALUE]') || nextUpper.startsWith('[VALUE]')) {
-          // Get value after [VALUE] tag
-          value = nextLine.slice(7).trim()
-          i++
-          
-          // CRITICAL FIX: If [VALUE] line is empty or just has the tag,
-          // the actual value might be on the NEXT line
-          if (!value || value === '-' || value.toUpperCase() === 'EMPTY') {
-            if (i + 1 < lines.length) {
-              const potentialValue = lines[i + 1].trim()
-              // Check if next line is NOT a new field/section marker
-              if (!potentialValue.startsWith('[FIELD]') && 
-                  !potentialValue.toUpperCase().startsWith('[FIELD]') &&
-                  !potentialValue.startsWith('[SECTION]') &&
-                  !potentialValue.startsWith('[VALUE]') &&
-                  !potentialValue.toUpperCase().startsWith('FIELD:') &&
-                  potentialValue.length > 0) {
-                value = potentialValue
-                i++
-              }
-            }
-          }
-        }
-      }
-      
-      // Also check if label contains [VALUE] inline (e.g., "[FIELD] label [VALUE] value")
-      if (fieldLabel.includes('[VALUE]') || fieldLabel.toUpperCase().includes('[VALUE]')) {
-        const parts = fieldLabel.split(/\[VALUE\]/i)
-        fieldLabel = parts[0].trim()
-        if (parts[1]) {
-          value = parts[1].trim()
-        }
-      }
-      
-      if (fieldLabel && fieldLabel.length > 1) {
-        if (value === '-') value = ''
-        
-        fields.push({
-          label: fieldLabel,
-          value: value,
-          type: inferFieldType(fieldLabel, value)
-        })
-      }
-      
-      i++
-      continue
-    }
-    
-    // Handle FIELD: format (legacy)
-    if (upperLine.startsWith('FIELD:')) {
-      let fieldLabel = line.slice(6).trim()
-      let value = ''
-      
-      if (i + 1 < lines.length) {
-        const nextLine = lines[i + 1].trim()
-        if (nextLine.toUpperCase().startsWith('VALUE:')) {
-          value = nextLine.slice(6).trim()
-          i++
-          
-          // Check for value on next line
-          if (!value && i + 1 < lines.length) {
-            const potentialValue = lines[i + 1].trim()
-            if (!potentialValue.toUpperCase().startsWith('FIELD:') &&
-                !potentialValue.toUpperCase().startsWith('SECTION:')) {
-              value = potentialValue
-              i++
-            }
-          }
-        }
-      }
-      
-      if (fieldLabel && fieldLabel.length > 1) {
-        if (value === '-' || value.toUpperCase() === 'EMPTY') value = ''
-        
-        fields.push({
-          label: fieldLabel,
-          value: value,
-          type: inferFieldType(fieldLabel, value)
-        })
-      }
-      
-      i++
-      continue
-    }
-    
-    // Handle [SECTION] format
-    if (line.startsWith('[SECTION]') || upperLine.startsWith('[SECTION]') || 
-        upperLine.startsWith('SECTION:')) {
-      const marker = line.startsWith('[SECTION]') ? 9 : 8
-      currentSection = line.slice(marker).trim()
+    // Pattern 0: Arabic section headers [قسم] or "بيانات ..."
+    const sectionMatch = line.match(/^\[قسم\]\s*(.+)$/)
+    if (sectionMatch) {
+      currentSection = sectionMatch[1].trim()
       if (currentSection && !sections.includes(currentSection)) {
         sections.push(currentSection)
       }
@@ -235,19 +212,229 @@ function parseFieldValueFormat(text: string): {
       continue
     }
     
-    // Handle inline "Label: Value" format (common in Arabic forms)
-    if (line.includes(':') && !line.startsWith('[') && !line.startsWith('http')) {
-      const colonIdx = line.indexOf(':')
-      const label = line.slice(0, colonIdx).trim()
-      const value = line.slice(colonIdx + 1).trim()
+    // Detect section headers like "بيانات عامة" or "بيانات المركبة"
+    if (/^بيانات\s+[\u0600-\u06FF]+/.test(line) && !line.includes(':')) {
+      currentSection = line.trim()
+      if (currentSection && !sections.includes(currentSection)) {
+        sections.push(currentSection)
+      }
+      i++
+      continue
+    }
+    
+    // Detect checklist/requirements sections: "طلبات الإصدار الجديد :" or "طلبات التجديد :"
+    const checklistMatch = line.match(/^(طلبات|متطلبات|شروط)\s+[\u0600-\u06FF\s]+\s*:?\s*$/)
+    if (checklistMatch) {
+      currentSection = line.replace(':', '').trim()
+      if (currentSection && !sections.includes(currentSection)) {
+        sections.push(currentSection)
+      }
+      i++
+      continue
+    }
+    
+    // Detect [قائمة] list marker
+    const listMarkerMatch = line.match(/^\[قائمة\]\s*(.+)$/)
+    if (listMarkerMatch) {
+      currentSection = listMarkerMatch[1].trim()
+      if (currentSection && !sections.includes(currentSection)) {
+        sections.push(currentSection)
+      }
+      i++
+      continue
+    }
+    
+    // Pattern 1: [FIELD] with multi-line value support
+    if (line.startsWith('[FIELD]') || upperLine.startsWith('[FIELD]')) {
+      let fieldLabel = line.slice(7).trim()
+      let value = ''
       
-      // Validate - label should be reasonably short
-      if (label && label.length > 1 && label.length < 80 && value) {
-        fields.push({
-          label: label,
-          value: value === '-' ? '' : value,
-          type: inferFieldType(label, value)
-        })
+      // Check for inline [VALUE]
+      if (fieldLabel.toUpperCase().includes('[VALUE]')) {
+        const parts = fieldLabel.split(/\[VALUE\]/i)
+        fieldLabel = parts[0].trim()
+        value = parts[1]?.trim() || ''
+      } else {
+        // Look for [VALUE] on next lines (up to 3 lines ahead)
+        let j = i + 1
+        while (j < lines.length && j <= i + 3) {
+          const nextLine = lines[j]
+          
+          if (nextLine.toUpperCase().startsWith('[VALUE]')) {
+            const valueContent = nextLine.slice(7).trim()
+            
+            if (valueContent && valueContent !== '-') {
+              value = valueContent
+              i = j
+              break
+            } else {
+              // CRITICAL: Check the line AFTER [VALUE] for the actual value
+              if (j + 1 < lines.length) {
+                const potential = lines[j + 1]
+                if (potential && 
+                    !potential.toUpperCase().startsWith('[FIELD]') &&
+                    !potential.toUpperCase().startsWith('[VALUE]') &&
+                    !potential.toUpperCase().startsWith('FIELD:') &&
+                    !potential.toUpperCase().startsWith('[SECTION]')) {
+                  value = potential
+                  i = j + 1
+                  break
+                }
+              }
+              i = j
+              break
+            }
+          } else if (nextLine.toUpperCase().startsWith('[FIELD]')) {
+            break
+          }
+          j++
+        }
+      }
+      
+      if (fieldLabel && fieldLabel.length > 1) {
+        const cleanLabel = fieldLabel.replace(/^[•\-\*\d\.\)]+\s*/, '').trim()
+        if (!GARBAGE_PATTERNS.some(pat => cleanLabel.toLowerCase().includes(pat))) {
+          fields.push({
+            label: cleanLabel,
+            value: value === '-' ? '' : value,
+            type: inferFieldType(cleanLabel, value)
+          })
+        }
+      }
+      i++
+      continue
+    }
+    
+    // Pattern 2: Section headers
+    if (upperLine.startsWith('SECTION:') || upperLine.startsWith('[SECTION]')) {
+      const markerLen = upperLine.startsWith('[SECTION]') ? 9 : 8
+      currentSection = line.slice(markerLen).trim()
+      if (currentSection && !sections.includes(currentSection)) {
+        sections.push(currentSection)
+      }
+      i++
+      continue
+    }
+    
+    // Pattern 3: Bullet points and numbered lists (Western + Arabic numerals)
+    const bulletMatch = line.match(/^[•\-\*]\s*(.+)$/)
+    // Match both Western (1, 2, 3) and Arabic (١، ٢، ٣) numerals with various separators
+    const numberMatch = line.match(/^[\d١٢٣٤٥٦٧٨٩٠]+[\.\)\-–]\s*(.+)$/)
+    
+    if (bulletMatch || numberMatch) {
+      let content = (bulletMatch || numberMatch)![1].trim()
+      // Remove trailing period/dot
+      content = content.replace(/\s*\.\s*$/, '')
+      
+      if (content.includes(':')) {
+        // This is a field:value pair within a list
+        const colonIdx = findMeaningfulColon(content)
+        if (colonIdx > 0) {
+          const label = content.slice(0, colonIdx).trim()
+          const value = content.slice(colonIdx + 1).trim()
+          if (label && label.length > 1 && label.length < 80) {
+            fields.push({
+              label: label,
+              value: normalizeEmptyValue(value),
+              type: inferFieldType(label, value)
+            })
+          }
+        }
+      } else {
+        // This is a standalone list item (checklist/requirements)
+        if (content && content.length > 2 && content.length < 200) {
+          fields.push({
+            label: content,
+            value: '',  // No value for checklist items
+            type: 'text'  // Could add 'list_item' type if needed
+          })
+        }
+      }
+      i++
+      continue
+    }
+    
+    // Pattern 4: Legacy FIELD:/VALUE: format
+    if (upperLine.startsWith('FIELD:')) {
+      let fieldLabel = line.slice(6).trim()
+      let value = ''
+      
+      if (i + 1 < lines.length) {
+        const nextLine = lines[i + 1]
+        if (nextLine.toUpperCase().startsWith('VALUE:')) {
+          value = nextLine.slice(6).trim()
+          if (!value && i + 2 < lines.length) {
+            const potential = lines[i + 2]
+            if (!potential.toUpperCase().startsWith('FIELD:')) {
+              value = potential
+              i++
+            }
+          }
+          i++
+        }
+      }
+      
+      if (fieldLabel && fieldLabel.length > 1) {
+        const checkboxValues = ['☑', '☐', '✓', '✗', 'نعم', 'لا', 'yes', 'no', 'checked', 'unchecked']
+        if (checkboxValues.includes(value.toLowerCase())) {
+          checkboxes.push({
+            label: fieldLabel,
+            checked: ['☑', '✓', 'نعم', 'yes', 'checked'].includes(value.toLowerCase())
+          })
+        } else {
+          fields.push({
+            label: fieldLabel,
+            value: value === '-' || value.toUpperCase() === 'EMPTY' ? '' : value,
+            type: inferFieldType(fieldLabel, value)
+          })
+        }
+      }
+      i++
+      continue
+    }
+    
+    // Pattern 5: Natural "label: value" format - HANDLES MULTIPLE FIELDS PER LINE
+    if (line.includes(':') && !line.startsWith('[') && !line.startsWith('http')) {
+      // Split by common table separators (multiple spaces, tabs, pipes)
+      const segments = line.split(/\s{3,}|\t|\|/)
+      
+      for (const segment of segments) {
+        const trimmedSegment = segment.trim()
+        if (!trimmedSegment || !trimmedSegment.includes(':')) continue
+        
+        const colonIdx = findMeaningfulColon(trimmedSegment)
+        
+        if (colonIdx > 0) {
+          let label = trimmedSegment.slice(0, colonIdx).trim()
+          const value = trimmedSegment.slice(colonIdx + 1).trim()
+          
+          // Clean label
+          label = label.replace(/^[•\-\*\d\.\)]+\s*/, '').trim()
+          
+          if (label && 
+              label.length > 1 && 
+              label.length < 80 && 
+              !/^\d+$/.test(label) &&
+              !GARBAGE_PATTERNS.some(pat => label.toLowerCase().includes(pat))) {
+            
+            // Normalize empty values
+            const normalizedValue = normalizeEmptyValue(value)
+            
+            const checkboxValues = ['☑', '☐', '✓', '✗', 'نعم', 'لا', 'yes', 'no']
+            if (checkboxValues.includes(value.toLowerCase())) {
+              checkboxes.push({
+                label: label,
+                checked: ['☑', '✓', 'نعم', 'yes'].includes(value.toLowerCase())
+              })
+            } else {
+              fields.push({
+                label: label,
+                value: normalizedValue,
+                type: inferFieldType(label, value)
+              })
+            }
+          }
+        }
       }
     }
     
@@ -255,6 +442,24 @@ function parseFieldValueFormat(text: string): {
   }
   
   return { fields, sections, checkboxes, formTitle }
+}
+
+/**
+ * Find the first meaningful colon in a line (not a time separator)
+ */
+function findMeaningfulColon(text: string): number {
+  for (let idx = 0; idx < text.length; idx++) {
+    if (text[idx] === ':') {
+      const before = text.slice(0, idx).trim()
+      const after = text.slice(idx + 1).trim()
+      // Skip time patterns like 12:30
+      if (before && after && /\d$/.test(before) && /^\d/.test(after)) {
+        continue
+      }
+      return idx
+    }
+  }
+  return -1
 }
 
 /**

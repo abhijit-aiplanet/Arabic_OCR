@@ -124,35 +124,59 @@ Requirements:
 
 Output only the extracted Arabic text, nothing else."""
 
-# Structured Extraction Prompt (for forms - optimized for VLM accuracy)
-# Uses a direct, strict format that produces consistent output
-STRUCTURED_EXTRACTION_PROMPT = """اقرأ هذا النموذج واستخرج كل حقل مع قيمته.
+# Structured Extraction Prompt - Optimized for Arabic Forms (Tables + Lists + Documents)
+# Handles: table forms, checklists, requirements lists, signature areas
+STRUCTURED_EXTRACTION_PROMPT = """أنت متخصص في قراءة النماذج والوثائق العربية.
 
-Read this form and list every field with its value.
+You are an expert Arabic document reader. Extract ALL content from this image.
 
-FORMAT - Write exactly like this for EACH field:
-[FIELD] field_label_here
-[VALUE] value_here
+DOCUMENT TYPES TO HANDLE:
+1. FORMS with fields: "label : value" pairs
+2. CHECKLISTS/REQUIREMENTS: numbered or bulleted lists (طلبات، متطلبات، شروط)
+3. TABLES: rows with multiple columns
+4. SIGNATURE AREAS: names, dates, stamps
 
-IMPORTANT RULES:
-1. Find EVERY label/title in the form
-2. Write the corresponding value (handwritten or printed)
-3. If value is empty, write: [VALUE] -
-4. Do NOT write any introduction or explanation
-5. Do NOT translate Arabic text
-6. Start your response with the first [FIELD] immediately
+OUTPUT FORMAT:
 
-Example (do not include this, just follow the format):
-[FIELD] الاسم
-[VALUE] محمد أحمد
+For FORM FIELDS (label:value pairs):
+field_label: field_value
+(Use "-" for empty fields with dots or blank spaces)
 
-[FIELD] رقم الهوية  
-[VALUE] 1234567890
+For SECTION HEADERS:
+[قسم] section_name
 
-[FIELD] التاريخ
-[VALUE] 2024/01/15
+For CHECKLISTS/REQUIREMENTS (numbered items without values):
+[قائمة] list_title
+- item 1
+- item 2
+- item 3
 
-Now extract all fields:"""
+For SIGNATURES/STAMPS:
+توقيع: موجود/غير موجود
+ختم: موجود/غير موجود
+
+CRITICAL RULES:
+1. Extract EVERYTHING you can read
+2. Keep Arabic text exactly as written
+3. Multiple fields per line: extract each separately
+4. Empty fields (....., / / ١٤هـ): write "label: -"
+5. Numbered lists (١، ٢، ٣): preserve as list items
+6. Don't translate, summarize, or explain
+
+Start extraction:"""
+
+
+# Alternative prompt for document-heavy content
+DOCUMENT_EXTRACTION_PROMPT = """Read this Arabic document/form and extract all text content.
+
+Output rules:
+• field_name: value (for form fields)
+• [قسم] name (for section headers)  
+• [قائمة] title (for requirement/checklist sections)
+• - item (for list items)
+• For empty fields: field_name: -
+
+Extract everything:"""
 
 
 # =============================================================================
@@ -1731,125 +1755,270 @@ async def process_pdf_structured_ocr(
 # STRUCTURED EXTRACTION ENDPOINT
 # =============================================================================
 
+def normalize_empty_value(value: str) -> str:
+    """Normalize empty field values to empty string."""
+    if not value:
+        return ""
+    
+    value = value.strip()
+    
+    # Common empty patterns in Arabic forms
+    empty_patterns = [
+        '-', '—', '−',  # Dashes
+        '............', '...........', '..........', '.........', '........', '.......', '......', '.....', '....', '...',
+        '____', '___', '__',
+        '/ / ١٤هـ', '/ / ١٤', '/ /',  # Empty Islamic dates
+        '[فارغ]', '[empty]', 'فارغ', 'empty', 'n/a', 'N/A', 'none', 'None',
+    ]
+    
+    # Check exact matches
+    if value in empty_patterns:
+        return ""
+    
+    # Check if value is mostly dots or dashes
+    if re.match(r'^[\.\-_\s/]+$', value):
+        return ""
+    
+    # Check if it's just a date placeholder
+    if re.match(r'^[\s/]*١٤هـ?[\s/]*$', value):
+        return ""
+    
+    return value
+
+
+def split_field_value(text: str) -> tuple:
+    """Split a text segment into label and value, handling Arabic forms."""
+    if ':' not in text:
+        return ("", "")
+    
+    # Find the most appropriate colon
+    colon_idx = -1
+    for idx, char in enumerate(text):
+        if char == ':':
+            before = text[:idx].strip()
+            after = text[idx+1:].strip() if idx + 1 < len(text) else ""
+            
+            # Skip time patterns like 12:30
+            if before and after and before[-1].isdigit() and after and after[0].isdigit():
+                if len(after) > 2 and '/' in after:
+                    colon_idx = idx
+                    break
+                continue
+            
+            colon_idx = idx
+            break
+    
+    if colon_idx <= 0:
+        return ("", "")
+    
+    label = text[:colon_idx].strip()
+    value = text[colon_idx + 1:].strip()
+    
+    return (label, value)
+
+
 def parse_structured_response(text: str) -> Dict[str, Any]:
     """
     Parse the VLM's structured extraction response.
-    Handles multiple formats:
-    1. [FIELD]/[VALUE] format (preferred - new format)
-    2. FIELD:/VALUE: format (legacy)
-    3. Label: Value format
-    4. JSON format (fallback)
-    
+    Handles multiple formats with robust parsing:
+    1. Natural "label: value" format (primary)
+    2. [FIELD]/[VALUE] format (including 3-line values)
+    3. FIELD:/VALUE: format (legacy)
+    4. Bullet/numbered lists
+    5. JSON format (fallback)
+
     Returns a structured dict with sections, tables, checkboxes.
     """
     if not text or not text.strip():
         return {"sections": [], "tables": [], "checkboxes": [], "form_title": None}
-    
+
     text = text.strip()
-    
-    # Filter out common garbage patterns that VLMs sometimes output
+
+    # Filter out common garbage patterns
     garbage_patterns = [
-        "here's the extracted data",
-        "here is the extracted",
-        "i'll extract",
-        "let me extract",
-        "the form contains",
-        "based on the image",
-        "from the form",
-        "extracted data:",
-        "form data:",
+        "here's the extracted", "here is the extracted", "i'll extract",
+        "let me extract", "the form contains", "based on the image",
+        "from the form", "extracted data:", "form data:", "your task",
+        "begin extraction", "extract everything", "output format",
+        "instructions:", "important:", "rules:"
     ]
-    
-    # Remove garbage intro lines
+
+    # Remove garbage intro lines but keep content
     lines = text.split('\n')
     filtered_lines = []
     started = False
-    
+
     for line in lines:
         line_lower = line.lower().strip()
         
-        # Skip garbage intro lines
         if not started:
             is_garbage = any(pat in line_lower for pat in garbage_patterns)
-            # Start when we see [FIELD] or FIELD: or Arabic text with colon
-            if '[field]' in line_lower or line_lower.startswith('field:') or (re.search(r'[\u0600-\u06FF]', line) and ':' in line):
+            # Start when we see actual content
+            has_arabic = re.search(r'[\u0600-\u06FF]', line)
+            has_colon = ':' in line
+            has_field_marker = '[field]' in line_lower or line_lower.startswith('field:')
+            has_bullet = line.strip().startswith(('•', '-', '*', '١', '٢', '٣')) or re.match(r'^\d+[\.\)]', line.strip())
+            
+            if has_field_marker or (has_arabic and has_colon) or has_bullet:
                 started = True
                 filtered_lines.append(line)
-            elif not is_garbage and line.strip():
-                # Check if line looks like a field-value pair
-                if ':' in line and len(line) > 3:
+            elif not is_garbage and line.strip() and len(line.strip()) > 2:
+                if has_colon or has_bullet:
                     started = True
                     filtered_lines.append(line)
         else:
             filtered_lines.append(line)
-    
+
     text = '\n'.join(filtered_lines)
     
-    # Try JSON first (in case model outputs JSON)
+    # Try JSON parsing first
     if text.strip().startswith("{"):
         try:
-            cleaned = text.strip()
-            start_idx = cleaned.find("{")
-            end_idx = cleaned.rfind("}")
-            if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
-                json_str = cleaned[start_idx:end_idx + 1]
-                parsed = json.loads(json_str)
+            start_idx = text.find("{")
+            end_idx = text.rfind("}")
+            if start_idx != -1 and end_idx > start_idx:
+                parsed = json.loads(text[start_idx:end_idx + 1])
                 if isinstance(parsed.get("sections"), list):
                     return parsed
         except:
             pass
-    
+
     fields = []
     current_section = None
-    tables = []
     checkboxes = []
     form_title = None
-    
+
     lines = text.split('\n')
     i = 0
-    
+
     while i < len(lines):
         line = lines[i].strip()
-        
+
         if not line:
             i += 1
             continue
+
+        # Pattern 0: Arabic section headers [قسم] or "بيانات ..."
+        section_match = re.match(r'^\[قسم\]\s*(.+)$', line)
+        if section_match:
+            current_section = section_match.group(1).strip()
+            i += 1
+            continue
         
-        # NEW FORMAT: [FIELD] label / [VALUE] value
-        if line.startswith('[FIELD]') or line.upper().startswith('[FIELD]'):
-            field_label = line[7:].strip()  # Remove [FIELD]
+        # Detect section headers like "بيانات عامة" or "بيانات المركبة"
+        if re.match(r'^بيانات\s+[\u0600-\u06FF]+', line) and ':' not in line:
+            current_section = line.strip()
+            i += 1
+            continue
+        
+        # Detect checklist/requirements sections: "طلبات الإصدار الجديد :" or "طلبات التجديد :"
+        checklist_match = re.match(r'^(طلبات|متطلبات|شروط)\s+[\u0600-\u06FF\s]+\s*:?\s*$', line)
+        if checklist_match:
+            current_section = line.replace(':', '').strip()
+            i += 1
+            continue
+        
+        # Detect [قائمة] list marker
+        list_marker_match = re.match(r'^\[قائمة\]\s*(.+)$', line)
+        if list_marker_match:
+            current_section = list_marker_match.group(1).strip()
+            i += 1
+            continue
+        
+        # Pattern 1: [FIELD] with multi-line value support
+        if line.upper().startswith('[FIELD]'):
+            field_label = line[7:].strip()
             value = ""
             
-            # Look for [VALUE] on next line
-            if i + 1 < len(lines):
-                next_line = lines[i + 1].strip()
-                if next_line.startswith('[VALUE]') or next_line.upper().startswith('[VALUE]'):
-                    value = next_line[7:].strip()  # Remove [VALUE]
-                    if value == '-' or value.upper() == 'EMPTY':
-                        value = ""
-                    i += 1
-            
+            # Check if [VALUE] is inline (e.g., "[FIELD] label [VALUE] value")
+            if '[VALUE]' in field_label.upper():
+                parts = re.split(r'\[VALUE\]', field_label, flags=re.IGNORECASE)
+                field_label = parts[0].strip()
+                value = parts[1].strip() if len(parts) > 1 else ""
+            else:
+                # Look for [VALUE] on next lines (up to 3 lines ahead)
+                j = i + 1
+                while j < len(lines) and j <= i + 3:
+                    next_line = lines[j].strip()
+                    
+                    if next_line.upper().startswith('[VALUE]'):
+                        value_content = next_line[7:].strip()
+                        
+                        # If [VALUE] line has content, use it
+                        if value_content and value_content != '-':
+                            value = value_content
+                            i = j
+                            break
+                        else:
+                            # CRITICAL FIX: Value might be on the NEXT line after [VALUE]
+                            if j + 1 < len(lines):
+                                potential = lines[j + 1].strip()
+                                # Check it's not another marker
+                                if (potential and 
+                                    not potential.upper().startswith('[FIELD]') and
+                                    not potential.upper().startswith('[VALUE]') and
+                                    not potential.upper().startswith('FIELD:') and
+                                    not potential.upper().startswith('[SECTION]')):
+                                    value = potential
+                                    i = j + 1
+                                    break
+                            i = j
+                            break
+                    elif next_line.upper().startswith('[FIELD]'):
+                        break  # Next field found
+                    j += 1
+
             if field_label and len(field_label) > 1:
-                # Filter out garbage labels
                 if not any(pat in field_label.lower() for pat in garbage_patterns):
                     fields.append({
                         "label": field_label,
-                        "value": value,
+                        "value": value if value != '-' else "",
                         "type": infer_field_type(field_label, value),
                         "section": current_section
                     })
-            
             i += 1
             continue
-        
-        # Check for section header
+
+        # Pattern 2: Section headers
         if line.upper().startswith('SECTION:') or line.upper().startswith('[SECTION]'):
-            marker = '[SECTION]' if '[SECTION]' in line.upper() else 'SECTION:'
-            current_section = line[len(marker):].strip()
+            marker_len = 9 if '[SECTION]' in line.upper() else 8
+            current_section = line[marker_len:].strip()
             i += 1
             continue
+
+        # Pattern 3: Bullet points and numbered lists (Western + Arabic numerals)
+        bullet_match = re.match(r'^[•\-\*]\s*(.+)$', line)
+        # Match both Western (1, 2, 3) and Arabic (١، ٢، ٣) numerals with various separators
+        number_match = re.match(r'^[\d١٢٣٤٥٦٧٨٩٠]+[\.\)\-–]\s*(.+)$', line)
         
-        # Legacy FIELD:/VALUE: format
+        if bullet_match or number_match:
+            content = (bullet_match or number_match).group(1).strip()
+            # Remove trailing period/dot
+            content = re.sub(r'\s*\.\s*$', '', content)
+            
+            if ':' in content:
+                # This is a field:value pair within a list
+                label, value = split_field_value(content)
+                if label and len(label) > 1 and len(label) < 80:
+                    fields.append({
+                        "label": label,
+                        "value": normalize_empty_value(value),
+                        "type": infer_field_type(label, value),
+                        "section": current_section
+                    })
+            else:
+                # This is a standalone list item (checklist/requirements)
+                if content and len(content) > 2 and len(content) < 200:
+                    fields.append({
+                        "label": content,
+                        "value": "",  # No value for checklist items
+                        "type": "list_item",
+                        "section": current_section
+                    })
+            i += 1
+            continue
+
+        # Pattern 4: Legacy FIELD:/VALUE: format
         if line.upper().startswith('FIELD:'):
             field_label = line[6:].strip()
             value = ""
@@ -1858,46 +2027,69 @@ def parse_structured_response(text: str) -> Dict[str, Any]:
                 next_line = lines[i + 1].strip()
                 if next_line.upper().startswith('VALUE:'):
                     value = next_line[6:].strip()
-                    if value.upper() == 'EMPTY' or value == '-':
-                        value = ""
+                    # Check next line for value if empty
+                    if not value and i + 2 < len(lines):
+                        potential = lines[i + 2].strip()
+                        if not potential.upper().startswith('FIELD:'):
+                            value = potential
+                            i += 1
                     i += 1
             
-            if value.upper() in ['CHECKED', 'UNCHECKED', '☑', '☐', 'نعم', 'لا']:
-                checkboxes.append({
-                    "label": field_label,
-                    "checked": value.upper() in ['CHECKED', '☑', 'نعم']
-                })
-            else:
-                if field_label and len(field_label) > 1:
+            if field_label and len(field_label) > 1:
+                if value.upper() in ['CHECKED', 'UNCHECKED', '☑', '☐', 'نعم', 'لا']:
+                    checkboxes.append({
+                        "label": field_label,
+                        "checked": value.upper() in ['CHECKED', '☑', 'نعم']
+                    })
+                else:
                     fields.append({
                         "label": field_label,
-                        "value": value,
+                        "value": value if value not in ['-', 'EMPTY'] else "",
                         "type": infer_field_type(field_label, value),
                         "section": current_section
                     })
-            
             i += 1
             continue
         
-        # Fallback: Try to parse as "Label: Value" format
+        # Pattern 5: Natural "label: value" format - HANDLES MULTIPLE FIELDS PER LINE
         if ':' in line and not line.startswith('http') and not line.startswith('['):
-            parts = line.split(':', 1)
-            if len(parts) == 2:
-                label = parts[0].strip()
-                value = parts[1].strip()
+            # Split by common table separators (multiple spaces, tabs, pipes)
+            # This handles forms where multiple fields appear on the same row
+            segments = re.split(r'\s{3,}|\t|\|', line)
+            
+            for segment in segments:
+                segment = segment.strip()
+                if not segment or ':' not in segment:
+                    continue
                 
-                # Validate label - should be short and not garbage
+                label, value = split_field_value(segment)
+                
+                # Clean label (remove bullets, numbers)
+                label = re.sub(r'^[•\-\*\d\.\)]+\s*', '', label).strip()
+                
+                # Validate
                 if (label and 
                     len(label) > 1 and 
-                    len(label) < 100 and 
+                    len(label) < 80 and 
                     not label.isdigit() and
                     not any(pat in label.lower() for pat in garbage_patterns)):
-                    fields.append({
-                        "label": label,
-                        "value": value,
-                        "type": infer_field_type(label, value),
-                        "section": current_section
-                    })
+                    
+                    # Normalize empty values
+                    normalized_value = normalize_empty_value(value)
+                    
+                    # Check for checkbox values
+                    if value in ['☑', '☐', '✓', '✗'] or value.lower() in ['نعم', 'لا', 'yes', 'no']:
+                        checkboxes.append({
+                            "label": label,
+                            "checked": value in ['☑', '✓'] or value.lower() in ['نعم', 'yes']
+                        })
+                    else:
+                        fields.append({
+                            "label": label,
+                            "value": normalized_value,
+                            "type": infer_field_type(label, value),
+                            "section": current_section
+                        })
         
         i += 1
     
@@ -1917,7 +2109,7 @@ def parse_structured_response(text: str) -> Dict[str, Any]:
     return {
         "form_title": form_title,
         "sections": sections,
-        "tables": tables,
+        "tables": [],
         "checkboxes": checkboxes
     }
 

@@ -367,7 +367,22 @@ function DocumentStyleView({
           <div className="space-y-1">
             {section.fields.map((field, fIdx) => {
               const hasValue = field.value && field.value.trim() && field.value !== '-'
+              const isListItem = !hasValue && field.label && field.label.length > 10
               
+              // List items (requirements, checklist items) - display as bullet points
+              if (isListItem && section.name && /طلبات|متطلبات|شروط|قائمة/.test(section.name)) {
+                return (
+                  <div 
+                    key={fIdx}
+                    className="flex items-start gap-2 py-1.5 px-3"
+                  >
+                    <span className="text-gray-400 mt-0.5">•</span>
+                    <span className="text-sm text-gray-700">{field.label}</span>
+                  </div>
+                )
+              }
+              
+              // Regular field:value pairs
               return (
                 <div 
                   key={fIdx}
