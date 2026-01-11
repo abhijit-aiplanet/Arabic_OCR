@@ -203,12 +203,21 @@ export default function Home() {
             
             // Store structured data for the current page
             if (pageResult.structured_data && pageResult.status === 'success') {
+              const newSections = (pageResult.structured_data?.sections || []).map(s => ({
+                name: s.name ? `Page ${pageResult.page_number}: ${s.name}` : `Page ${pageResult.page_number}`,
+                fields: s.fields.map(f => ({
+                  label: f.label,
+                  value: f.value,
+                  type: f.type as 'text' | 'date' | 'number' | 'checkbox' | 'unknown'
+                }))
+              }))
+              
               setStructuredData(prev => {
                 // Merge structured data from all pages
                 if (!prev) {
                   return {
                     form_title: pageResult.structured_data?.form_title || null,
-                    sections: pageResult.structured_data?.sections || [],
+                    sections: newSections,
                     tables: pageResult.structured_data?.tables || [],
                     checkboxes: pageResult.structured_data?.checkboxes || [],
                     raw_text: pageResult.raw_text || ''
@@ -216,13 +225,7 @@ export default function Home() {
                 }
                 return {
                   ...prev,
-                  sections: [
-                    ...prev.sections,
-                    ...(pageResult.structured_data?.sections || []).map(s => ({
-                      ...s,
-                      name: s.name ? `Page ${pageResult.page_number}: ${s.name}` : `Page ${pageResult.page_number}`
-                    }))
-                  ],
+                  sections: [...prev.sections, ...newSections],
                   tables: [...prev.tables, ...(pageResult.structured_data?.tables || [])],
                   checkboxes: [...prev.checkboxes, ...(pageResult.structured_data?.checkboxes || [])],
                   raw_text: prev.raw_text + '\n\n' + (pageResult.raw_text || '')

@@ -1,4 +1,5 @@
 import axios from 'axios'
+import type { FieldType } from './structuredParser'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
@@ -113,7 +114,7 @@ export interface OCRConfidence {
 export interface ExtractedField {
   label: string
   value: string
-  type: string
+  type: FieldType
 }
 
 export interface ExtractedSection {
