@@ -436,7 +436,7 @@ export async function deleteTemplate(templateId: string, authToken: string | nul
   }
 }
 
-// Structured OCR Extraction
+// Structured OCR Extraction (Image)
 export async function processStructuredOCR(
   imageFile: File,
   settings: {
@@ -479,6 +479,128 @@ export async function processStructuredOCR(
       throw new Error(message)
     }
     throw error
+  }
+}
+
+// Structured PDF Page Result
+export interface StructuredPDFPageResult {
+  page_number: number
+  raw_text?: string
+  structured_data?: StructuredExtractionData
+  parsing_successful?: boolean
+  status: string
+  error?: string
+  page_image?: string
+  confidence?: OCRConfidence
+}
+
+// Structured PDF Stream Message
+export interface StructuredPDFStreamMessage {
+  type: 'metadata' | 'page_result' | 'complete' | 'error'
+  total_pages?: number
+  page_number?: number
+  status?: string
+  raw_text?: string
+  structured_data?: StructuredExtractionData
+  parsing_successful?: boolean
+  error?: string
+  page_image?: string
+  confidence?: OCRConfidence
+  successful_pages?: number
+  error_pages?: number
+}
+
+// Structured PDF OCR Extraction
+export async function processStructuredPDFOCR(
+  pdfFile: File,
+  settings: {
+    maxTokens: number
+    minPixels: number
+    maxPixels: number
+    templateId?: string | null
+  },
+  onPageComplete: (result: StructuredPDFPageResult) => void,
+  onMetadata: (totalPages: number) => void,
+  authToken?: string | null
+): Promise<void> {
+  try {
+    const formData = new FormData()
+    formData.append('file', pdfFile)
+    formData.append('max_new_tokens', settings.maxTokens.toString())
+    formData.append('min_pixels', settings.minPixels.toString())
+    formData.append('max_pixels', settings.maxPixels.toString())
+    
+    if (settings.templateId) {
+      formData.append('template_id', settings.templateId)
+    }
+
+    const headers: Record<string, string> = {}
+    if (authToken) {
+      headers['Authorization'] = `Bearer ${authToken}`
+    }
+
+    const response = await fetch(`${API_URL}/api/ocr-pdf-structured`, {
+      method: 'POST',
+      body: formData,
+      headers,
+    })
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`)
+    }
+
+    const reader = response.body?.getReader()
+    const decoder = new TextDecoder()
+
+    if (!reader) {
+      throw new Error('No response body')
+    }
+
+    let buffer = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+      
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
+
+      for (const line of lines) {
+        if (line.trim()) {
+          try {
+            const message: StructuredPDFStreamMessage = JSON.parse(line)
+            
+            if (message.type === 'metadata' && message.total_pages) {
+              onMetadata(message.total_pages)
+            } else if (message.type === 'page_result') {
+              const pageResult: StructuredPDFPageResult = {
+                page_number: message.page_number!,
+                raw_text: message.raw_text,
+                structured_data: message.structured_data,
+                parsing_successful: message.parsing_successful,
+                status: message.status || 'error',
+                error: message.error,
+                page_image: message.page_image,
+                confidence: message.confidence
+              }
+              onPageComplete(pageResult)
+            } else if (message.type === 'error') {
+              throw new Error(message.error || 'Unknown error')
+            }
+          } catch (e) {
+            console.error('Error parsing line:', line, e)
+          }
+        }
+      }
+    }
+  } catch (error) {
+    if (error instanceof Error) {
+      throw error
+    }
+    throw new Error('Failed to process PDF')
   }
 }
 

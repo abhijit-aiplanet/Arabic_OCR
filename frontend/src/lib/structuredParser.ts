@@ -72,7 +72,22 @@ function extractJsonFromText(text: string): string | null {
 }
 
 /**
- * Parse FIELD:/VALUE: format from VLM output
+ * Common garbage patterns to filter out
+ */
+const GARBAGE_PATTERNS = [
+  "here's the extracted data",
+  "here is the extracted",
+  "i'll extract",
+  "let me extract",
+  "the form contains",
+  "based on the image",
+  "from the form",
+  "extracted data:",
+  "form data:",
+]
+
+/**
+ * Parse [FIELD]/[VALUE] or FIELD:/VALUE: format from VLM output
  */
 function parseFieldValueFormat(text: string): { fields: ExtractedField[], sections: string[], checkboxes: ExtractedCheckbox[], formTitle: string | null } {
   const fields: ExtractedField[] = []
@@ -81,7 +96,33 @@ function parseFieldValueFormat(text: string): { fields: ExtractedField[], sectio
   let formTitle: string | null = null
   let currentSection: string | null = null
   
-  const lines = text.split('\n')
+  // Filter out garbage intro lines
+  let lines = text.split('\n')
+  let started = false
+  const filteredLines: string[] = []
+  
+  for (const line of lines) {
+    const lineLower = line.toLowerCase().trim()
+    
+    if (!started) {
+      const isGarbage = GARBAGE_PATTERNS.some(pat => lineLower.includes(pat))
+      // Start when we see [FIELD] or FIELD: or Arabic text with colon
+      if (lineLower.includes('[field]') || lineLower.startsWith('field:') || (/[\u0600-\u06FF]/.test(line) && line.includes(':'))) {
+        started = true
+        filteredLines.push(line)
+      } else if (!isGarbage && line.trim()) {
+        // Check if line looks like a field-value pair
+        if (line.includes(':') && line.length > 3) {
+          started = true
+          filteredLines.push(line)
+        }
+      }
+    } else {
+      filteredLines.push(line)
+    }
+  }
+  
+  lines = filteredLines
   
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim()
@@ -89,9 +130,37 @@ function parseFieldValueFormat(text: string): { fields: ExtractedField[], sectio
     
     const upperLine = line.toUpperCase()
     
+    // NEW FORMAT: [FIELD] label / [VALUE] value
+    if (line.startsWith('[FIELD]') || upperLine.startsWith('[FIELD]')) {
+      const fieldLabel = line.slice(7).trim()
+      let value = ''
+      
+      if (i + 1 < lines.length) {
+        const nextLine = lines[i + 1].trim()
+        if (nextLine.startsWith('[VALUE]') || nextLine.toUpperCase().startsWith('[VALUE]')) {
+          value = nextLine.slice(7).trim()
+          if (value === '-' || value.toUpperCase() === 'EMPTY') {
+            value = ''
+          }
+          i++
+        }
+      }
+      
+      // Filter garbage labels
+      if (fieldLabel && fieldLabel.length > 1 && !GARBAGE_PATTERNS.some(pat => fieldLabel.toLowerCase().includes(pat))) {
+        fields.push({
+          label: fieldLabel,
+          value: value,
+          type: inferFieldType(fieldLabel, value)
+        })
+      }
+      continue
+    }
+    
     // Check for section header
-    if (upperLine.startsWith('SECTION:')) {
-      currentSection = line.slice(8).trim()
+    if (upperLine.startsWith('SECTION:') || upperLine.startsWith('[SECTION]')) {
+      const marker = upperLine.startsWith('[SECTION]') ? '[SECTION]' : 'SECTION:'
+      currentSection = line.slice(marker.length).trim()
       if (currentSection && !sections.includes(currentSection)) {
         sections.push(currentSection)
       }
@@ -104,31 +173,29 @@ function parseFieldValueFormat(text: string): { fields: ExtractedField[], sectio
       continue
     }
     
-    // Check for FIELD:/VALUE: pair
+    // Legacy FIELD:/VALUE: format
     if (upperLine.startsWith('FIELD:')) {
       const fieldLabel = line.slice(6).trim()
       let value = ''
       
-      // Look for VALUE: on next line
       if (i + 1 < lines.length) {
         const nextLine = lines[i + 1].trim()
         if (nextLine.toUpperCase().startsWith('VALUE:')) {
           value = nextLine.slice(6).trim()
-          if (value.toUpperCase() === 'EMPTY') {
+          if (value.toUpperCase() === 'EMPTY' || value === '-') {
             value = ''
           }
-          i++ // Skip the value line
+          i++
         }
       }
       
-      // Check if it's a checkbox
       const upperValue = value.toUpperCase()
       if (['CHECKED', 'UNCHECKED', '☑', '☐', 'نعم', 'لا'].includes(upperValue)) {
         checkboxes.push({
           label: fieldLabel,
           checked: ['CHECKED', '☑', 'نعم'].includes(upperValue)
         })
-      } else {
+      } else if (fieldLabel && fieldLabel.length > 1) {
         fields.push({
           label: fieldLabel,
           value: value,

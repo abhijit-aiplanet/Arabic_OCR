@@ -124,33 +124,35 @@ Requirements:
 
 Output only the extracted Arabic text, nothing else."""
 
-# Structured Extraction Prompt (for forms - simple key:value format)
-# This prompt uses a simple format that VLMs handle better than complex JSON
-STRUCTURED_EXTRACTION_PROMPT = """أنت مستخرج بيانات النماذج. استخرج جميع الحقول والقيم من هذه الصورة.
+# Structured Extraction Prompt (for forms - optimized for VLM accuracy)
+# Uses a direct, strict format that produces consistent output
+STRUCTURED_EXTRACTION_PROMPT = """اقرأ هذا النموذج واستخرج كل حقل مع قيمته.
 
-Extract ALL fields from this Arabic form. For each field you find, output it as:
-FIELD: label text
-VALUE: the handwritten or typed value (or EMPTY if blank)
+Read this form and list every field with its value.
 
-RULES:
-- Extract EVERY visible field label and its value
-- Keep Arabic text exactly as written - do NOT translate
-- For checkboxes: VALUE: CHECKED or VALUE: UNCHECKED  
-- For tables: output each cell as TABLE_ROW_N_COL_M: value
-- Separate each field-value pair with a blank line
-- If you see a section header, output it as: SECTION: header text
+FORMAT - Write exactly like this for EACH field:
+[FIELD] field_label_here
+[VALUE] value_here
 
-Example output format:
-FIELD: الاسم الكامل
-VALUE: محمد أحمد العلي
+IMPORTANT RULES:
+1. Find EVERY label/title in the form
+2. Write the corresponding value (handwritten or printed)
+3. If value is empty, write: [VALUE] -
+4. Do NOT write any introduction or explanation
+5. Do NOT translate Arabic text
+6. Start your response with the first [FIELD] immediately
 
-FIELD: رقم الهوية
-VALUE: 1234567890
+Example (do not include this, just follow the format):
+[FIELD] الاسم
+[VALUE] محمد أحمد
 
-FIELD: تاريخ الميلاد
-VALUE: 1990/05/15
+[FIELD] رقم الهوية  
+[VALUE] 1234567890
 
-Now extract ALL fields from this form image:"""
+[FIELD] التاريخ
+[VALUE] 2024/01/15
+
+Now extract all fields:"""
 
 
 # =============================================================================
@@ -1458,6 +1460,273 @@ async def process_pdf_ocr(
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
+@app.post("/api/ocr-pdf-structured")
+async def process_pdf_structured_ocr(
+    file: UploadFile = File(...),
+    template_id: Optional[str] = Form(None),
+    max_new_tokens: int = Form(4096),
+    min_pixels: Optional[int] = Form(200704),
+    max_pixels: Optional[int] = Form(1003520),
+    user: dict = Depends(verify_clerk_token),
+):
+    """
+    Process a PDF with structured extraction (key-value pairs) for each page.
+    Streams results page by page with structured data.
+    """
+    start_time = time.time()
+    
+    try:
+        if not RUNPOD_ENDPOINT:
+            raise HTTPException(status_code=500, detail="Model service not configured")
+        
+        if not file.filename.lower().endswith('.pdf'):
+            raise HTTPException(status_code=400, detail="File must be a PDF")
+        
+        pdf_contents = await file.read()
+        pdf_file_size = len(pdf_contents)
+        pdf_filename = file.filename or "document.pdf"
+        user_id = user.get("sub", "anonymous")
+        
+        # Store PDF
+        storage_result = await store_file_to_blob(pdf_contents, pdf_filename, "application/pdf")
+        storage_url = storage_result.get('url') if storage_result.get("stored") else None
+        
+        # Fetch template if provided
+        template_data = None
+        if template_id and supabase:
+            try:
+                template_response = supabase.table("ocr_templates")\
+                    .select("*")\
+                    .eq("id", template_id)\
+                    .single()\
+                    .execute()
+                if template_response.data:
+                    template_data = template_response.data
+            except Exception as e:
+                print(f"Template fetch error: {e}")
+        
+        # Build prompt
+        prompt = build_template_enhanced_prompt(template_data)
+        
+        async def process_pages_structured():
+            all_structured_data = []
+            successful_pages = 0
+            error_pages = 0
+            total_pages = 0
+            
+            try:
+                pdf_document = fitz.open(stream=pdf_contents, filetype="pdf")
+                total_pages = len(pdf_document)
+                
+                print(f"Processing PDF (structured): {pdf_filename} ({total_pages} pages)")
+                
+                # Send metadata
+                yield json.dumps({
+                    "type": "metadata",
+                    "total_pages": total_pages
+                }) + "\n"
+                
+                # Process each page
+                for page_num in range(total_pages):
+                    page_info = f"Page {page_num + 1}/{total_pages}"
+                    
+                    try:
+                        page = pdf_document[page_num]
+                        
+                        # Convert page to image (300 DPI)
+                        mat = fitz.Matrix(300/72, 300/72)
+                        pix = page.get_pixmap(matrix=mat)
+                        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                        
+                        # Create base64 for display
+                        buffered_display = io.BytesIO()
+                        img.save(buffered_display, format="PNG", optimize=True)
+                        page_image_base64 = base64.b64encode(buffered_display.getvalue()).decode('utf-8')
+                        
+                        # Create base64 for OCR
+                        buffered_ocr = io.BytesIO()
+                        img.save(buffered_ocr, format="PNG")
+                        img_base64 = base64.b64encode(buffered_ocr.getvalue()).decode('utf-8')
+                        
+                        page_image_quality = analyze_image_quality(img)
+                        
+                        payload = {
+                            "input": {
+                                "image": img_base64,
+                                "prompt": prompt,
+                                "max_new_tokens": max_new_tokens,
+                                "min_pixels": min_pixels,
+                                "max_pixels": max_pixels
+                            }
+                        }
+                        
+                        # Call RunPod
+                        result, success = await runpod_client.call_runpod(payload, f"{page_info} structured")
+                        
+                        if success and result.get("status") == "COMPLETED":
+                            page_output = result.get("output", {}) or {}
+                            raw_text = page_output.get("text", "")
+                            token_confidence = page_output.get("token_confidence")
+                            
+                            # Parse structured data
+                            parsed = parse_structured_response(raw_text)
+                            
+                            # Convert to response format
+                            sections = []
+                            for section in parsed.get("sections", []):
+                                fields = []
+                                for field in section.get("fields", []):
+                                    fields.append({
+                                        "label": field.get("label", ""),
+                                        "value": field.get("value", ""),
+                                        "type": field.get("type", "text")
+                                    })
+                                if fields:
+                                    sections.append({
+                                        "name": section.get("name"),
+                                        "fields": fields
+                                    })
+                            
+                            page_structured_data = {
+                                "form_title": parsed.get("form_title"),
+                                "sections": sections,
+                                "tables": parsed.get("tables", []),
+                                "checkboxes": parsed.get("checkboxes", [])
+                            }
+                            
+                            total_fields = sum(len(s["fields"]) for s in sections)
+                            parsing_successful = total_fields > 0
+                            
+                            successful_pages += 1
+                            all_structured_data.append({
+                                "page": page_num + 1,
+                                "data": page_structured_data
+                            })
+                            
+                            text_quality = analyze_text_quality(raw_text)
+                            confidence = calculate_final_confidence(page_image_quality, token_confidence, text_quality)
+                            
+                            yield json.dumps({
+                                "type": "page_result",
+                                "page_number": page_num + 1,
+                                "status": "success",
+                                "raw_text": raw_text,
+                                "structured_data": page_structured_data,
+                                "parsing_successful": parsing_successful,
+                                "page_image": page_image_base64,
+                                "confidence": confidence
+                            }) + "\n"
+                        else:
+                            error_msg = result.get("error", "Processing failed")
+                            error_pages += 1
+                            
+                            yield json.dumps({
+                                "type": "page_result",
+                                "page_number": page_num + 1,
+                                "status": "error",
+                                "error": error_msg,
+                                "page_image": page_image_base64
+                            }) + "\n"
+                    
+                    except Exception as e:
+                        error_pages += 1
+                        print(f"Error processing {page_info}: {str(e)}")
+                        
+                        yield json.dumps({
+                            "type": "page_result",
+                            "page_number": page_num + 1,
+                            "status": "error",
+                            "error": f"Error: {str(e)}",
+                            "page_image": ""
+                        }) + "\n"
+                
+                pdf_document.close()
+                
+                # Save to history
+                processing_time = time.time() - start_time
+                
+                # Combine all structured data into text for history
+                combined_text = json.dumps({
+                    "pages": all_structured_data,
+                    "total_pages": total_pages,
+                    "successful_pages": successful_pages
+                }, ensure_ascii=False, indent=2)
+                
+                history_status = "success" if successful_pages > 0 else "error"
+                error_message = None if successful_pages > 0 else f"Failed to process all {total_pages} pages"
+                
+                await save_ocr_history(
+                    user_id=user_id,
+                    file_name=pdf_filename,
+                    file_type="pdf-structured",
+                    file_size=pdf_file_size,
+                    total_pages=total_pages,
+                    extracted_text=combined_text,
+                    status=history_status,
+                    error_message=error_message,
+                    processing_time=processing_time,
+                    settings={
+                        "max_new_tokens": max_new_tokens,
+                        "min_pixels": min_pixels,
+                        "max_pixels": max_pixels,
+                        "template_id": template_id,
+                        "structured_extraction": True,
+                        "successful_pages": successful_pages,
+                        "error_pages": error_pages
+                    },
+                    blob_url=storage_url
+                )
+                
+                print(f"PDF structured complete: {successful_pages}/{total_pages} pages, {processing_time:.1f}s")
+                
+                yield json.dumps({
+                    "type": "complete",
+                    "status": "success",
+                    "successful_pages": successful_pages,
+                    "error_pages": error_pages
+                }) + "\n"
+                
+            except Exception as e:
+                processing_time = time.time() - start_time
+                print(f"PDF structured error: {str(e)}")
+                
+                await save_ocr_history(
+                    user_id=user_id,
+                    file_name=pdf_filename,
+                    file_type="pdf-structured",
+                    file_size=pdf_file_size,
+                    total_pages=total_pages,
+                    extracted_text="",
+                    status="error",
+                    error_message=str(e),
+                    processing_time=processing_time,
+                    settings={
+                        "max_new_tokens": max_new_tokens,
+                        "min_pixels": min_pixels,
+                        "max_pixels": max_pixels,
+                        "template_id": template_id,
+                        "structured_extraction": True
+                    },
+                    blob_url=storage_url
+                )
+                
+                yield json.dumps({
+                    "type": "error",
+                    "error": f"PDF processing error: {str(e)}"
+                }) + "\n"
+        
+        return StreamingResponse(
+            process_pages_structured(),
+            media_type="application/x-ndjson"
+        )
+                
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
 # =============================================================================
 # STRUCTURED EXTRACTION ENDPOINT
 # =============================================================================
@@ -1466,9 +1735,10 @@ def parse_structured_response(text: str) -> Dict[str, Any]:
     """
     Parse the VLM's structured extraction response.
     Handles multiple formats:
-    1. FIELD:/VALUE: format (preferred)
-    2. Label: Value format
-    3. JSON format (fallback)
+    1. [FIELD]/[VALUE] format (preferred - new format)
+    2. FIELD:/VALUE: format (legacy)
+    3. Label: Value format
+    4. JSON format (fallback)
     
     Returns a structured dict with sections, tables, checkboxes.
     """
@@ -1477,12 +1747,48 @@ def parse_structured_response(text: str) -> Dict[str, Any]:
     
     text = text.strip()
     
+    # Filter out common garbage patterns that VLMs sometimes output
+    garbage_patterns = [
+        "here's the extracted data",
+        "here is the extracted",
+        "i'll extract",
+        "let me extract",
+        "the form contains",
+        "based on the image",
+        "from the form",
+        "extracted data:",
+        "form data:",
+    ]
+    
+    # Remove garbage intro lines
+    lines = text.split('\n')
+    filtered_lines = []
+    started = False
+    
+    for line in lines:
+        line_lower = line.lower().strip()
+        
+        # Skip garbage intro lines
+        if not started:
+            is_garbage = any(pat in line_lower for pat in garbage_patterns)
+            # Start when we see [FIELD] or FIELD: or Arabic text with colon
+            if '[field]' in line_lower or line_lower.startswith('field:') or (re.search(r'[\u0600-\u06FF]', line) and ':' in line):
+                started = True
+                filtered_lines.append(line)
+            elif not is_garbage and line.strip():
+                # Check if line looks like a field-value pair
+                if ':' in line and len(line) > 3:
+                    started = True
+                    filtered_lines.append(line)
+        else:
+            filtered_lines.append(line)
+    
+    text = '\n'.join(filtered_lines)
+    
     # Try JSON first (in case model outputs JSON)
-    if text.startswith("{"):
+    if text.strip().startswith("{"):
         try:
-            cleaned = text
-            if cleaned.startswith("```"):
-                cleaned = cleaned.split("```")[1] if "```" in cleaned else cleaned
+            cleaned = text.strip()
             start_idx = cleaned.find("{")
             end_idx = cleaned.rfind("}")
             if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
@@ -1493,7 +1799,6 @@ def parse_structured_response(text: str) -> Dict[str, Any]:
         except:
             pass
     
-    # Parse FIELD:/VALUE: format
     fields = []
     current_section = None
     tables = []
@@ -1506,78 +1811,87 @@ def parse_structured_response(text: str) -> Dict[str, Any]:
     while i < len(lines):
         line = lines[i].strip()
         
-        # Skip empty lines
         if not line:
             i += 1
             continue
         
+        # NEW FORMAT: [FIELD] label / [VALUE] value
+        if line.startswith('[FIELD]') or line.upper().startswith('[FIELD]'):
+            field_label = line[7:].strip()  # Remove [FIELD]
+            value = ""
+            
+            # Look for [VALUE] on next line
+            if i + 1 < len(lines):
+                next_line = lines[i + 1].strip()
+                if next_line.startswith('[VALUE]') or next_line.upper().startswith('[VALUE]'):
+                    value = next_line[7:].strip()  # Remove [VALUE]
+                    if value == '-' or value.upper() == 'EMPTY':
+                        value = ""
+                    i += 1
+            
+            if field_label and len(field_label) > 1:
+                # Filter out garbage labels
+                if not any(pat in field_label.lower() for pat in garbage_patterns):
+                    fields.append({
+                        "label": field_label,
+                        "value": value,
+                        "type": infer_field_type(field_label, value),
+                        "section": current_section
+                    })
+            
+            i += 1
+            continue
+        
         # Check for section header
-        if line.upper().startswith('SECTION:'):
-            current_section = line[8:].strip()
+        if line.upper().startswith('SECTION:') or line.upper().startswith('[SECTION]'):
+            marker = '[SECTION]' if '[SECTION]' in line.upper() else 'SECTION:'
+            current_section = line[len(marker):].strip()
             i += 1
             continue
         
-        # Check for form title
-        if line.upper().startswith('TITLE:') or line.upper().startswith('FORM_TITLE:'):
-            form_title = line.split(':', 1)[1].strip() if ':' in line else None
-            i += 1
-            continue
-        
-        # Check for FIELD:/VALUE: pair
+        # Legacy FIELD:/VALUE: format
         if line.upper().startswith('FIELD:'):
             field_label = line[6:].strip()
             value = ""
             
-            # Look for VALUE: on next line
             if i + 1 < len(lines):
                 next_line = lines[i + 1].strip()
                 if next_line.upper().startswith('VALUE:'):
                     value = next_line[6:].strip()
-                    if value.upper() == 'EMPTY':
+                    if value.upper() == 'EMPTY' or value == '-':
                         value = ""
                     i += 1
             
-            # Check if it's a checkbox
             if value.upper() in ['CHECKED', 'UNCHECKED', '☑', '☐', 'نعم', 'لا']:
                 checkboxes.append({
                     "label": field_label,
                     "checked": value.upper() in ['CHECKED', '☑', 'نعم']
                 })
             else:
-                fields.append({
-                    "label": field_label,
-                    "value": value,
-                    "type": infer_field_type(field_label, value),
-                    "section": current_section
-                })
+                if field_label and len(field_label) > 1:
+                    fields.append({
+                        "label": field_label,
+                        "value": value,
+                        "type": infer_field_type(field_label, value),
+                        "section": current_section
+                    })
             
             i += 1
             continue
         
-        # Check for table cell
-        if line.upper().startswith('TABLE_ROW_'):
-            # TABLE_ROW_1_COL_2: value
-            parts = line.split(':', 1)
-            if len(parts) == 2:
-                # Parse table data - for now just add as field
-                fields.append({
-                    "label": parts[0].strip(),
-                    "value": parts[1].strip(),
-                    "type": "text",
-                    "section": "Table Data"
-                })
-            i += 1
-            continue
-        
         # Fallback: Try to parse as "Label: Value" format
-        if ':' in line and not line.startswith('http'):
+        if ':' in line and not line.startswith('http') and not line.startswith('['):
             parts = line.split(':', 1)
             if len(parts) == 2:
                 label = parts[0].strip()
                 value = parts[1].strip()
                 
-                # Skip if label looks like a URL or timestamp
-                if label and len(label) > 1 and not label.isdigit():
+                # Validate label - should be short and not garbage
+                if (label and 
+                    len(label) > 1 and 
+                    len(label) < 100 and 
+                    not label.isdigit() and
+                    not any(pat in label.lower() for pat in garbage_patterns)):
                     fields.append({
                         "label": label,
                         "value": value,

@@ -13,8 +13,10 @@ import {
   processOCR, 
   processPDFOCR, 
   processStructuredOCR,
+  processStructuredPDFOCR,
   createTemplate,
   PDFPageResult, 
+  StructuredPDFPageResult,
   updateHistoryText, 
   type ContentType, 
   type OCRTemplate, 
@@ -174,8 +176,74 @@ export default function Home() {
     try {
       const token = await getToken()
       
-      if (isPDF) {
-        // PDF processing (same as before)
+      if (isPDF && structuredMode) {
+        // Structured PDF extraction
+        const loadingToast = toast.loading('Extracting form data from PDF...')
+        
+        await processStructuredPDFOCR(
+          selectedImage,
+          {
+            maxTokens: settings.maxTokens,
+            minPixels: settings.minPixels,
+            maxPixels: settings.maxPixels,
+            templateId: selectedTemplate?.id || null
+          },
+          (pageResult: StructuredPDFPageResult) => {
+            // Convert structured result to standard PDF result for display
+            const pdfResult: PDFPageResult = {
+              page_number: pageResult.page_number,
+              extracted_text: pageResult.raw_text || '',
+              status: pageResult.status,
+              error: pageResult.error,
+              page_image: pageResult.page_image,
+              confidence: pageResult.confidence
+            }
+            setPdfResults(prev => [...prev, pdfResult])
+            setPdfProcessedCount(prev => prev + 1)
+            
+            // Store structured data for the current page
+            if (pageResult.structured_data && pageResult.status === 'success') {
+              setStructuredData(prev => {
+                // Merge structured data from all pages
+                if (!prev) {
+                  return {
+                    form_title: pageResult.structured_data?.form_title || null,
+                    sections: pageResult.structured_data?.sections || [],
+                    tables: pageResult.structured_data?.tables || [],
+                    checkboxes: pageResult.structured_data?.checkboxes || [],
+                    raw_text: pageResult.raw_text || ''
+                  }
+                }
+                return {
+                  ...prev,
+                  sections: [
+                    ...prev.sections,
+                    ...(pageResult.structured_data?.sections || []).map(s => ({
+                      ...s,
+                      name: s.name ? `Page ${pageResult.page_number}: ${s.name}` : `Page ${pageResult.page_number}`
+                    }))
+                  ],
+                  tables: [...prev.tables, ...(pageResult.structured_data?.tables || [])],
+                  checkboxes: [...prev.checkboxes, ...(pageResult.structured_data?.checkboxes || [])],
+                  raw_text: prev.raw_text + '\n\n' + (pageResult.raw_text || '')
+                }
+              })
+              setParsingSuccessful(pageResult.parsing_successful || false)
+              toast.success(`Page ${pageResult.page_number} extracted!`, { duration: 2000 })
+            } else if (pageResult.status === 'error') {
+              toast.error(`Page ${pageResult.page_number} failed: ${pageResult.error}`, { duration: 3000 })
+            }
+          },
+          (totalPages: number) => {
+            setPdfTotalPages(totalPages)
+            toast.success(`PDF loaded: ${totalPages} pages`, { id: loadingToast, duration: 2000 })
+          },
+          token
+        )
+        
+        toast.success('PDF extraction complete!', { id: loadingToast })
+      } else if (isPDF) {
+        // Standard PDF processing
         const effective = getEffectivePrompt({
           userCustomPrompt: settings.customPrompt,
           contentType: contentTypeOverride,
@@ -419,7 +487,7 @@ export default function Home() {
         <SignedIn>
           {/* Main Content - Conditional Layout */}
           {isPDF && pdfTotalPages > 0 ? (
-            // PDF Processing View - Full Width
+            // PDF Processing View
             <div className="space-y-6">
               {/* Upload and Controls - Collapsed */}
               <div className="bg-white rounded-2xl p-5 border border-gray-100">
@@ -430,7 +498,10 @@ export default function Home() {
                     </div>
                     <div>
                       <h3 className="font-medium text-gray-900">{selectedImage?.name}</h3>
-                      <p className="text-sm text-gray-500">{pdfTotalPages} pages</p>
+                      <p className="text-sm text-gray-500">
+                        {pdfTotalPages} pages
+                        {structuredMode && <span className="ml-2 text-xs bg-gray-100 px-2 py-0.5 rounded">Structured Mode</span>}
+                      </p>
                     </div>
                   </div>
                   <button
@@ -444,12 +515,32 @@ export default function Home() {
                 </div>
               </div>
 
-              {/* PDF Results */}
-              <PDFProcessor
-                totalPages={pdfTotalPages}
-                results={pdfResults}
-                isProcessing={isProcessing}
-              />
+              {/* PDF Results - Show structured data panel when in structured mode */}
+              {structuredMode && structuredData ? (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  {/* Left - PDF pages */}
+                  <PDFProcessor
+                    totalPages={pdfTotalPages}
+                    results={pdfResults}
+                    isProcessing={isProcessing}
+                  />
+                  {/* Right - Aggregated Structured Data */}
+                  <StructuredExtractor
+                    imagePreview={null}
+                    structuredData={structuredData}
+                    isProcessing={isProcessing}
+                    parsingSuccessful={parsingSuccessful}
+                    onFieldEdit={handleStructuredFieldEdit}
+                    onSaveAsTemplate={handleSaveAsTemplate}
+                  />
+                </div>
+              ) : (
+                <PDFProcessor
+                  totalPages={pdfTotalPages}
+                  results={pdfResults}
+                  isProcessing={isProcessing}
+                />
+              )}
             </div>
           ) : (
             // Image Processing View - Two Columns
