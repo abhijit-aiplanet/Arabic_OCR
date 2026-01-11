@@ -124,59 +124,83 @@ Requirements:
 
 Output only the extracted Arabic text, nothing else."""
 
-# Structured Extraction Prompt - Optimized for Arabic Forms (Tables + Lists + Documents)
-# Handles: table forms, checklists, requirements lists, signature areas
-STRUCTURED_EXTRACTION_PROMPT = """أنت متخصص في قراءة النماذج والوثائق العربية.
+# =============================================================================
+# STRUCTURED EXTRACTION PROMPT - OPTIMIZED FOR ARABIC HANDWRITTEN FORMS
+# =============================================================================
+#
+# KEY INSIGHT: Arabic forms have TWO visual layers:
+#   1. PRINTED TEMPLATE: Labels + dotted lines (........) as placeholders
+#   2. HANDWRITTEN VALUES: Written ON TOP of or NEAR the dotted areas
+#
+# The VLM must READ THE HANDWRITTEN TEXT, not just see dots!
+# =============================================================================
 
-You are an expert Arabic document reader. Extract ALL content from this image.
+STRUCTURED_EXTRACTION_PROMPT = """اقرأ هذا النموذج العربي واستخرج جميع الحقول والقيم المكتوبة بخط اليد.
 
-DOCUMENT TYPES TO HANDLE:
-1. FORMS with fields: "label : value" pairs
-2. CHECKLISTS/REQUIREMENTS: numbered or bulleted lists (طلبات، متطلبات، شروط)
-3. TABLES: rows with multiple columns
-4. SIGNATURE AREAS: names, dates, stamps
+Read this Arabic form and extract ALL field names and their HANDWRITTEN values.
+
+THIS IS A FILLED FORM:
+- PRINTED TEXT: Field labels like "اسم المالك:", "رقم الهوية:", "تاريخ الميلاد:"
+- HANDWRITTEN TEXT: Values written by someone filling the form
+- DOTTED LINES: These are just placeholder backgrounds, IGNORE them
+
+YOUR TASK: Find each field label and read the handwritten value next to it.
+
+EXAMPLES OF WHAT TO LOOK FOR:
+
+اسم المالك: [handwritten name like محمد أحمد العلي]
+→ Output: اسم المالك: محمد أحمد العلي
+
+رقم الهوية: [handwritten number like ١٠٥٤٣٢١٩٨٧]
+→ Output: رقم الهوية: ١٠٥٤٣٢١٩٨٧
+
+تاريخ الميلاد: [handwritten date like ١٤٠٥/٣/١٥]
+→ Output: تاريخ الميلاد: ١٤٠٥/٣/١٥
+
+المدينة: [handwritten city like جدة]
+→ Output: المدينة: جدة
+
+ONLY USE "-" IF THE FIELD IS COMPLETELY EMPTY (no handwriting at all).
 
 OUTPUT FORMAT:
+field_name: value
+field_name: value
+...
 
-For FORM FIELDS (label:value pairs):
-field_label: field_value
-(Use "-" for empty fields with dots or blank spaces)
-
-For SECTION HEADERS:
+For section headers in boxes:
 [قسم] section_name
 
-For CHECKLISTS/REQUIREMENTS (numbered items without values):
-[قائمة] list_title
-- item 1
-- item 2
-- item 3
-
-For SIGNATURES/STAMPS:
-توقيع: موجود/غير موجود
-ختم: موجود/غير موجود
-
-CRITICAL RULES:
-1. Extract EVERYTHING you can read
-2. Keep Arabic text exactly as written
-3. Multiple fields per line: extract each separately
-4. Empty fields (....., / / ١٤هـ): write "label: -"
-5. Numbered lists (١، ٢، ٣): preserve as list items
-6. Don't translate, summarize, or explain
-
-Start extraction:"""
+Now read and extract ALL fields with their handwritten values:"""
 
 
-# Alternative prompt for document-heavy content
-DOCUMENT_EXTRACTION_PROMPT = """Read this Arabic document/form and extract all text content.
+# Alternative detailed prompt with more context
+DETAILED_EXTRACTION_PROMPT = """أنت قارئ نماذج عربية محترف. اقرأ كل ما هو مكتوب بخط اليد في هذا النموذج.
 
-Output rules:
-• field_name: value (for form fields)
-• [قسم] name (for section headers)  
-• [قائمة] title (for requirement/checklist sections)
-• - item (for list items)
-• For empty fields: field_name: -
+You are a professional Arabic form reader. Read ALL handwritten content in this form.
 
-Extract everything:"""
+UNDERSTANDING THE FORM:
+1. This is a PRINTED form template with HANDWRITTEN fill-in values
+2. Each field has a LABEL (printed) followed by a VALUE (handwritten)
+3. The dots (......) and lines (____) are just placeholder backgrounds - ignore them
+4. Focus on reading the HANDWRITTEN TEXT that was written to fill the form
+
+STEP BY STEP:
+1. Scan the form for field labels (printed text ending with : or followed by dots)
+2. For each label, look at the space next to/below it
+3. Read any handwritten text in that space
+4. Write: label: handwritten_value
+
+COMMON FIELDS TO FIND:
+- Names (اسم، الاسم الكامل)
+- ID numbers (رقم الهوية، رقم البطاقة)  
+- Dates (تاريخ الميلاد، تاريخ الإصدار)
+- Places (المدينة، العنوان)
+- Numbers (رقم الهاتف، رقم اللوحة)
+
+OUTPUT: One field per line in format "label: value"
+ONLY use "-" for truly empty fields with NO handwriting.
+
+Extract all fields now:"""
 
 
 # =============================================================================
@@ -1756,33 +1780,56 @@ async def process_pdf_structured_ocr(
 # =============================================================================
 
 def normalize_empty_value(value: str) -> str:
-    """Normalize empty field values to empty string."""
+    """
+    Normalize empty field values to empty string.
+    
+    IMPORTANT: Be CONSERVATIVE - only mark as empty if we're CERTAIN there's no value.
+    Arabic forms often have dots/lines as placeholders, but the actual handwritten
+    values might be mixed with these characters.
+    """
     if not value:
         return ""
-    
+
     value = value.strip()
     
-    # Common empty patterns in Arabic forms
-    empty_patterns = [
-        '-', '—', '−',  # Dashes
-        '............', '...........', '..........', '.........', '........', '.......', '......', '.....', '....', '...',
-        '____', '___', '__',
-        '/ / ١٤هـ', '/ / ١٤', '/ /',  # Empty Islamic dates
+    # If empty after strip
+    if not value:
+        return ""
+
+    # EXACT empty indicators (be strict - must match exactly)
+    exact_empty = [
+        '-', '—', '−',  # Single dashes only
         '[فارغ]', '[empty]', 'فارغ', 'empty', 'n/a', 'N/A', 'none', 'None',
+        '/ /', '/ / /', 
     ]
     
-    # Check exact matches
-    if value in empty_patterns:
+    if value in exact_empty:
         return ""
     
-    # Check if value is mostly dots or dashes
+    # Check if value is PURELY dots/dashes/underscores with NO letters/digits
+    # This catches "............" but NOT "محمد............" or "١٢٣...."
     if re.match(r'^[\.\-_\s/]+$', value):
         return ""
     
-    # Check if it's just a date placeholder
-    if re.match(r'^[\s/]*١٤هـ?[\s/]*$', value):
+    # Check if it's just an empty Islamic date placeholder "/ / ١٤هـ" with NO actual date
+    # But NOT if there are actual numbers like "١٤٤٥/١/١هـ"
+    if re.match(r'^[\s/]*١٤هـ[\s/]*$', value):
         return ""
     
+    # If value contains ANY Arabic letters or actual digits, it's NOT empty
+    # This is the key check - real values have letters or numbers
+    has_arabic_letters = bool(re.search(r'[\u0600-\u06FF]', value.replace('١٤هـ', '')))  # Exclude date marker
+    has_arabic_digits = bool(re.search(r'[٠-٩]', value))
+    has_western_chars = bool(re.search(r'[a-zA-Z0-9]', value))
+    
+    if has_arabic_letters or has_arabic_digits or has_western_chars:
+        # It has actual content - clean it up by removing trailing dots/lines
+        # but keep the actual text
+        cleaned = re.sub(r'[\.\-_]+$', '', value).strip()  # Remove trailing dots
+        cleaned = re.sub(r'^[\.\-_]+', '', cleaned).strip()  # Remove leading dots
+        return cleaned if cleaned else value
+    
+    # Default: keep the value (be conservative)
     return value
 
 

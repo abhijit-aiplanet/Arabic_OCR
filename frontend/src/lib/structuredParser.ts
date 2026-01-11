@@ -116,29 +116,45 @@ const GARBAGE_PATTERNS = [
 
 /**
  * Normalize empty field values
+ * 
+ * IMPORTANT: Be CONSERVATIVE - only mark as empty if we're CERTAIN there's no value.
+ * Arabic forms often have dots/lines as placeholders, but actual handwritten
+ * values might be mixed with these characters.
  */
 function normalizeEmptyValue(value: string): string {
   if (!value) return ""
   
   value = value.trim()
+  if (!value) return ""
   
-  // Common empty patterns in Arabic forms
-  const emptyPatterns = [
+  // EXACT empty indicators only
+  const exactEmpty = [
     '-', '—', '−',
-    '............', '...........', '..........', '.........', '........', '.......', '......', '.....', '....', '...',
-    '____', '___', '__',
-    '/ / ١٤هـ', '/ / ١٤', '/ /',
     '[فارغ]', '[empty]', 'فارغ', 'empty', 'n/a', 'N/A', 'none', 'None',
+    '/ /', '/ / /',
   ]
   
-  if (emptyPatterns.includes(value)) return ""
+  if (exactEmpty.includes(value)) return ""
   
-  // Value is mostly dots or dashes
+  // PURELY dots/dashes/underscores with NO letters/digits
   if (/^[\.\-_\s/]+$/.test(value)) return ""
   
-  // Just a date placeholder
-  if (/^[\s/]*١٤هـ?[\s/]*$/.test(value)) return ""
+  // Just an empty Islamic date placeholder with NO actual date
+  if (/^[\s/]*١٤هـ[\s/]*$/.test(value)) return ""
   
+  // If value contains ANY Arabic letters or actual digits, it's NOT empty
+  const hasArabicLetters = /[\u0600-\u06FF]/.test(value.replace('١٤هـ', ''))
+  const hasArabicDigits = /[٠-٩]/.test(value)
+  const hasWesternChars = /[a-zA-Z0-9]/.test(value)
+  
+  if (hasArabicLetters || hasArabicDigits || hasWesternChars) {
+    // It has actual content - clean trailing dots but keep the text
+    let cleaned = value.replace(/[\.\-_]+$/, '').trim()
+    cleaned = cleaned.replace(/^[\.\-_]+/, '').trim()
+    return cleaned || value
+  }
+  
+  // Default: keep the value (be conservative)
   return value
 }
 
