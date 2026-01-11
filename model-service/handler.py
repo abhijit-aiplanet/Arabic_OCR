@@ -32,8 +32,17 @@ model = None
 processor = None
 
 
+def check_flash_attn_available():
+    """Check if flash_attn package is installed and usable."""
+    try:
+        import flash_attn
+        return True
+    except ImportError:
+        return False
+
+
 def load_model():
-    """Load the Arabic VLM model and processor with Flash Attention 2 for A100 GPU."""
+    """Load the Arabic VLM model and processor with optimized attention for GPU."""
     global model, processor
     
     if model is not None and processor is not None:
@@ -51,14 +60,19 @@ def load_model():
             
             # Check for Flash Attention 2 support
             gpu_name = torch.cuda.get_device_name(0).lower()
-            supports_flash_attn = any(x in gpu_name for x in ['a100', 'a10', 'h100', 'l40', 'rtx 40', 'rtx 30'])
+            supports_flash_attn_hw = any(x in gpu_name for x in ['a100', 'a10', 'h100', 'l40', 'rtx 40', 'rtx 30'])
+            flash_attn_installed = check_flash_attn_available()
             
-            if supports_flash_attn:
-                print("🚀 Flash Attention 2 supported! Enabling for maximum performance...")
+            if supports_flash_attn_hw and flash_attn_installed:
+                print("🚀 Flash Attention 2 available! Enabling for maximum performance...")
                 attn_implementation = "flash_attention_2"
+            elif supports_flash_attn_hw:
+                print("⚠️ GPU supports Flash Attention 2, but flash_attn package not installed")
+                print("   Using SDPA (Scaled Dot Product Attention) as fallback - still fast!")
+                attn_implementation = "sdpa"
             else:
-                print("⚠️ Flash Attention 2 not supported on this GPU, using default attention")
-                attn_implementation = "sdpa"  # Scaled dot product attention fallback
+                print("ℹ️ Using SDPA (Scaled Dot Product Attention)")
+                attn_implementation = "sdpa"
         else:
             device_map = "cpu"
             torch_dtype = torch.float32
