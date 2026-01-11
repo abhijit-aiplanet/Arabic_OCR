@@ -72,6 +72,77 @@ function extractJsonFromText(text: string): string | null {
 }
 
 /**
+ * Parse FIELD:/VALUE: format from VLM output
+ */
+function parseFieldValueFormat(text: string): { fields: ExtractedField[], sections: string[], checkboxes: ExtractedCheckbox[], formTitle: string | null } {
+  const fields: ExtractedField[] = []
+  const checkboxes: ExtractedCheckbox[] = []
+  const sections: string[] = []
+  let formTitle: string | null = null
+  let currentSection: string | null = null
+  
+  const lines = text.split('\n')
+  
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim()
+    if (!line) continue
+    
+    const upperLine = line.toUpperCase()
+    
+    // Check for section header
+    if (upperLine.startsWith('SECTION:')) {
+      currentSection = line.slice(8).trim()
+      if (currentSection && !sections.includes(currentSection)) {
+        sections.push(currentSection)
+      }
+      continue
+    }
+    
+    // Check for form title
+    if (upperLine.startsWith('TITLE:') || upperLine.startsWith('FORM_TITLE:')) {
+      formTitle = line.split(':').slice(1).join(':').trim()
+      continue
+    }
+    
+    // Check for FIELD:/VALUE: pair
+    if (upperLine.startsWith('FIELD:')) {
+      const fieldLabel = line.slice(6).trim()
+      let value = ''
+      
+      // Look for VALUE: on next line
+      if (i + 1 < lines.length) {
+        const nextLine = lines[i + 1].trim()
+        if (nextLine.toUpperCase().startsWith('VALUE:')) {
+          value = nextLine.slice(6).trim()
+          if (value.toUpperCase() === 'EMPTY') {
+            value = ''
+          }
+          i++ // Skip the value line
+        }
+      }
+      
+      // Check if it's a checkbox
+      const upperValue = value.toUpperCase()
+      if (['CHECKED', 'UNCHECKED', '☑', '☐', 'نعم', 'لا'].includes(upperValue)) {
+        checkboxes.push({
+          label: fieldLabel,
+          checked: ['CHECKED', '☑', 'نعم'].includes(upperValue)
+        })
+      } else {
+        fields.push({
+          label: fieldLabel,
+          value: value,
+          type: inferFieldType(fieldLabel, value)
+        })
+      }
+      continue
+    }
+  }
+  
+  return { fields, sections, checkboxes, formTitle }
+}
+
+/**
  * Infer field type from label and value
  */
 function inferFieldType(label: string, value: string): FieldType {
@@ -115,86 +186,134 @@ export function parseStructuredOutput(rawText: string): ParseResult {
     }
   }
   
-  const jsonStr = extractJsonFromText(rawText)
-  
-  if (!jsonStr) {
-    // If no JSON found, try to parse as key-value pairs
-    return parseFallbackKeyValue(rawText)
+  // First try FIELD:/VALUE: format (our preferred format)
+  if (rawText.toUpperCase().includes('FIELD:')) {
+    const parsed = parseFieldValueFormat(rawText)
+    
+    if (parsed.fields.length > 0 || parsed.checkboxes.length > 0) {
+      // Group fields by section (if any)
+      const sectionsMap = new Map<string, ExtractedField[]>()
+      
+      for (const field of parsed.fields) {
+        const sectionName = 'General' // All in general for now from FIELD/VALUE format
+        if (!sectionsMap.has(sectionName)) {
+          sectionsMap.set(sectionName, [])
+        }
+        sectionsMap.get(sectionName)!.push(field)
+      }
+      
+      const sections: ExtractedSection[] = Array.from(sectionsMap.entries()).map(([name, fields]) => ({
+        name: name === 'General' ? null : name,
+        fields
+      }))
+      
+      return {
+        success: true,
+        data: {
+          form_title: parsed.formTitle,
+          sections,
+          tables: [],
+          checkboxes: parsed.checkboxes,
+          raw_text: rawText
+        }
+      }
+    }
   }
   
-  try {
-    const parsed = JSON.parse(jsonStr)
-    
-    // Validate and transform the parsed data
-    const sections: ExtractedSection[] = []
-    
-    if (Array.isArray(parsed.sections)) {
-      for (const section of parsed.sections) {
-        const fields: ExtractedField[] = []
+  // Try JSON format
+  const jsonStr = extractJsonFromText(rawText)
+  
+  if (jsonStr) {
+    try {
+      const parsed = JSON.parse(jsonStr)
+      
+      // Check if it's a valid structured response (not empty skeleton)
+      const hasContent = (
+        (Array.isArray(parsed.sections) && parsed.sections.some((s: any) => 
+          Array.isArray(s.fields) && s.fields.length > 0
+        )) ||
+        (Array.isArray(parsed.tables) && parsed.tables.length > 0) ||
+        (Array.isArray(parsed.checkboxes) && parsed.checkboxes.length > 0)
+      )
+      
+      if (hasContent) {
+        // Validate and transform the parsed data
+        const sections: ExtractedSection[] = []
         
-        if (Array.isArray(section.fields)) {
-          for (const field of section.fields) {
-            const label = String(field.label || '').trim()
-            const value = String(field.value || '').trim()
-            const type = inferFieldType(label, value)
+        if (Array.isArray(parsed.sections)) {
+          for (const section of parsed.sections) {
+            const fields: ExtractedField[] = []
             
-            if (label) {
-              fields.push({ label, value, type })
+            if (Array.isArray(section.fields)) {
+              for (const field of section.fields) {
+                const label = String(field.label || '').trim()
+                const value = String(field.value || '').trim()
+                const type = inferFieldType(label, value)
+                
+                if (label) {
+                  fields.push({ label, value, type })
+                }
+              }
+            }
+            
+            if (fields.length > 0) {
+              sections.push({
+                name: section.name || null,
+                fields
+              })
             }
           }
         }
         
-        sections.push({
-          name: section.name || null,
-          fields
-        })
-      }
-    }
-    
-    // Parse tables
-    const tables: ExtractedTable[] = []
-    if (Array.isArray(parsed.tables)) {
-      for (const table of parsed.tables) {
-        if (Array.isArray(table.headers) && Array.isArray(table.rows)) {
-          tables.push({
-            headers: table.headers.map((h: any) => String(h || '')),
-            rows: table.rows.map((row: any) => 
-              Array.isArray(row) ? row.map((cell: any) => String(cell || '')) : []
-            )
-          })
+        // Parse tables
+        const tables: ExtractedTable[] = []
+        if (Array.isArray(parsed.tables)) {
+          for (const table of parsed.tables) {
+            if (Array.isArray(table.headers) && Array.isArray(table.rows)) {
+              tables.push({
+                headers: table.headers.map((h: any) => String(h || '')),
+                rows: table.rows.map((row: any) => 
+                  Array.isArray(row) ? row.map((cell: any) => String(cell || '')) : []
+                )
+              })
+            }
+          }
+        }
+        
+        // Parse checkboxes
+        const checkboxes: ExtractedCheckbox[] = []
+        if (Array.isArray(parsed.checkboxes)) {
+          for (const cb of parsed.checkboxes) {
+            const label = String(cb.label || '').trim()
+            if (label) {
+              checkboxes.push({
+                label,
+                checked: Boolean(cb.checked)
+              })
+            }
+          }
+        }
+        
+        if (sections.length > 0 || tables.length > 0 || checkboxes.length > 0) {
+          return {
+            success: true,
+            data: {
+              form_title: parsed.form_title || null,
+              sections,
+              tables,
+              checkboxes,
+              raw_text: rawText
+            }
+          }
         }
       }
+    } catch (e) {
+      console.error('JSON parse error:', e)
     }
-    
-    // Parse checkboxes
-    const checkboxes: ExtractedCheckbox[] = []
-    if (Array.isArray(parsed.checkboxes)) {
-      for (const cb of parsed.checkboxes) {
-        const label = String(cb.label || '').trim()
-        if (label) {
-          checkboxes.push({
-            label,
-            checked: Boolean(cb.checked)
-          })
-        }
-      }
-    }
-    
-    return {
-      success: true,
-      data: {
-        form_title: parsed.form_title || null,
-        sections,
-        tables,
-        checkboxes,
-        raw_text: rawText
-      }
-    }
-  } catch (e) {
-    console.error('JSON parse error:', e)
-    // Fallback to key-value parsing
-    return parseFallbackKeyValue(rawText)
   }
+  
+  // Fallback to key-value parsing
+  return parseFallbackKeyValue(rawText)
 }
 
 /**

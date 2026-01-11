@@ -23,6 +23,7 @@ import traceback
 import asyncio
 import fitz  # PyMuPDF
 import json
+import re
 from datetime import datetime
 import uuid
 import jwt
@@ -123,48 +124,33 @@ Requirements:
 
 Output only the extracted Arabic text, nothing else."""
 
-# Structured Extraction Prompt (for forms - returns JSON)
-STRUCTURED_EXTRACTION_PROMPT = """Extract all fields from this Arabic form as structured JSON.
+# Structured Extraction Prompt (for forms - simple key:value format)
+# This prompt uses a simple format that VLMs handle better than complex JSON
+STRUCTURED_EXTRACTION_PROMPT = """أنت مستخرج بيانات النماذج. استخرج جميع الحقول والقيم من هذه الصورة.
 
-You are analyzing a form image. Extract ALL visible fields, labels, and their values.
+Extract ALL fields from this Arabic form. For each field you find, output it as:
+FIELD: label text
+VALUE: the handwritten or typed value (or EMPTY if blank)
 
-OUTPUT FORMAT (strict JSON only, no markdown):
-{
-  "form_title": "title of the form if visible, or null",
-  "sections": [
-    {
-      "name": "section name if visible, or null for ungrouped fields",
-      "fields": [
-        {
-          "label": "the field label exactly as shown",
-          "value": "the handwritten or typed value",
-          "type": "text"
-        }
-      ]
-    }
-  ],
-  "tables": [
-    {
-      "headers": ["column1", "column2"],
-      "rows": [["value1", "value2"]]
-    }
-  ],
-  "checkboxes": [
-    {"label": "checkbox label", "checked": true}
-  ]
-}
+RULES:
+- Extract EVERY visible field label and its value
+- Keep Arabic text exactly as written - do NOT translate
+- For checkboxes: VALUE: CHECKED or VALUE: UNCHECKED  
+- For tables: output each cell as TABLE_ROW_N_COL_M: value
+- Separate each field-value pair with a blank line
+- If you see a section header, output it as: SECTION: header text
 
-EXTRACTION RULES:
-1. Extract EVERY label and its corresponding value (handwritten or typed)
-2. Preserve Arabic text exactly - do NOT translate
-3. For empty fields, use value = ""
-4. For checkboxes: checked = true or false
-5. For tables: extract headers and all rows
-6. Group related fields into sections when there are clear visual separators
-7. If no clear sections, put all fields in one section with name = null
-8. Output ONLY valid JSON - no markdown code blocks, no explanation
+Example output format:
+FIELD: الاسم الكامل
+VALUE: محمد أحمد العلي
 
-IMPORTANT: The output must be parseable JSON. Start with { and end with }"""
+FIELD: رقم الهوية
+VALUE: 1234567890
+
+FIELD: تاريخ الميلاد
+VALUE: 1990/05/15
+
+Now extract ALL fields from this form image:"""
 
 
 # =============================================================================
@@ -1476,44 +1462,175 @@ async def process_pdf_ocr(
 # STRUCTURED EXTRACTION ENDPOINT
 # =============================================================================
 
-def parse_structured_json(text: str) -> Optional[Dict[str, Any]]:
+def parse_structured_response(text: str) -> Dict[str, Any]:
     """
-    Parse JSON from VLM output, handling common issues like markdown code blocks.
+    Parse the VLM's structured extraction response.
+    Handles multiple formats:
+    1. FIELD:/VALUE: format (preferred)
+    2. Label: Value format
+    3. JSON format (fallback)
+    
+    Returns a structured dict with sections, tables, checkboxes.
     """
     if not text or not text.strip():
-        return None
+        return {"sections": [], "tables": [], "checkboxes": [], "form_title": None}
     
-    # Remove markdown code blocks if present
-    cleaned = text.strip()
-    if cleaned.startswith("```json"):
-        cleaned = cleaned[7:]
-    elif cleaned.startswith("```"):
-        cleaned = cleaned[3:]
-    if cleaned.endswith("```"):
-        cleaned = cleaned[:-3]
-    cleaned = cleaned.strip()
+    text = text.strip()
     
-    # Try to find JSON object boundaries
-    start_idx = cleaned.find("{")
-    end_idx = cleaned.rfind("}")
-    
-    if start_idx == -1 or end_idx == -1 or start_idx >= end_idx:
-        return None
-    
-    json_str = cleaned[start_idx:end_idx + 1]
-    
-    try:
-        return json.loads(json_str)
-    except json.JSONDecodeError as e:
-        print(f"JSON parse error: {e}")
-        # Try to fix common issues
+    # Try JSON first (in case model outputs JSON)
+    if text.startswith("{"):
         try:
-            # Replace single quotes with double quotes
-            fixed = json_str.replace("'", '"')
-            return json.loads(fixed)
+            cleaned = text
+            if cleaned.startswith("```"):
+                cleaned = cleaned.split("```")[1] if "```" in cleaned else cleaned
+            start_idx = cleaned.find("{")
+            end_idx = cleaned.rfind("}")
+            if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+                json_str = cleaned[start_idx:end_idx + 1]
+                parsed = json.loads(json_str)
+                if isinstance(parsed.get("sections"), list):
+                    return parsed
         except:
             pass
-        return None
+    
+    # Parse FIELD:/VALUE: format
+    fields = []
+    current_section = None
+    tables = []
+    checkboxes = []
+    form_title = None
+    
+    lines = text.split('\n')
+    i = 0
+    
+    while i < len(lines):
+        line = lines[i].strip()
+        
+        # Skip empty lines
+        if not line:
+            i += 1
+            continue
+        
+        # Check for section header
+        if line.upper().startswith('SECTION:'):
+            current_section = line[8:].strip()
+            i += 1
+            continue
+        
+        # Check for form title
+        if line.upper().startswith('TITLE:') or line.upper().startswith('FORM_TITLE:'):
+            form_title = line.split(':', 1)[1].strip() if ':' in line else None
+            i += 1
+            continue
+        
+        # Check for FIELD:/VALUE: pair
+        if line.upper().startswith('FIELD:'):
+            field_label = line[6:].strip()
+            value = ""
+            
+            # Look for VALUE: on next line
+            if i + 1 < len(lines):
+                next_line = lines[i + 1].strip()
+                if next_line.upper().startswith('VALUE:'):
+                    value = next_line[6:].strip()
+                    if value.upper() == 'EMPTY':
+                        value = ""
+                    i += 1
+            
+            # Check if it's a checkbox
+            if value.upper() in ['CHECKED', 'UNCHECKED', '☑', '☐', 'نعم', 'لا']:
+                checkboxes.append({
+                    "label": field_label,
+                    "checked": value.upper() in ['CHECKED', '☑', 'نعم']
+                })
+            else:
+                fields.append({
+                    "label": field_label,
+                    "value": value,
+                    "type": infer_field_type(field_label, value),
+                    "section": current_section
+                })
+            
+            i += 1
+            continue
+        
+        # Check for table cell
+        if line.upper().startswith('TABLE_ROW_'):
+            # TABLE_ROW_1_COL_2: value
+            parts = line.split(':', 1)
+            if len(parts) == 2:
+                # Parse table data - for now just add as field
+                fields.append({
+                    "label": parts[0].strip(),
+                    "value": parts[1].strip(),
+                    "type": "text",
+                    "section": "Table Data"
+                })
+            i += 1
+            continue
+        
+        # Fallback: Try to parse as "Label: Value" format
+        if ':' in line and not line.startswith('http'):
+            parts = line.split(':', 1)
+            if len(parts) == 2:
+                label = parts[0].strip()
+                value = parts[1].strip()
+                
+                # Skip if label looks like a URL or timestamp
+                if label and len(label) > 1 and not label.isdigit():
+                    fields.append({
+                        "label": label,
+                        "value": value,
+                        "type": infer_field_type(label, value),
+                        "section": current_section
+                    })
+        
+        i += 1
+    
+    # Group fields by section
+    sections_dict: Dict[str, List] = {}
+    for field in fields:
+        section_name = field.pop("section", None) or "General"
+        if section_name not in sections_dict:
+            sections_dict[section_name] = []
+        sections_dict[section_name].append(field)
+    
+    sections = [
+        {"name": name if name != "General" else None, "fields": section_fields}
+        for name, section_fields in sections_dict.items()
+    ]
+    
+    return {
+        "form_title": form_title,
+        "sections": sections,
+        "tables": tables,
+        "checkboxes": checkboxes
+    }
+
+
+def infer_field_type(label: str, value: str) -> str:
+    """Infer field type from label and value."""
+    label_lower = label.lower()
+    
+    # Date patterns
+    date_keywords = ['date', 'تاريخ', 'يوم', 'شهر', 'سنة', 'الميلاد', 'التسجيل', 'الإصدار', 'الانتهاء']
+    if any(kw in label_lower or kw in label for kw in date_keywords):
+        return 'date'
+    
+    # Number patterns  
+    number_keywords = ['number', 'رقم', 'هاتف', 'جوال', 'هوية', 'جواز', 'عدد', 'كمية', 'سعر', 'مبلغ']
+    if any(kw in label_lower or kw in label for kw in number_keywords):
+        return 'number'
+    
+    # Check if value looks like a number
+    if value and re.match(r'^[\d\s\-\+\.٠-٩]+$', value.replace(' ', '')):
+        return 'number'
+    
+    # Check if value looks like a date
+    if value and re.match(r'^\d{1,4}[\/\-\.]\d{1,2}[\/\-\.]\d{1,4}$', value.strip()):
+        return 'date'
+    
+    return 'text'
 
 
 def build_template_enhanced_prompt(template: Optional[Dict[str, Any]]) -> str:
@@ -1537,11 +1654,14 @@ def build_template_enhanced_prompt(template: Optional[Dict[str, Any]]) -> str:
     for section in sections_info:
         section_name = section.get("name", "")
         fields = section.get("fields", [])
+        
+        if section_name:
+            expected_fields.append(f"\nSECTION: {section_name}")
+        
         for field in fields:
             label = field.get("label", "")
-            field_type = field.get("type", "text")
             if label:
-                expected_fields.append(f"- {label} ({field_type})")
+                expected_fields.append(f"FIELD: {label}")
     
     if not expected_fields:
         return base_prompt
@@ -1549,10 +1669,10 @@ def build_template_enhanced_prompt(template: Optional[Dict[str, Any]]) -> str:
     # Enhance prompt with expected fields
     enhanced_prompt = f"""{base_prompt}
 
-EXPECTED FIELDS (from template):
+IMPORTANT: This form should contain these specific fields. Find and extract them:
 {chr(10).join(expected_fields)}
 
-Make sure to extract values for ALL of these expected fields. If a field is not found in the image, set its value to ""."""
+Extract these fields AND any other fields you see in the form."""
     
     return enhanced_prompt
 
@@ -1649,16 +1769,30 @@ async def process_structured_ocr(
             if not raw_text:
                 raw_text = ""
             
-            # Parse structured data from response
+            # Parse structured data from response using robust parser
             structured_data = None
             parsing_successful = False
-            
-            parsed_json = parse_structured_json(raw_text)
-            if parsed_json:
-                try:
+
+            try:
+                parsed = parse_structured_response(raw_text)
+                
+                # Check if we got any meaningful data
+                has_data = (
+                    len(parsed.get("sections", [])) > 0 or
+                    len(parsed.get("tables", [])) > 0 or
+                    len(parsed.get("checkboxes", [])) > 0
+                )
+                
+                # Also check if sections have actual fields
+                total_fields = sum(
+                    len(s.get("fields", [])) 
+                    for s in parsed.get("sections", [])
+                )
+                
+                if has_data or total_fields > 0:
                     # Convert to our model structure
                     sections = []
-                    for section in parsed_json.get("sections", []):
+                    for section in parsed.get("sections", []):
                         fields = []
                         for field in section.get("fields", []):
                             fields.append(ExtractedField(
@@ -1666,34 +1800,41 @@ async def process_structured_ocr(
                                 value=field.get("value", ""),
                                 type=field.get("type", "text")
                             ))
-                        sections.append(ExtractedSection(
-                            name=section.get("name"),
-                            fields=fields
-                        ))
-                    
+                        if fields:  # Only add sections with fields
+                            sections.append(ExtractedSection(
+                                name=section.get("name"),
+                                fields=fields
+                            ))
+
                     tables = []
-                    for table in parsed_json.get("tables", []):
+                    for table in parsed.get("tables", []):
                         tables.append(ExtractedTable(
                             headers=table.get("headers", []),
                             rows=table.get("rows", [])
                         ))
-                    
+
                     checkboxes = []
-                    for cb in parsed_json.get("checkboxes", []):
+                    for cb in parsed.get("checkboxes", []):
                         checkboxes.append(ExtractedCheckbox(
                             label=cb.get("label", ""),
                             checked=cb.get("checked", False)
                         ))
-                    
+
                     structured_data = StructuredExtractionData(
-                        form_title=parsed_json.get("form_title"),
+                        form_title=parsed.get("form_title"),
                         sections=sections,
                         tables=tables,
                         checkboxes=checkboxes
                     )
-                    parsing_successful = True
-                except Exception as e:
-                    print(f"Structured data parsing error: {e}")
+                    parsing_successful = total_fields > 0
+                    
+                    print(f"Structured extraction: {total_fields} fields, {len(checkboxes)} checkboxes")
+                else:
+                    print(f"No structured data extracted from response")
+                    
+            except Exception as e:
+                print(f"Structured data parsing error: {e}")
+                traceback.print_exc()
             
             text_quality = analyze_text_quality(raw_text)
             confidence = calculate_final_confidence(image_quality, token_confidence, text_quality)
