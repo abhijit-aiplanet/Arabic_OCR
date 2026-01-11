@@ -1,15 +1,15 @@
 'use client'
 
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import { 
   Copy, Check, Download, FileJson, FileSpreadsheet, 
   ChevronDown, ChevronUp, Edit2, Save, X, ZoomIn, ZoomOut,
-  Table, FormInput, CheckSquare, FileText, AlertCircle,
-  Maximize2, Minimize2, Eye, EyeOff
+  FormInput, CheckSquare, FileText, AlertCircle,
+  Maximize2, Minimize2, Eye, List, Code, Table2
 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import type { StructuredExtraction, ExtractedSection, ExtractedField, ExtractedTable, ExtractedCheckbox } from '@/lib/structuredParser'
-import { structuredToCSV, structuredToJSON, structuredToPlainText } from '@/lib/structuredParser'
+import { structuredToCSV, structuredToJSON, structuredToPlainText, parseStructuredOutput } from '@/lib/structuredParser'
 
 interface StructuredExtractorProps {
   imagePreview: string | null
@@ -18,7 +18,10 @@ interface StructuredExtractorProps {
   parsingSuccessful: boolean
   onFieldEdit?: (sectionIndex: number, fieldIndex: number, newValue: string) => void
   onSaveAsTemplate?: () => void
+  rawText?: string
 }
+
+type ViewMode = 'document' | 'cards' | 'table'
 
 export default function StructuredExtractor({
   imagePreview,
@@ -26,7 +29,8 @@ export default function StructuredExtractor({
   isProcessing,
   parsingSuccessful,
   onFieldEdit,
-  onSaveAsTemplate
+  onSaveAsTemplate,
+  rawText
 }: StructuredExtractorProps) {
   const [imageZoom, setImageZoom] = useState(1)
   const [editingField, setEditingField] = useState<{ section: number; field: number } | null>(null)
@@ -34,25 +38,50 @@ export default function StructuredExtractor({
   const [copied, setCopied] = useState(false)
   const [showEmptyFields, setShowEmptyFields] = useState(true)
   const [fullscreenImage, setFullscreenImage] = useState(false)
-  const [viewMode, setViewMode] = useState<'cards' | 'table'>('cards')
+  const [viewMode, setViewMode] = useState<ViewMode>('document')
+
+  // Re-parse the raw text to get better results if structuredData is poor
+  const parsedData = useMemo(() => {
+    if (structuredData && structuredData.sections.length > 0) {
+      // Check if we have filled fields
+      const filledCount = structuredData.sections.reduce((sum, s) => 
+        sum + s.fields.filter(f => f.value && f.value.trim()).length, 0
+      )
+      
+      // If we have good data, use it
+      if (filledCount > 0) {
+        return structuredData
+      }
+    }
+    
+    // Try re-parsing from raw_text
+    const textToParse = rawText || structuredData?.raw_text
+    if (textToParse) {
+      const result = parseStructuredOutput(textToParse)
+      if (result.success && result.data) {
+        return result.data
+      }
+    }
+    
+    return structuredData
+  }, [structuredData, rawText])
 
   const totalFields = useMemo(() => {
-    if (!structuredData) return 0
-    return structuredData.sections.reduce((sum, s) => sum + s.fields.length, 0) +
-           structuredData.checkboxes.length
-  }, [structuredData])
+    if (!parsedData) return 0
+    return parsedData.sections.reduce((sum, s) => sum + s.fields.length, 0) +
+           parsedData.checkboxes.length
+  }, [parsedData])
 
   const filledFields = useMemo(() => {
-    if (!structuredData) return 0
-    return structuredData.sections.reduce((sum, s) => 
-      sum + s.fields.filter(f => f.value.trim()).length, 0
-    ) + structuredData.checkboxes.length
-  }, [structuredData])
+    if (!parsedData) return 0
+    return parsedData.sections.reduce((sum, s) => 
+      sum + s.fields.filter(f => f.value && f.value.trim() && f.value !== '-').length, 0
+    ) + parsedData.checkboxes.length
+  }, [parsedData])
 
-  // All fields flattened for table view
   const allFields = useMemo(() => {
-    if (!structuredData) return []
-    return structuredData.sections.flatMap((section, sIdx) => 
+    if (!parsedData) return []
+    return parsedData.sections.flatMap((section, sIdx) => 
       section.fields.map((field, fIdx) => ({
         ...field,
         sectionName: section.name || 'General',
@@ -60,20 +89,20 @@ export default function StructuredExtractor({
         fieldIndex: fIdx
       }))
     )
-  }, [structuredData])
+  }, [parsedData])
 
   const visibleFields = useMemo(() => {
     if (showEmptyFields) return allFields
-    return allFields.filter(f => f.value.trim())
+    return allFields.filter(f => f.value && f.value.trim() && f.value !== '-')
   }, [allFields, showEmptyFields])
 
   const handleCopy = async () => {
-    if (!structuredData) return
+    if (!parsedData) return
     try {
-      const text = structuredToPlainText(structuredData)
+      const text = structuredToPlainText(parsedData)
       await navigator.clipboard.writeText(text)
       setCopied(true)
-      toast.success('Copied to clipboard!')
+      toast.success('Copied!')
       setTimeout(() => setCopied(false), 2000)
     } catch {
       toast.error('Failed to copy')
@@ -81,15 +110,15 @@ export default function StructuredExtractor({
   }
 
   const handleExportJSON = () => {
-    if (!structuredData) return
-    const json = structuredToJSON(structuredData)
+    if (!parsedData) return
+    const json = structuredToJSON(parsedData)
     downloadFile(json, 'extracted-data.json', 'application/json')
     toast.success('JSON exported!')
   }
 
   const handleExportCSV = () => {
-    if (!structuredData) return
-    const csv = structuredToCSV(structuredData)
+    if (!parsedData) return
+    const csv = structuredToCSV(parsedData)
     downloadFile(csv, 'extracted-data.csv', 'text/csv')
     toast.success('CSV exported!')
   }
@@ -127,33 +156,28 @@ export default function StructuredExtractor({
   // Loading state
   if (isProcessing) {
     return (
-      <div className="bg-white rounded-2xl border border-gray-100 h-full flex items-center justify-center min-h-[500px]">
+      <div className="bg-white rounded-2xl border border-gray-100 h-full flex items-center justify-center min-h-[400px]">
         <div className="text-center">
-          <div className="relative w-20 h-20 mx-auto mb-6">
-            <div className="w-20 h-20 border-3 border-gray-100 rounded-full"></div>
-            <div className="absolute inset-0 w-20 h-20 border-3 border-transparent border-t-gray-900 rounded-full animate-spin"></div>
-            <FormInput className="absolute inset-0 m-auto w-8 h-8 text-gray-400" />
+          <div className="relative w-16 h-16 mx-auto mb-4">
+            <div className="w-16 h-16 border-2 border-gray-100 rounded-full"></div>
+            <div className="absolute inset-0 w-16 h-16 border-2 border-transparent border-t-gray-900 rounded-full animate-spin"></div>
           </div>
-          <p className="text-lg font-semibold text-gray-900">Extracting Form Data</p>
-          <p className="text-sm text-gray-500 mt-2 max-w-xs mx-auto">
-            Analyzing document structure and extracting field values...
-          </p>
+          <p className="text-base font-medium text-gray-900">Extracting Form Data</p>
+          <p className="text-sm text-gray-500 mt-1">Analyzing structure...</p>
         </div>
       </div>
     )
   }
 
-  // Empty state - no data and no image
-  if (!structuredData && !imagePreview) {
+  // Empty state
+  if (!parsedData && !imagePreview) {
     return (
-      <div className="bg-white rounded-2xl border border-gray-100 h-full flex items-center justify-center min-h-[500px]">
+      <div className="bg-white rounded-2xl border border-gray-100 h-full flex items-center justify-center min-h-[400px]">
         <div className="text-center px-6">
-          <div className="w-20 h-20 bg-gradient-to-br from-gray-50 to-gray-100 rounded-2xl flex items-center justify-center mx-auto mb-6">
-            <FormInput className="w-10 h-10 text-gray-400" />
-          </div>
-          <h3 className="text-lg font-semibold text-gray-900 mb-2">Structured Extraction</h3>
-          <p className="text-sm text-gray-500 max-w-[280px] mx-auto leading-relaxed">
-            Upload a form image to automatically extract labels, values, and structured data
+          <FormInput className="w-12 h-12 text-gray-300 mx-auto mb-4" />
+          <h3 className="font-semibold text-gray-900 mb-1">Structured Extraction</h3>
+          <p className="text-sm text-gray-500 max-w-[250px]">
+            Upload a form to extract key-value pairs
           </p>
         </div>
       </div>
@@ -161,242 +185,236 @@ export default function StructuredExtractor({
   }
 
   return (
-    <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden h-full flex flex-col">
+    <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden flex flex-col h-full">
       {/* Header */}
-      <div className="px-5 py-4 border-b border-gray-100 flex-shrink-0 bg-white">
-        <div className="flex items-center justify-between mb-3">
+      <div className="px-4 py-3 border-b border-gray-100 bg-gray-50/50 flex-shrink-0">
+        <div className="flex items-center justify-between mb-2">
           <div>
-            <h2 className="text-lg font-semibold text-gray-900">
-              {structuredData?.form_title || 'Extracted Form Data'}
-            </h2>
-            {structuredData && (
-              <div className="flex items-center gap-3 mt-1">
-                <span className="text-sm text-gray-500">
-                  <span className="font-medium text-gray-900">{filledFields}</span> of {totalFields} fields filled
-                </span>
-                {!parsingSuccessful && (
-                  <span className="text-xs px-2 py-0.5 bg-amber-100 text-amber-700 rounded-full">
-                    Fallback parsing
-                  </span>
-                )}
-              </div>
+            <h3 className="font-semibold text-gray-900">Extracted Form Data</h3>
+            {parsedData && (
+              <p className="text-xs text-gray-500">
+                <span className="font-medium text-gray-900">{filledFields}</span> of {totalFields} fields filled
+              </p>
+            )}
+          </div>
+          
+          <div className="flex items-center gap-1">
+            <button
+              onClick={handleCopy}
+              className={`p-1.5 rounded-lg transition-colors ${
+                copied ? 'text-emerald-600 bg-emerald-50' : 'text-gray-500 hover:bg-gray-100'
+              }`}
+              title="Copy"
+            >
+              {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+            </button>
+            <button
+              onClick={handleExportJSON}
+              className="p-1.5 text-gray-500 hover:bg-gray-100 rounded-lg"
+              title="Export JSON"
+            >
+              <FileJson className="w-4 h-4" />
+            </button>
+            <button
+              onClick={handleExportCSV}
+              className="p-1.5 text-gray-500 hover:bg-gray-100 rounded-lg"
+              title="Export CSV"
+            >
+              <FileSpreadsheet className="w-4 h-4" />
+            </button>
+            {onSaveAsTemplate && (
+              <button
+                onClick={onSaveAsTemplate}
+                className="ml-2 px-3 py-1.5 text-xs font-medium text-white bg-gray-900 hover:bg-gray-800 rounded-lg"
+              >
+                Save as Template
+              </button>
             )}
           </div>
         </div>
         
-        {/* Toolbar */}
-        {structuredData && (
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              {/* View Mode Toggle */}
-              <div className="flex items-center bg-gray-100 rounded-lg p-0.5">
-                <button
-                  onClick={() => setViewMode('cards')}
-                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                    viewMode === 'cards' 
-                      ? 'bg-white text-gray-900 shadow-sm' 
-                      : 'text-gray-500 hover:text-gray-700'
-                  }`}
-                >
-                  Cards
-                </button>
-                <button
-                  onClick={() => setViewMode('table')}
-                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                    viewMode === 'table' 
-                      ? 'bg-white text-gray-900 shadow-sm' 
-                      : 'text-gray-500 hover:text-gray-700'
-                  }`}
-                >
-                  Table
-                </button>
-              </div>
-              
-              {/* Show/Hide Empty */}
+        {/* View Mode Toggle */}
+        {parsedData && (
+          <div className="flex items-center gap-2">
+            <div className="flex items-center bg-white border border-gray-200 rounded-lg p-0.5">
               <button
-                onClick={() => setShowEmptyFields(!showEmptyFields)}
-                className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
-                  showEmptyFields 
-                    ? 'bg-gray-100 text-gray-700' 
-                    : 'bg-gray-900 text-white'
+                onClick={() => setViewMode('document')}
+                className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors flex items-center gap-1 ${
+                  viewMode === 'document' ? 'bg-gray-900 text-white' : 'text-gray-600 hover:text-gray-900'
                 }`}
               >
-                {showEmptyFields ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
-                {showEmptyFields ? 'Showing empty' : 'Hiding empty'}
+                <Eye className="w-3 h-3" />
+                Document
+              </button>
+              <button
+                onClick={() => setViewMode('cards')}
+                className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors flex items-center gap-1 ${
+                  viewMode === 'cards' ? 'bg-gray-900 text-white' : 'text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                <List className="w-3 h-3" />
+                Cards
+              </button>
+              <button
+                onClick={() => setViewMode('table')}
+                className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors flex items-center gap-1 ${
+                  viewMode === 'table' ? 'bg-gray-900 text-white' : 'text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                <Table2 className="w-3 h-3" />
+                Table
               </button>
             </div>
             
-            <div className="flex items-center gap-1">
-              <button
-                onClick={handleCopy}
-                className={`p-2 rounded-lg transition-colors ${
-                  copied ? 'text-emerald-600 bg-emerald-50' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'
-                }`}
-                title="Copy as text"
-              >
-                {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
-              </button>
-              <button
-                onClick={handleExportJSON}
-                className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-50 rounded-lg transition-colors"
-                title="Export JSON"
-              >
-                <FileJson className="w-4 h-4" />
-              </button>
-              <button
-                onClick={handleExportCSV}
-                className="p-2 text-gray-500 hover:text-gray-700 hover:bg-gray-50 rounded-lg transition-colors"
-                title="Export CSV"
-              >
-                <FileSpreadsheet className="w-4 h-4" />
-              </button>
-              {onSaveAsTemplate && (
-                <button
-                  onClick={onSaveAsTemplate}
-                  className="ml-2 px-3 py-1.5 text-xs font-medium text-white bg-gray-900 hover:bg-gray-800 rounded-lg transition-colors"
-                >
-                  Save as Template
-                </button>
-              )}
-            </div>
+            <button
+              onClick={() => setShowEmptyFields(!showEmptyFields)}
+              className={`px-2.5 py-1 text-xs font-medium rounded-lg transition-colors ${
+                showEmptyFields ? 'bg-gray-100 text-gray-600' : 'bg-gray-900 text-white'
+              }`}
+            >
+              {showEmptyFields ? 'Hide empty' : 'Show all'}
+            </button>
           </div>
         )}
       </div>
 
-      {/* Content - Side by Side */}
-      <div className="flex-1 flex flex-col lg:flex-row min-h-0 overflow-hidden">
-        {/* Left Panel - Image */}
-        {imagePreview && (
-          <div className={`${fullscreenImage ? 'fixed inset-0 z-50 bg-black' : 'lg:w-2/5 border-b lg:border-b-0 lg:border-r border-gray-100'} flex flex-col`}>
-            {/* Image Controls */}
-            <div className={`px-4 py-2 flex items-center justify-between ${fullscreenImage ? 'bg-black/80' : 'bg-gray-50 border-b border-gray-100'}`}>
-              <span className={`text-xs font-medium ${fullscreenImage ? 'text-white' : 'text-gray-600'}`}>
-                Original Document
-              </span>
-              <div className="flex items-center gap-1">
-                <button
-                  onClick={() => setImageZoom(Math.max(0.25, imageZoom - 0.25))}
-                  className={`p-1.5 rounded transition-colors ${fullscreenImage ? 'text-white hover:bg-white/10' : 'text-gray-500 hover:bg-gray-100'}`}
-                >
-                  <ZoomOut className="w-4 h-4" />
-                </button>
-                <span className={`text-xs w-14 text-center ${fullscreenImage ? 'text-white' : 'text-gray-500'}`}>
-                  {Math.round(imageZoom * 100)}%
-                </span>
-                <button
-                  onClick={() => setImageZoom(Math.min(4, imageZoom + 0.25))}
-                  className={`p-1.5 rounded transition-colors ${fullscreenImage ? 'text-white hover:bg-white/10' : 'text-gray-500 hover:bg-gray-100'}`}
-                >
-                  <ZoomIn className="w-4 h-4" />
-                </button>
-                <div className={`w-px h-4 mx-1 ${fullscreenImage ? 'bg-white/20' : 'bg-gray-200'}`} />
-                <button
-                  onClick={() => setFullscreenImage(!fullscreenImage)}
-                  className={`p-1.5 rounded transition-colors ${fullscreenImage ? 'text-white hover:bg-white/10' : 'text-gray-500 hover:bg-gray-100'}`}
-                >
-                  {fullscreenImage ? <Minimize2 className="w-4 h-4" /> : <Maximize2 className="w-4 h-4" />}
-                </button>
-              </div>
-            </div>
-            
-            {/* Image Container */}
-            <div className={`flex-1 overflow-auto ${fullscreenImage ? 'bg-black p-8' : 'p-4 bg-gray-50/50'}`}>
-              <div 
-                className="transition-transform origin-center inline-block"
-                style={{ transform: `scale(${imageZoom})` }}
-              >
-                <img
-                  src={imagePreview}
-                  alt="Form preview"
-                  className="max-w-full rounded-lg shadow-lg"
-                />
-              </div>
-            </div>
+      {/* Content */}
+      <div className="flex-1 overflow-auto min-h-0">
+        {parsedData ? (
+          <>
+            {viewMode === 'document' && (
+              <DocumentStyleView 
+                data={parsedData} 
+                showEmpty={showEmptyFields}
+              />
+            )}
+            {viewMode === 'cards' && (
+              <CardsView 
+                fields={visibleFields}
+                editingField={editingField}
+                editValue={editValue}
+                onStartEdit={startEditing}
+                onCancelEdit={cancelEditing}
+                onSaveEdit={saveEditing}
+                onEditValueChange={setEditValue}
+                canEdit={!!onFieldEdit}
+              />
+            )}
+            {viewMode === 'table' && (
+              <TableView 
+                fields={visibleFields}
+                editingField={editingField}
+                editValue={editValue}
+                onStartEdit={startEditing}
+                onCancelEdit={cancelEditing}
+                onSaveEdit={saveEditing}
+                onEditValueChange={setEditValue}
+                canEdit={!!onFieldEdit}
+              />
+            )}
+          </>
+        ) : (
+          <div className="flex-1 flex items-center justify-center p-8">
+            <p className="text-gray-500">Process an image to see extracted data</p>
           </div>
         )}
-
-        {/* Right Panel - Extracted Data */}
-        <div className={`flex-1 flex flex-col min-h-0 ${!imagePreview ? 'w-full' : 'lg:w-3/5'}`}>
-          {structuredData ? (
-            <div className="flex-1 overflow-y-auto">
-              {viewMode === 'cards' ? (
-                <CardsView 
-                  structuredData={structuredData}
-                  showEmptyFields={showEmptyFields}
-                  editingField={editingField}
-                  editValue={editValue}
-                  onStartEdit={startEditing}
-                  onCancelEdit={cancelEditing}
-                  onSaveEdit={saveEditing}
-                  onEditValueChange={setEditValue}
-                  canEdit={!!onFieldEdit}
-                />
-              ) : (
-                <TableView 
-                  fields={visibleFields}
-                  editingField={editingField}
-                  editValue={editValue}
-                  onStartEdit={startEditing}
-                  onCancelEdit={cancelEditing}
-                  onSaveEdit={saveEditing}
-                  onEditValueChange={setEditValue}
-                  canEdit={!!onFieldEdit}
-                />
-              )}
-
-              {/* Checkboxes */}
-              {structuredData.checkboxes.length > 0 && (
-                <div className="p-4 border-t border-gray-100">
-                  <h3 className="text-sm font-medium text-gray-700 mb-3 flex items-center gap-2">
-                    <CheckSquare className="w-4 h-4" />
-                    Checkboxes
-                  </h3>
-                  <div className="grid grid-cols-2 gap-2">
-                    {structuredData.checkboxes.map((cb, idx) => (
-                      <CheckboxItem key={idx} checkbox={cb} />
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Tables */}
-              {structuredData.tables.map((table, idx) => (
-                <div key={idx} className="p-4 border-t border-gray-100">
-                  <TableCard table={table} index={idx} />
-                </div>
-              ))}
-
-              {/* Parsing Warning */}
-              {!parsingSuccessful && (
-                <div className="m-4 flex items-start gap-3 p-4 bg-amber-50 rounded-xl border border-amber-100">
-                  <AlertCircle className="w-5 h-5 text-amber-500 flex-shrink-0 mt-0.5" />
-                  <div>
-                    <p className="text-sm font-medium text-amber-800">Using Fallback Parsing</p>
-                    <p className="text-xs text-amber-600 mt-1">
-                      The structured format could not be fully parsed. Some fields may be missing or inaccurate.
-                    </p>
-                  </div>
-                </div>
-              )}
-            </div>
-          ) : (
-            <div className="flex-1 flex items-center justify-center p-8">
-              <div className="text-center">
-                <FileText className="w-16 h-16 text-gray-200 mx-auto mb-4" />
-                <p className="text-gray-500">Click "Extract Form Data" to begin</p>
-              </div>
-            </div>
-          )}
-        </div>
       </div>
     </div>
   )
 }
 
-// Cards View Component
+// Document Style View - Renders like a document
+function DocumentStyleView({ 
+  data, 
+  showEmpty 
+}: { 
+  data: StructuredExtraction
+  showEmpty: boolean 
+}) {
+  const visibleSections = data.sections.map(section => ({
+    ...section,
+    fields: showEmpty 
+      ? section.fields 
+      : section.fields.filter(f => f.value && f.value.trim() && f.value !== '-')
+  })).filter(s => s.fields.length > 0)
+
+  if (visibleSections.length === 0) {
+    return (
+      <div className="p-8 text-center">
+        <FormInput className="w-10 h-10 text-gray-300 mx-auto mb-3" />
+        <p className="text-gray-500 text-sm">No fields extracted</p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="p-6" dir="auto" style={{ direction: 'rtl', textAlign: 'right' }}>
+      {data.form_title && (
+        <h2 className="text-lg font-bold text-gray-900 mb-4 pb-2 border-b-2 border-gray-900">
+          {data.form_title}
+        </h2>
+      )}
+      
+      {visibleSections.map((section, sIdx) => (
+        <div key={sIdx} className="mb-6">
+          {section.name && (
+            <h3 className="text-sm font-bold text-gray-700 mb-3 pb-1 border-b border-gray-200 flex items-center gap-2">
+              <span className="w-1.5 h-1.5 bg-gray-900 rounded-full" />
+              {section.name}
+            </h3>
+          )}
+          
+          <div className="space-y-1">
+            {section.fields.map((field, fIdx) => {
+              const hasValue = field.value && field.value.trim() && field.value !== '-'
+              
+              return (
+                <div 
+                  key={fIdx}
+                  className={`flex items-start gap-3 py-2 px-3 rounded-lg transition-colors ${
+                    hasValue ? 'hover:bg-gray-50' : 'opacity-50'
+                  }`}
+                >
+                  <span className="text-gray-600 min-w-0 text-sm">
+                    {field.label}:
+                  </span>
+                  <span className={`flex-1 text-sm ${
+                    hasValue ? 'text-gray-900 font-semibold' : 'text-gray-300 italic'
+                  }`}>
+                    {hasValue ? field.value : 'غير محدد'}
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      ))}
+      
+      {/* Checkboxes */}
+      {data.checkboxes.length > 0 && (
+        <div className="mt-6 pt-4 border-t border-gray-200">
+          <h3 className="text-sm font-bold text-gray-700 mb-3">الخيارات</h3>
+          <div className="space-y-2">
+            {data.checkboxes.map((cb, idx) => (
+              <div key={idx} className="flex items-center gap-3">
+                <div className={`w-5 h-5 rounded flex items-center justify-center ${
+                  cb.checked ? 'bg-emerald-500' : 'border-2 border-gray-300'
+                }`}>
+                  {cb.checked && <Check className="w-3 h-3 text-white" />}
+                </div>
+                <span className="text-sm text-gray-700">{cb.label}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Cards View
 function CardsView({
-  structuredData,
-  showEmptyFields,
+  fields,
   editingField,
   editValue,
   onStartEdit,
@@ -405,8 +423,7 @@ function CardsView({
   onEditValueChange,
   canEdit
 }: {
-  structuredData: StructuredExtraction
-  showEmptyFields: boolean
+  fields: Array<ExtractedField & { sectionName: string; sectionIndex: number; fieldIndex: number }>
   editingField: { section: number; field: number } | null
   editValue: string
   onStartEdit: (sectionIndex: number, fieldIndex: number, value: string) => void
@@ -415,106 +432,76 @@ function CardsView({
   onEditValueChange: (value: string) => void
   canEdit: boolean
 }) {
+  if (fields.length === 0) {
+    return (
+      <div className="p-8 text-center">
+        <FormInput className="w-10 h-10 text-gray-300 mx-auto mb-3" />
+        <p className="text-gray-500 text-sm">No fields to display</p>
+      </div>
+    )
+  }
+
   return (
-    <div className="p-4 space-y-4">
-      {structuredData.sections.map((section, sectionIndex) => {
-        const visibleFields = showEmptyFields 
-          ? section.fields 
-          : section.fields.filter(f => f.value.trim())
-        
-        if (visibleFields.length === 0) return null
+    <div className="p-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
+      {fields.map((field, idx) => {
+        const isEditing = editingField?.section === field.sectionIndex && editingField?.field === field.fieldIndex
+        const hasValue = field.value && field.value.trim() && field.value !== '-'
         
         return (
-          <div key={sectionIndex} className="space-y-3">
-            {/* Section Header */}
-            <div className="flex items-center gap-2">
-              <div className="w-1 h-5 bg-gray-900 rounded-full" />
-              <h3 className="text-sm font-semibold text-gray-900">
-                {section.name || 'General Fields'}
-              </h3>
-              <span className="text-xs text-gray-400">
-                {section.fields.filter(f => f.value.trim()).length}/{section.fields.length}
+          <div 
+            key={idx}
+            className={`rounded-xl p-4 ${
+              hasValue 
+                ? 'bg-white border border-gray-200 shadow-sm' 
+                : 'bg-gray-50 border border-dashed border-gray-200'
+            }`}
+            dir="auto"
+          >
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs font-medium text-gray-500">{field.label}</span>
+              <span className={`text-[10px] px-1.5 py-0.5 rounded ${
+                field.type === 'date' ? 'bg-blue-50 text-blue-600' :
+                field.type === 'number' ? 'bg-green-50 text-green-600' :
+                'bg-gray-50 text-gray-500'
+              }`}>
+                {field.type}
               </span>
             </div>
             
-            {/* Fields Grid */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              {visibleFields.map((field, fieldIndex) => {
-                const actualFieldIndex = section.fields.indexOf(field)
-                const isEditing = editingField?.section === sectionIndex && editingField?.field === actualFieldIndex
-                const isEmpty = !field.value.trim()
-                
-                return (
-                  <div 
-                    key={fieldIndex} 
-                    className={`rounded-xl p-4 transition-all ${
-                      isEmpty 
-                        ? 'bg-gray-50 border border-dashed border-gray-200' 
-                        : 'bg-white border border-gray-200 shadow-sm hover:shadow-md'
-                    }`}
-                    dir="auto"
+            {isEditing ? (
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={editValue}
+                  onChange={(e) => onEditValueChange(e.target.value)}
+                  className="flex-1 px-2 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-gray-900"
+                  autoFocus
+                  dir="auto"
+                />
+                <button onClick={onSaveEdit} className="p-1 text-emerald-600 hover:bg-emerald-50 rounded">
+                  <Save className="w-4 h-4" />
+                </button>
+                <button onClick={onCancelEdit} className="p-1 text-gray-400 hover:bg-gray-100 rounded">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            ) : (
+              <div className="group flex items-start gap-2">
+                <p className={`flex-1 text-sm ${
+                  hasValue ? 'text-gray-900 font-medium' : 'text-gray-300 italic'
+                }`}>
+                  {hasValue ? field.value : 'Not filled'}
+                </p>
+                {canEdit && (
+                  <button
+                    onClick={() => onStartEdit(field.sectionIndex, field.fieldIndex, field.value)}
+                    className="p-1 text-gray-300 hover:text-gray-600 hover:bg-gray-100 rounded opacity-0 group-hover:opacity-100 transition-all"
                   >
-                    {/* Field Label */}
-                    <div className="flex items-start justify-between mb-2">
-                      <span className="text-xs font-medium text-gray-500 leading-tight">
-                        {field.label}
-                      </span>
-                      <span className={`text-[10px] px-1.5 py-0.5 rounded ${
-                        field.type === 'date' ? 'bg-blue-50 text-blue-600' :
-                        field.type === 'number' ? 'bg-green-50 text-green-600' :
-                        'bg-gray-50 text-gray-500'
-                      }`}>
-                        {field.type}
-                      </span>
-                    </div>
-                    
-                    {/* Field Value */}
-                    {isEditing ? (
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="text"
-                          value={editValue}
-                          onChange={(e) => onEditValueChange(e.target.value)}
-                          className="flex-1 px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-gray-900 focus:border-transparent"
-                          autoFocus
-                          dir="auto"
-                        />
-                        <button
-                          onClick={onSaveEdit}
-                          className="p-2 text-white bg-gray-900 hover:bg-gray-800 rounded-lg"
-                        >
-                          <Save className="w-4 h-4" />
-                        </button>
-                        <button
-                          onClick={onCancelEdit}
-                          className="p-2 text-gray-500 hover:bg-gray-100 rounded-lg"
-                        >
-                          <X className="w-4 h-4" />
-                        </button>
-                      </div>
-                    ) : (
-                      <div className="group flex items-start gap-2">
-                        <p className={`flex-1 text-base leading-relaxed ${
-                          isEmpty 
-                            ? 'text-gray-300 italic text-sm' 
-                            : 'text-gray-900 font-medium'
-                        }`}>
-                          {isEmpty ? 'Not filled' : field.value}
-                        </p>
-                        {canEdit && (
-                          <button
-                            onClick={() => onStartEdit(sectionIndex, actualFieldIndex, field.value)}
-                            className="p-1.5 text-gray-300 hover:text-gray-600 hover:bg-gray-100 rounded opacity-0 group-hover:opacity-100 transition-all"
-                          >
-                            <Edit2 className="w-3.5 h-3.5" />
-                          </button>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )
-              })}
-            </div>
+                    <Edit2 className="w-3 h-3" />
+                  </button>
+                )}
+              </div>
+            )}
           </div>
         )
       })}
@@ -522,7 +509,7 @@ function CardsView({
   )
 }
 
-// Table View Component
+// Table View
 function TableView({
   fields,
   editingField,
@@ -542,54 +529,56 @@ function TableView({
   onEditValueChange: (value: string) => void
   canEdit: boolean
 }) {
+  if (fields.length === 0) {
+    return (
+      <div className="p-8 text-center">
+        <Table2 className="w-10 h-10 text-gray-300 mx-auto mb-3" />
+        <p className="text-gray-500 text-sm">No fields to display</p>
+      </div>
+    )
+  }
+
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-sm">
         <thead className="bg-gray-50 sticky top-0">
           <tr>
-            <th className="px-4 py-3 text-left font-medium text-gray-600 border-b border-gray-200">Field</th>
-            <th className="px-4 py-3 text-left font-medium text-gray-600 border-b border-gray-200">Value</th>
-            <th className="px-4 py-3 text-left font-medium text-gray-600 border-b border-gray-200 w-20">Type</th>
-            {canEdit && <th className="px-4 py-3 w-12 border-b border-gray-200"></th>}
+            <th className="px-4 py-2 text-right font-medium text-gray-600 border-b">Field</th>
+            <th className="px-4 py-2 text-right font-medium text-gray-600 border-b">Value</th>
+            <th className="px-4 py-2 text-center font-medium text-gray-600 border-b w-16">Type</th>
+            {canEdit && <th className="px-4 py-2 w-10 border-b"></th>}
           </tr>
         </thead>
         <tbody className="divide-y divide-gray-100">
           {fields.map((field, idx) => {
             const isEditing = editingField?.section === field.sectionIndex && editingField?.field === field.fieldIndex
-            const isEmpty = !field.value.trim()
+            const hasValue = field.value && field.value.trim() && field.value !== '-'
             
             return (
-              <tr key={idx} className={`${isEmpty ? 'bg-gray-50/50' : 'hover:bg-gray-50'} transition-colors`}>
-                <td className="px-4 py-3" dir="auto">
-                  <span className="font-medium text-gray-900">{field.label}</span>
-                  <span className="text-xs text-gray-400 ml-2">{field.sectionName}</span>
-                </td>
-                <td className="px-4 py-3" dir="auto">
+              <tr key={idx} className={hasValue ? 'hover:bg-gray-50' : 'bg-gray-50/30'}>
+                <td className="px-4 py-2 font-medium text-gray-900" dir="auto">{field.label}</td>
+                <td className="px-4 py-2" dir="auto">
                   {isEditing ? (
                     <div className="flex items-center gap-2">
                       <input
                         type="text"
                         value={editValue}
                         onChange={(e) => onEditValueChange(e.target.value)}
-                        className="flex-1 px-2 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-gray-900"
+                        className="flex-1 px-2 py-1 text-sm border rounded focus:outline-none focus:ring-2 focus:ring-gray-900"
                         autoFocus
                         dir="auto"
                       />
-                      <button onClick={onSaveEdit} className="p-1 text-emerald-600 hover:bg-emerald-50 rounded">
-                        <Save className="w-4 h-4" />
-                      </button>
-                      <button onClick={onCancelEdit} className="p-1 text-gray-400 hover:bg-gray-100 rounded">
-                        <X className="w-4 h-4" />
-                      </button>
+                      <button onClick={onSaveEdit} className="p-1 text-emerald-600"><Save className="w-4 h-4" /></button>
+                      <button onClick={onCancelEdit} className="p-1 text-gray-400"><X className="w-4 h-4" /></button>
                     </div>
                   ) : (
-                    <span className={isEmpty ? 'text-gray-300 italic' : 'text-gray-900'}>
-                      {isEmpty ? 'Not filled' : field.value}
+                    <span className={hasValue ? 'text-gray-900' : 'text-gray-300 italic'}>
+                      {hasValue ? field.value : 'Not filled'}
                     </span>
                   )}
                 </td>
-                <td className="px-4 py-3">
-                  <span className={`text-xs px-2 py-1 rounded ${
+                <td className="px-4 py-2 text-center">
+                  <span className={`text-xs px-2 py-0.5 rounded ${
                     field.type === 'date' ? 'bg-blue-50 text-blue-600' :
                     field.type === 'number' ? 'bg-green-50 text-green-600' :
                     'bg-gray-100 text-gray-600'
@@ -598,13 +587,13 @@ function TableView({
                   </span>
                 </td>
                 {canEdit && (
-                  <td className="px-4 py-3">
+                  <td className="px-4 py-2">
                     {!isEditing && (
                       <button
                         onClick={() => onStartEdit(field.sectionIndex, field.fieldIndex, field.value)}
-                        className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded"
+                        className="p-1 text-gray-400 hover:text-gray-600"
                       >
-                        <Edit2 className="w-4 h-4" />
+                        <Edit2 className="w-3.5 h-3.5" />
                       </button>
                     )}
                   </td>
@@ -614,66 +603,6 @@ function TableView({
           })}
         </tbody>
       </table>
-    </div>
-  )
-}
-
-// Checkbox Item Component
-function CheckboxItem({ checkbox }: { checkbox: ExtractedCheckbox }) {
-  return (
-    <div className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg" dir="auto">
-      <div className={`w-5 h-5 rounded flex items-center justify-center ${
-        checkbox.checked 
-          ? 'bg-emerald-500' 
-          : 'bg-white border-2 border-gray-300'
-      }`}>
-        {checkbox.checked && <Check className="w-3.5 h-3.5 text-white" />}
-      </div>
-      <span className="text-sm text-gray-700 flex-1">{checkbox.label}</span>
-    </div>
-  )
-}
-
-// Table Card Component
-function TableCard({ table, index }: { table: ExtractedTable; index: number }) {
-  if (table.headers.length === 0) return null
-  
-  return (
-    <div>
-      <h3 className="text-sm font-medium text-gray-700 mb-3 flex items-center gap-2">
-        <Table className="w-4 h-4" />
-        Table {index + 1}
-      </h3>
-      <div className="overflow-x-auto rounded-lg border border-gray-200">
-        <table className="w-full text-sm" dir="auto">
-          <thead>
-            <tr className="bg-gray-50">
-              {table.headers.map((header, idx) => (
-                <th 
-                  key={idx} 
-                  className="px-4 py-2 text-right font-medium text-gray-700 border-b border-gray-200 first:text-left"
-                >
-                  {header}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-100">
-            {table.rows.map((row, rowIdx) => (
-              <tr key={rowIdx} className="hover:bg-gray-50">
-                {table.headers.map((_, colIdx) => (
-                  <td 
-                    key={colIdx} 
-                    className="px-4 py-2 text-right text-gray-900 first:text-left"
-                  >
-                    {row[colIdx] || '-'}
-                  </td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
     </div>
   )
 }

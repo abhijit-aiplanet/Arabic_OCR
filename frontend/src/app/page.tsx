@@ -7,6 +7,7 @@ import AdvancedSettings from '@/components/AdvancedSettings'
 import OCRHistory from '@/components/OCRHistory'
 import TemplateSelector from '@/components/TemplateSelector'
 import UniversalRenderer from '@/components/UniversalRenderer'
+import DocumentRenderer from '@/components/DocumentRenderer'
 import StructuredExtractor from '@/components/StructuredExtractor'
 import TemplateBuilder from '@/components/TemplateBuilder'
 import { 
@@ -620,15 +621,14 @@ export default function Home() {
                     parsingSuccessful={parsingSuccessful}
                     onFieldEdit={handleStructuredFieldEdit}
                     onSaveAsTemplate={structuredData ? handleSaveAsTemplate : undefined}
+                    rawText={structuredData?.raw_text}
                   />
                 ) : (
-                  <UniversalRenderer
-                    text={extractedText}
-                    isProcessing={isProcessing}
-                    onTextEdit={handleLiveTextEdit}
-                    isEditable={true}
-                    preferredType={contentTypeOverride}
-                    confidence={extractedConfidence}
+                  <DocumentRenderer
+                    rawText={extractedText}
+                    imagePreview={imagePreview}
+                    confidence={extractedConfidence?.overall_confidence ? Math.round(extractedConfidence.overall_confidence * 100) : undefined}
+                    className="min-h-[400px]"
                   />
                 )}
               </div>
