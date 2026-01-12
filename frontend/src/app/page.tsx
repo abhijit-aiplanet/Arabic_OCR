@@ -49,7 +49,7 @@ export default function Home() {
   const [isProcessing, setIsProcessing] = useState(false)
   const [settings, setSettings] = useState<OCRSettings>({
     customPrompt: '',
-    maxTokens: 4096,
+    maxTokens: 8192,  // Increased for complete text extraction
     minPixels: 200704,
     maxPixels: 1003520,
   })
@@ -415,7 +415,7 @@ export default function Home() {
     setPdfProcessedCount(0)
     setSettings({
       customPrompt: '',
-      maxTokens: 4096,
+      maxTokens: 8192,  // Increased for complete text extraction
       minPixels: 200704,
       maxPixels: 1003520,
     })

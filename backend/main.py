@@ -115,6 +115,10 @@ avg_processing_times = {
     "structured": 25.0, # Average time for structured extraction
 }
 
+# Cold start configuration
+COLD_START_TIME_ESTIMATE = 90  # RunPod cold start takes ~60-120 seconds
+COLD_START_TIME_MAX = 180      # Maximum cold start time estimate
+
 def record_processing_time(operation_type: str, duration: float):
     """Record a processing time for ETA calculations."""
     global processing_times_history, avg_processing_times
@@ -759,7 +763,7 @@ def calculate_final_confidence(
 
 class OCRRequest(BaseModel):
     custom_prompt: Optional[str] = None
-    max_new_tokens: int = 4096
+    max_new_tokens: int = 8192  # Increased for complete text extraction
     min_pixels: Optional[int] = 200704
     max_pixels: Optional[int] = 1003520
 
@@ -996,27 +1000,39 @@ async def get_queue_status(operation_type: str = "image"):
         
         # Query RunPod for queue status
         queue_info = await get_runpod_queue_status()
-        
+
         queue_length = queue_info.get("queue_length", 0)
         workers_running = queue_info.get("workers_running", 0)
         workers_total = queue_info.get("workers_total", 3)
-        
+        workers_idle = queue_info.get("workers_idle", 0)
+
         # Get average processing time for this operation type
         avg_time = get_avg_processing_time(operation_type)
         
+        # CRITICAL: Detect cold start scenario
+        # Cold start happens when NO workers are running/idle - they need to spin up
+        is_cold_start = workers_running == 0 and workers_idle == 0
+        cold_start_time = COLD_START_TIME_ESTIMATE if is_cold_start else 0
+
         # Calculate estimated wait time
         # If queue is empty and workers available, minimal wait
-        if queue_length == 0 and workers_running < workers_total:
+        if queue_length == 0 and workers_idle > 0:
+            # Workers are warm and ready
             estimated_wait = int(avg_time)
             status = "low_load"
             message = "Servers ready - processing will start immediately"
-        elif queue_length == 0:
-            # All workers busy but no queue
+        elif queue_length == 0 and workers_running > 0:
+            # Workers busy but no queue - wait for current job to finish
             estimated_wait = int(avg_time * 1.5)
             status = "low_load"
             message = "Servers busy - short wait expected"
+        elif is_cold_start:
+            # COLD START - add significant time for GPU spin-up
+            estimated_wait = int(cold_start_time + avg_time + (queue_length * avg_time))
+            status = "moderate_load" if queue_length <= 2 else "high_load"
+            message = f"Servers starting up (~{COLD_START_TIME_ESTIMATE}s) + {queue_length} in queue" if queue_length > 0 else f"Server starting up - please wait ~{COLD_START_TIME_ESTIMATE}s"
         elif queue_length <= 2:
-            # Small queue
+            # Small queue, workers warm
             estimated_wait = int((queue_length + 1) * avg_time)
             status = "moderate_load"
             message = f"{queue_length} request(s) ahead of you"
@@ -1372,7 +1388,7 @@ async def delete_template(template_id: str, user: dict = Depends(verify_clerk_to
 async def process_ocr(
     file: UploadFile = File(...),
     custom_prompt: Optional[str] = Form(None),
-    max_new_tokens: int = Form(4096),
+    max_new_tokens: int = Form(8192),  # Increased for complete text extraction
     min_pixels: Optional[int] = Form(200704),
     max_pixels: Optional[int] = Form(1003520),
     user: dict = Depends(verify_clerk_token),
@@ -1510,7 +1526,7 @@ async def process_ocr(
 async def process_pdf_ocr(
     file: UploadFile = File(...),
     custom_prompt: Optional[str] = Form(None),
-    max_new_tokens: int = Form(4096),
+    max_new_tokens: int = Form(8192),  # Increased for complete text extraction
     min_pixels: Optional[int] = Form(200704),
     max_pixels: Optional[int] = Form(1003520),
     user: dict = Depends(verify_clerk_token),

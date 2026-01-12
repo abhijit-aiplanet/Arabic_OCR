@@ -24,8 +24,8 @@ MODEL_ID = "MBZUAI/AIN"
 MIN_PIXELS = 256 * 28 * 28  # 200,704 - Keep same for small images
 MAX_PIXELS = 1280 * 28 * 28  # 1,003,520 - Reduced for faster processing
 
-# Maximum tokens for generation - Balanced for speed vs capacity
-DEFAULT_MAX_TOKENS = 4096  # Reduced from 8192 for 2x faster generation
+# Maximum tokens for generation - RESTORED for complete text extraction
+DEFAULT_MAX_TOKENS = 8192  # Full capacity to prevent text truncation
 
 # Global model and processor
 model = None
