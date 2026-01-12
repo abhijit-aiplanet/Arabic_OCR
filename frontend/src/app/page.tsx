@@ -74,6 +74,10 @@ export default function Home() {
   const [structuredData, setStructuredData] = useState<StructuredExtraction | null>(null)
   const [parsingSuccessful, setParsingSuccessful] = useState(false)
   
+  // Per-page structured data for PDFs
+  const [perPageStructuredData, setPerPageStructuredData] = useState<Map<number, StructuredExtraction>>(new Map())
+  const [selectedPdfPage, setSelectedPdfPage] = useState<number>(1)
+  
   // Save as template modal
   const [showSaveTemplateModal, setShowSaveTemplateModal] = useState(false)
   
@@ -235,17 +239,39 @@ export default function Home() {
             
             // Store structured data for the current page
             if (pageResult.structured_data && pageResult.status === 'success') {
-              const newSections = (pageResult.structured_data?.sections || []).map(s => ({
-                name: s.name ? `Page ${pageResult.page_number}: ${s.name}` : `Page ${pageResult.page_number}`,
-                fields: s.fields.map(f => ({
-                  label: f.label,
-                  value: f.value,
-                  type: f.type as 'text' | 'date' | 'number' | 'checkbox' | 'unknown'
-                }))
-              }))
+              // Store per-page structured data for individual page viewing
+              const pageStructuredData: StructuredExtraction = {
+                form_title: pageResult.structured_data?.form_title || null,
+                sections: (pageResult.structured_data?.sections || []).map(s => ({
+                  name: s.name || 'General',
+                  fields: s.fields.map(f => ({
+                    label: f.label,
+                    value: f.value,
+                    type: f.type as 'text' | 'date' | 'number' | 'checkbox' | 'unknown'
+                  }))
+                })),
+                tables: pageResult.structured_data?.tables || [],
+                checkboxes: pageResult.structured_data?.checkboxes || [],
+                raw_text: pageResult.raw_text || ''
+              }
               
+              // Store in per-page map
+              setPerPageStructuredData(prev => {
+                const newMap = new Map(prev)
+                newMap.set(pageResult.page_number, pageStructuredData)
+                return newMap
+              })
+              
+              // Also update selected page to latest
+              setSelectedPdfPage(pageResult.page_number)
+              
+              // Keep combined data for "All Pages" view
+              const newSections = pageStructuredData.sections.map(s => ({
+                ...s,
+                name: s.name ? `Page ${pageResult.page_number}: ${s.name}` : `Page ${pageResult.page_number}`
+              }))
+
               setStructuredData(prev => {
-                // Merge structured data from all pages
                 if (!prev) {
                   return {
                     form_title: pageResult.structured_data?.form_title || null,
@@ -413,6 +439,8 @@ export default function Home() {
     setPdfResults([])
     setPdfTotalPages(0)
     setPdfProcessedCount(0)
+    setPerPageStructuredData(new Map())
+    setSelectedPdfPage(1)
     setSettings({
       customPrompt: '',
       maxTokens: 8192,  // Increased for complete text extraction
@@ -614,23 +642,68 @@ export default function Home() {
               {/* PDF Results - Show structured data panel when in structured mode */}
               {structuredMode && structuredData ? (
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                  {/* Left - PDF pages */}
+                  {/* Left - PDF pages with page selector */}
                   <PDFProcessor
                     totalPages={pdfTotalPages}
                     results={pdfResults}
                     isProcessing={isProcessing}
                     queueStatus={queueStatus}
                     elapsedTime={elapsedTime}
+                    selectedPage={selectedPdfPage}
+                    onPageSelect={setSelectedPdfPage}
                   />
-                  {/* Right - Aggregated Structured Data */}
-                  <StructuredExtractor
-                    imagePreview={null}
-                    structuredData={structuredData}
-                    isProcessing={isProcessing}
-                    parsingSuccessful={parsingSuccessful}
-                    onFieldEdit={handleStructuredFieldEdit}
-                    onSaveAsTemplate={handleSaveAsTemplate}
-                  />
+                  {/* Right - Per-page Structured Data */}
+                  <div className="space-y-4">
+                    {/* Page selector tabs */}
+                    <div className="bg-white rounded-xl border border-gray-100 p-3">
+                      <div className="flex items-center gap-2 overflow-x-auto pb-1">
+                        <button
+                          onClick={() => setSelectedPdfPage(0)}
+                          className={`px-3 py-1.5 text-sm font-medium rounded-lg whitespace-nowrap transition-colors ${
+                            selectedPdfPage === 0
+                              ? 'bg-black text-white'
+                              : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                          }`}
+                        >
+                          All Pages
+                        </button>
+                        {Array.from({ length: pdfTotalPages }, (_, i) => i + 1).map(pageNum => {
+                          const hasData = perPageStructuredData.has(pageNum)
+                          return (
+                            <button
+                              key={pageNum}
+                              onClick={() => setSelectedPdfPage(pageNum)}
+                              disabled={!hasData}
+                              className={`px-3 py-1.5 text-sm font-medium rounded-lg whitespace-nowrap transition-colors ${
+                                selectedPdfPage === pageNum
+                                  ? 'bg-black text-white'
+                                  : hasData
+                                    ? 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                                    : 'bg-gray-50 text-gray-300 cursor-not-allowed'
+                              }`}
+                            >
+                              Page {pageNum}
+                            </button>
+                          )
+                        })}
+                      </div>
+                    </div>
+                    
+                    {/* Structured data for selected page */}
+                    <StructuredExtractor
+                      imagePreview={selectedPdfPage > 0 ? pdfResults.find(r => r.page_number === selectedPdfPage)?.page_image || null : null}
+                      structuredData={
+                        selectedPdfPage === 0 
+                          ? structuredData 
+                          : perPageStructuredData.get(selectedPdfPage) || null
+                      }
+                      isProcessing={isProcessing}
+                      parsingSuccessful={parsingSuccessful}
+                      onFieldEdit={handleStructuredFieldEdit}
+                      onSaveAsTemplate={handleSaveAsTemplate}
+                      pageLabel={selectedPdfPage === 0 ? 'All Pages' : `Page ${selectedPdfPage}`}
+                    />
+                  </div>
                 </div>
               ) : (
                 <PDFProcessor

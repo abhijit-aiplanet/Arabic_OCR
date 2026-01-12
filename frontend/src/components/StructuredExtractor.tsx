@@ -19,6 +19,7 @@ interface StructuredExtractorProps {
   onFieldEdit?: (sectionIndex: number, fieldIndex: number, newValue: string) => void
   onSaveAsTemplate?: () => void
   rawText?: string
+  pageLabel?: string  // For PDF per-page display
 }
 
 type ViewMode = 'document' | 'cards' | 'table'
@@ -30,7 +31,8 @@ export default function StructuredExtractor({
   parsingSuccessful,
   onFieldEdit,
   onSaveAsTemplate,
-  rawText
+  rawText,
+  pageLabel
 }: StructuredExtractorProps) {
   const [imageZoom, setImageZoom] = useState(1)
   const [editingField, setEditingField] = useState<{ section: number; field: number } | null>(null)
@@ -190,7 +192,9 @@ export default function StructuredExtractor({
       <div className="px-4 py-3 border-b border-gray-100 bg-gray-50/50 flex-shrink-0">
         <div className="flex items-center justify-between mb-2">
           <div>
-            <h3 className="font-semibold text-gray-900">Extracted Form Data</h3>
+            <h3 className="font-semibold text-gray-900">
+              {pageLabel ? `Extracted Form Data - ${pageLabel}` : 'Extracted Form Data'}
+            </h3>
             {parsedData && (
               <p className="text-xs text-gray-500">
                 <span className="font-medium text-gray-900">{filledFields}</span> of {totalFields} fields filled

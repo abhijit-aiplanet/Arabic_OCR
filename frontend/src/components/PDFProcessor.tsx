@@ -11,6 +11,8 @@ interface PDFProcessorProps {
   isProcessing: boolean
   queueStatus?: QueueStatus | null
   elapsedTime?: number
+  selectedPage?: number
+  onPageSelect?: (page: number) => void
 }
 
 export default function PDFProcessor({
@@ -18,20 +20,37 @@ export default function PDFProcessor({
   results,
   isProcessing,
   queueStatus,
-  elapsedTime = 0
+  elapsedTime = 0,
+  selectedPage,
+  onPageSelect
 }: PDFProcessorProps) {
   const [currentPage, setCurrentPage] = useState(1)
   const currentResult = results.find(r => r.page_number === currentPage)
+  
+  // Handle page selection - internal or external
+  const handlePageClick = (pageNum: number) => {
+    setCurrentPage(pageNum)
+    if (onPageSelect) {
+      onPageSelect(pageNum)
+    }
+  }
 
   // Auto-navigate to the latest completed page
   useEffect(() => {
     if (results.length > 0) {
       const latestPage = results[results.length - 1].page_number
       if (latestPage > currentPage) {
-        setCurrentPage(latestPage)
+        handlePageClick(latestPage)
       }
     }
   }, [results])
+  
+  // Sync with external selectedPage if provided
+  useEffect(() => {
+    if (selectedPage !== undefined && selectedPage > 0 && selectedPage !== currentPage) {
+      setCurrentPage(selectedPage)
+    }
+  }, [selectedPage])
 
   const handleDownloadMarkdown = () => {
     const markdown = results
@@ -125,7 +144,7 @@ export default function PDFProcessor({
             return (
               <button
                 key={pageNum}
-                onClick={() => setCurrentPage(pageNum)}
+                onClick={() => handlePageClick(pageNum)}
                 disabled={!isCompleted}
                 className={`relative flex-shrink-0 w-16 h-20 rounded-lg border-2 transition-all overflow-hidden ${
                   isCurrent
@@ -245,7 +264,7 @@ export default function PDFProcessor({
       {totalPages > 1 && (
         <div className="border-t border-gray-100 px-5 py-4 flex items-center justify-between">
           <button
-            onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
+            onClick={() => handlePageClick(Math.max(1, currentPage - 1))}
             disabled={currentPage === 1}
             className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-600 hover:text-gray-900 hover:bg-gray-50 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >
@@ -258,7 +277,7 @@ export default function PDFProcessor({
           </span>
 
           <button
-            onClick={() => setCurrentPage(Math.min(totalPages, currentPage + 1))}
+            onClick={() => handlePageClick(Math.min(totalPages, currentPage + 1))}
             disabled={currentPage === totalPages}
             className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-600 hover:text-gray-900 hover:bg-gray-50 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >

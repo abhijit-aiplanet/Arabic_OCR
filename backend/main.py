@@ -142,30 +142,39 @@ def get_avg_processing_time(operation_type: str) -> float:
     """Get average processing time for an operation type."""
     return avg_processing_times.get(operation_type, 20.0)
 
-# Default OCR Prompt
-DEFAULT_OCR_PROMPT = """Extract all Arabic text from this image with maximum accuracy.
+# Default OCR Prompt - OPTIMIZED FOR FORMS WITH HANDWRITTEN TEXT
+DEFAULT_OCR_PROMPT = """استخرج كل النص العربي من هذه الصورة.
 
-CRITICAL: This image contains ARABIC text that may be:
-- Handwritten Arabic text
-- Typed/printed Arabic text
-- Small Arabic annotations or notes
-- Arabic text in forms, tables, or documents
+Extract ALL Arabic text from this image - both PRINTED and HANDWRITTEN.
 
-Your task: Find and extract EVERY piece of Arabic text visible in the image, no matter how small.
+IMPORTANT - THIS IMAGE MAY CONTAIN:
+1. PRINTED TEXT: Labels, headers, field names (e.g., "الاسم:", "رقم الهوية:")
+2. HANDWRITTEN TEXT: Values filled in by hand (names, numbers, dates, signatures)
+3. FORM ELEMENTS: Dotted lines (......), underscores (____), boxes - these are PLACEHOLDERS, not text!
 
-Requirements:
-1. Extract ALL Arabic text - handwritten, typed, printed, or annotations
-2. Accuracy is CRITICAL - extract Arabic text exactly as it appears
-3. Do NOT miss any Arabic text, even small notes or annotations
-4. Maintain the original text structure, layout, and formatting
-5. Preserve line breaks, paragraphs, and spacing as they appear
-6. Do NOT translate - keep all text in Arabic
-7. Do NOT add descriptions, interpretations, or commentary
-8. If there are tables or forms, maintain their structure
-9. If there are headers, titles, or sections, preserve their hierarchy
-10. Focus on ACCURACY over speed
+CRITICAL INSTRUCTIONS:
+- The dotted lines and underscores are just empty placeholders - IGNORE them
+- HANDWRITTEN text is often written ON TOP OF or NEAR these placeholders
+- You MUST read and extract the handwritten text, not just the printed labels
+- Handwritten Arabic may look different from printed text - still extract it!
 
-Output only the extracted Arabic text, nothing else."""
+EXAMPLE - What to extract from a form:
+If you see: "الاسم: محمد أحمد ..............."
+Extract: "الاسم: محمد أحمد" (the handwritten name, NOT the dots)
+
+If you see: "رقم الهوية: ١٠٥٤٣٢١٩٨٧"
+Extract: "رقم الهوية: ١٠٥٤٣٢١٩٨٧" (the handwritten number)
+
+REQUIREMENTS:
+1. Extract ALL text - printed headers AND handwritten values
+2. Do NOT skip handwritten text just because it's harder to read
+3. Maintain the structure: keep labels with their values
+4. Preserve line breaks and layout
+5. Do NOT translate - keep everything in Arabic
+6. Do NOT add descriptions or commentary
+7. Tables and forms: extract ALL cell content including handwritten entries
+
+Output the extracted Arabic text, preserving structure:"""
 
 # =============================================================================
 # STRUCTURED EXTRACTION PROMPT - OPTIMIZED FOR ARABIC HANDWRITTEN FORMS
