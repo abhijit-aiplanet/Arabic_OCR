@@ -3,6 +3,60 @@ import type { FieldType } from './structuredParser'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
+// =============================================================================
+// QUEUE STATUS TYPES
+// =============================================================================
+
+export interface QueueStatus {
+  queue_length: number
+  workers_running: number
+  workers_total: number
+  estimated_wait_seconds: number
+  estimated_wait_display: string
+  avg_processing_time: number
+  status: 'low_load' | 'moderate_load' | 'high_load' | 'very_high_load' | 'unknown'
+  message: string
+}
+
+// =============================================================================
+// QUEUE STATUS API
+// =============================================================================
+
+export async function getQueueStatus(
+  operationType: 'image' | 'pdf_page' | 'structured' = 'image',
+  authToken?: string | null
+): Promise<QueueStatus> {
+  try {
+    const headers: Record<string, string> = {}
+    if (authToken) {
+      headers['Authorization'] = `Bearer ${authToken}`
+    }
+
+    const response = await axios.get<QueueStatus>(
+      `${API_URL}/api/queue-status?operation_type=${operationType}`,
+      { headers, timeout: 10000 }
+    )
+    return response.data
+  } catch (error) {
+    console.error('Failed to get queue status:', error)
+    // Return safe defaults
+    return {
+      queue_length: 0,
+      workers_running: 0,
+      workers_total: 3,
+      estimated_wait_seconds: 30,
+      estimated_wait_display: '~30 seconds',
+      avg_processing_time: 20,
+      status: 'unknown',
+      message: 'Processing will begin shortly'
+    }
+  }
+}
+
+// =============================================================================
+// OCR TYPES
+// =============================================================================
+
 interface OCRSettings {
   customPrompt: string
   maxTokens: number

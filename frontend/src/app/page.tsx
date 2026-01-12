@@ -16,6 +16,7 @@ import {
   processStructuredOCR,
   processStructuredPDFOCR,
   createTemplate,
+  getQueueStatus,
   PDFPageResult, 
   StructuredPDFPageResult,
   updateHistoryText, 
@@ -23,7 +24,8 @@ import {
   type OCRTemplate, 
   type OCRConfidence,
   type StructuredExtractionData,
-  type CreateTemplateRequest
+  type CreateTemplateRequest,
+  type QueueStatus
 } from '@/lib/api'
 import { getEffectivePrompt } from '@/lib/promptGenerator'
 import { parseStructuredOutput, type StructuredExtraction } from '@/lib/structuredParser'
@@ -74,6 +76,11 @@ export default function Home() {
   
   // Save as template modal
   const [showSaveTemplateModal, setShowSaveTemplateModal] = useState(false)
+  
+  // Queue status & ETA
+  const [queueStatus, setQueueStatus] = useState<QueueStatus | null>(null)
+  const [processingStartTime, setProcessingStartTime] = useState<number | null>(null)
+  const [elapsedTime, setElapsedTime] = useState<number>(0)
 
   // Get auth token on mount
   useEffect(() => {
@@ -83,6 +90,23 @@ export default function Home() {
     }
     fetchToken()
   }, [getToken])
+  
+  // Track elapsed time during processing
+  useEffect(() => {
+    let interval: NodeJS.Timeout | null = null
+    
+    if (isProcessing && processingStartTime) {
+      interval = setInterval(() => {
+        setElapsedTime(Math.floor((Date.now() - processingStartTime) / 1000))
+      }, 1000)
+    } else {
+      setElapsedTime(0)
+    }
+    
+    return () => {
+      if (interval) clearInterval(interval)
+    }
+  }, [isProcessing, processingStartTime])
 
   // Handle live text edit
   const handleLiveTextEdit = async (newText: string) => {
@@ -173,9 +197,16 @@ export default function Home() {
     }
 
     setIsProcessing(true)
+    setProcessingStartTime(Date.now())
+    setQueueStatus(null)
 
     try {
       const token = await getToken()
+      
+      // Fetch queue status for ETA
+      const operationType = structuredMode ? 'structured' : (isPDF ? 'pdf_page' : 'image')
+      const status = await getQueueStatus(operationType, token)
+      setQueueStatus(status)
       
       if (isPDF && structuredMode) {
         // Structured PDF extraction
@@ -366,6 +397,8 @@ export default function Home() {
       toast.error(error instanceof Error ? error.message : 'Failed to process file')
     } finally {
       setIsProcessing(false)
+      setProcessingStartTime(null)
+      setQueueStatus(null)
     }
   }
 
@@ -527,6 +560,8 @@ export default function Home() {
                     totalPages={pdfTotalPages}
                     results={pdfResults}
                     isProcessing={isProcessing}
+                    queueStatus={queueStatus}
+                    elapsedTime={elapsedTime}
                   />
                   {/* Right - Aggregated Structured Data */}
                   <StructuredExtractor
@@ -543,6 +578,8 @@ export default function Home() {
                   totalPages={pdfTotalPages}
                   results={pdfResults}
                   isProcessing={isProcessing}
+                  queueStatus={queueStatus}
+                  elapsedTime={elapsedTime}
                 />
               )}
             </div>
@@ -597,6 +634,52 @@ export default function Home() {
                       structuredMode ? 'Extract Form Data' : `Process ${isPDF ? 'PDF' : 'Image'}`
                     )}
                   </button>
+                  
+                  {/* Processing Status & ETA */}
+                  {isProcessing && (
+                    <div className="bg-blue-50 border border-blue-100 rounded-xl p-4 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm font-medium text-blue-900">
+                          <Clock className="w-4 h-4 inline mr-1.5" />
+                          Processing
+                        </span>
+                        <span className="text-sm font-mono text-blue-700">
+                          {Math.floor(elapsedTime / 60)}:{String(elapsedTime % 60).padStart(2, '0')}
+                        </span>
+                      </div>
+                      
+                      {queueStatus && (
+                        <>
+                          <div className="text-xs text-blue-700">
+                            {queueStatus.message}
+                          </div>
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="text-blue-600">
+                              Estimated: {queueStatus.estimated_wait_display}
+                            </span>
+                            {queueStatus.queue_length > 0 && (
+                              <span className={`px-2 py-0.5 rounded-full ${
+                                queueStatus.status === 'very_high_load' ? 'bg-red-100 text-red-700' :
+                                queueStatus.status === 'high_load' ? 'bg-amber-100 text-amber-700' :
+                                queueStatus.status === 'moderate_load' ? 'bg-yellow-100 text-yellow-700' :
+                                'bg-green-100 text-green-700'
+                              }`}>
+                                {queueStatus.queue_length} in queue
+                              </span>
+                            )}
+                          </div>
+                          <div className="w-full bg-blue-200 rounded-full h-1.5">
+                            <div 
+                              className="bg-blue-600 h-1.5 rounded-full transition-all duration-1000"
+                              style={{ 
+                                width: `${Math.min(100, (elapsedTime / queueStatus.estimated_wait_seconds) * 100)}%` 
+                              }}
+                            />
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )}
 
                   {selectedImage && (
                     <button

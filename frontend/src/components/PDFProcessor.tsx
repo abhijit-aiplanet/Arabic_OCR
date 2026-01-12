@@ -1,20 +1,24 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { PDFPageResult } from '@/lib/api'
-import { ChevronLeft, ChevronRight, Download, FileText, CheckCircle, XCircle } from 'lucide-react'
+import { PDFPageResult, QueueStatus } from '@/lib/api'
+import { ChevronLeft, ChevronRight, Download, FileText, CheckCircle, XCircle, Clock } from 'lucide-react'
 import UniversalRenderer from '@/components/UniversalRenderer'
 
 interface PDFProcessorProps {
   totalPages: number
   results: PDFPageResult[]
   isProcessing: boolean
+  queueStatus?: QueueStatus | null
+  elapsedTime?: number
 }
 
 export default function PDFProcessor({
   totalPages,
   results,
-  isProcessing
+  isProcessing,
+  queueStatus,
+  elapsedTime = 0
 }: PDFProcessorProps) {
   const [currentPage, setCurrentPage] = useState(1)
   const currentResult = results.find(r => r.page_number === currentPage)
@@ -52,23 +56,60 @@ export default function PDFProcessor({
   return (
     <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
       {/* Header */}
-      <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
-        <div>
-          <h2 className="text-base font-semibold text-gray-900">
-            Results {isProcessing && <span className="text-gray-400 font-normal">(Processing...)</span>}
-          </h2>
-          <p className="text-sm text-gray-500 mt-0.5">
+      <div className="px-5 py-4 border-b border-gray-100">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-base font-semibold text-gray-900">
+              Results {isProcessing && <span className="text-gray-400 font-normal">(Processing...)</span>}
+            </h2>
+            <p className="text-sm text-gray-500 mt-0.5">
             {results.length} of {totalPages} pages completed · {successCount} successful
           </p>
         </div>
-        <button
-          onClick={handleDownloadMarkdown}
-          disabled={results.length === 0}
-          className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-gray-900 hover:bg-gray-800 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-        >
-          <Download className="w-4 h-4" />
-          Download All
-        </button>
+          <button
+            onClick={handleDownloadMarkdown}
+            disabled={results.length === 0}
+            className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-gray-900 hover:bg-gray-800 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            <Download className="w-4 h-4" />
+            Download All
+          </button>
+        </div>
+        
+        {/* ETA Display for PDF Processing */}
+        {isProcessing && queueStatus && (
+          <div className="mt-3 bg-blue-50 border border-blue-100 rounded-lg p-3">
+            <div className="flex items-center justify-between text-sm">
+              <div className="flex items-center gap-2 text-blue-900">
+                <Clock className="w-4 h-4" />
+                <span className="font-medium">
+                  {Math.floor(elapsedTime / 60)}:{String(elapsedTime % 60).padStart(2, '0')} elapsed
+                </span>
+              </div>
+              <span className="text-blue-700">
+                Est: {queueStatus.estimated_wait_display}
+              </span>
+            </div>
+            <div className="mt-2 text-xs text-blue-600">
+              {queueStatus.message}
+              {queueStatus.queue_length > 0 && (
+                <span className={`ml-2 px-1.5 py-0.5 rounded ${
+                  queueStatus.status === 'very_high_load' ? 'bg-red-100 text-red-700' :
+                  queueStatus.status === 'high_load' ? 'bg-amber-100 text-amber-700' :
+                  'bg-blue-100 text-blue-700'
+                }`}>
+                  {queueStatus.queue_length} in queue
+                </span>
+              )}
+            </div>
+            <div className="mt-2 w-full bg-blue-200 rounded-full h-1">
+              <div 
+                className="bg-blue-600 h-1 rounded-full transition-all duration-500"
+                style={{ width: `${(results.length / totalPages) * 100}%` }}
+              />
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Page Thumbnails */}

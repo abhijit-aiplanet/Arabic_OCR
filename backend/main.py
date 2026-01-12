@@ -76,28 +76,67 @@ print(f"RUNPOD_ENDPOINT configured: {RUNPOD_ENDPOINT[:50] if RUNPOD_ENDPOINT els
 RUNPOD_API_KEY = os.getenv("RUNPOD_API_KEY")
 
 # =============================================================================
-# RUNPOD CLIENT CONFIGURATION (CRITICAL FOR COLD START HANDLING)
+# RUNPOD CLIENT CONFIGURATION (OPTIMIZED FOR HIGH TRAFFIC & LONG WAITS)
 # =============================================================================
 
-# Timeouts (in seconds)
-RUNPOD_CONNECT_TIMEOUT = 30          # Time to establish connection
-RUNPOD_READ_TIMEOUT = 600            # Time to wait for response (10 min for cold starts)
-RUNPOD_INITIAL_REQUEST_TIMEOUT = 60  # Initial POST request timeout
+# Timeouts (in seconds) - SIGNIFICANTLY INCREASED for heavy traffic scenarios
+RUNPOD_CONNECT_TIMEOUT = 60          # Time to establish connection
+RUNPOD_READ_TIMEOUT = 1800           # Time to wait for response (30 minutes max)
+RUNPOD_INITIAL_REQUEST_TIMEOUT = 120 # Initial POST request timeout
 
 # Retry Configuration
-MAX_RETRIES = 3                      # Number of retries for failed requests
-RETRY_BASE_DELAY = 2                 # Base delay for exponential backoff (seconds)
-RETRY_MAX_DELAY = 30                 # Maximum delay between retries (seconds)
+MAX_RETRIES = 5                      # More retries for reliability
+RETRY_BASE_DELAY = 3                 # Base delay for exponential backoff (seconds)
+RETRY_MAX_DELAY = 60                 # Maximum delay between retries (seconds)
 
-# Polling Configuration (for IN_QUEUE jobs)
-POLL_INTERVAL_INITIAL = 3            # Initial poll interval (seconds)
-POLL_INTERVAL_MAX = 10               # Max poll interval (seconds)
-POLL_TIMEOUT_COLD_START = 480        # Total polling timeout for cold starts (8 minutes)
-POLL_TIMEOUT_WARM = 300              # Total polling timeout for warm workers (5 minutes)
+# Polling Configuration (for IN_QUEUE jobs) - Extended for heavy queue
+POLL_INTERVAL_INITIAL = 2            # Start polling quickly
+POLL_INTERVAL_MAX = 15               # Max poll interval (seconds)
+POLL_TIMEOUT_COLD_START = 1200       # Total polling timeout for cold starts (20 minutes)
+POLL_TIMEOUT_WARM = 900              # Total polling timeout for warm workers (15 minutes)
+POLL_TIMEOUT_HEAVY_LOAD = 1800       # Total polling timeout under heavy load (30 minutes)
 
 # Cold Start Detection
 COLD_START_INDICATORS = ["IN_QUEUE", "IN_PROGRESS"]
 COLD_START_WAIT_THRESHOLD = 30       # If queued for 30+ seconds, likely cold start
+
+# =============================================================================
+# PROCESSING TIME TRACKING (for ETA calculations)
+# =============================================================================
+
+# Rolling average of processing times (in seconds)
+processing_times_history: list = []
+MAX_HISTORY_SIZE = 100  # Keep last 100 processing times
+
+# Average times by operation type (defaults, updated dynamically)
+avg_processing_times = {
+    "image": 15.0,      # Average time to process single image
+    "pdf_page": 20.0,   # Average time to process one PDF page
+    "structured": 25.0, # Average time for structured extraction
+}
+
+def record_processing_time(operation_type: str, duration: float):
+    """Record a processing time for ETA calculations."""
+    global processing_times_history, avg_processing_times
+    
+    processing_times_history.append({
+        "type": operation_type,
+        "duration": duration,
+        "timestamp": time.time()
+    })
+    
+    # Keep only recent history
+    if len(processing_times_history) > MAX_HISTORY_SIZE:
+        processing_times_history = processing_times_history[-MAX_HISTORY_SIZE:]
+    
+    # Update rolling average for this operation type
+    type_times = [p["duration"] for p in processing_times_history if p["type"] == operation_type]
+    if type_times:
+        avg_processing_times[operation_type] = sum(type_times) / len(type_times)
+
+def get_avg_processing_time(operation_type: str) -> float:
+    """Get average processing time for an operation type."""
+    return avg_processing_times.get(operation_type, 20.0)
 
 # Default OCR Prompt
 DEFAULT_OCR_PROMPT = """Extract all Arabic text from this image with maximum accuracy.
@@ -284,7 +323,10 @@ class RunPodClient:
         }
         
         is_cold = self._is_cold_start_likely()
-        poll_timeout = POLL_TIMEOUT_COLD_START if is_cold else POLL_TIMEOUT_WARM
+        
+        # Use the longest timeout to ensure we never give up prematurely
+        # User experience is better with a long wait than a timeout error
+        poll_timeout = POLL_TIMEOUT_HEAVY_LOAD  # Always use max timeout (30 min)
         
         prefix = f"[{page_info}] " if page_info else ""
         print(f"{prefix}Calling RunPod (cold_start_likely={is_cold}, poll_timeout={poll_timeout}s)")
@@ -429,7 +471,7 @@ class RunPodClient:
             await asyncio.sleep(poll_interval)
         
         print(f"{prefix}Polling timed out after {timeout}s ({poll_count} polls)")
-        return {"error": "Processing timed out - please try again", "status": "TIMEOUT"}
+        return {"error": "Processing took too long due to high server load. Please try again in a few minutes.", "status": "TIMEOUT"}
 
 
 # Global RunPod client instance
@@ -913,6 +955,171 @@ async def health_check():
     }
 
 
+# =============================================================================
+# QUEUE STATUS & ETA ENDPOINT
+# =============================================================================
+
+class QueueStatusResponse(BaseModel):
+    queue_length: int
+    workers_running: int
+    workers_total: int
+    estimated_wait_seconds: int
+    estimated_wait_display: str
+    avg_processing_time: float
+    status: str  # "low_load", "moderate_load", "high_load", "very_high_load"
+    message: str
+
+
+@app.get("/api/queue-status", response_model=QueueStatusResponse)
+async def get_queue_status(operation_type: str = "image"):
+    """
+    Get current RunPod queue status and estimated wait time.
+    
+    Args:
+        operation_type: "image", "pdf_page", or "structured"
+    
+    Returns:
+        Queue status with estimated wait time
+    """
+    try:
+        if not RUNPOD_ENDPOINT or not RUNPOD_API_KEY:
+            return QueueStatusResponse(
+                queue_length=0,
+                workers_running=0,
+                workers_total=3,
+                estimated_wait_seconds=15,
+                estimated_wait_display="~15 seconds",
+                avg_processing_time=get_avg_processing_time(operation_type),
+                status="unknown",
+                message="Queue status unavailable"
+            )
+        
+        # Query RunPod for queue status
+        queue_info = await get_runpod_queue_status()
+        
+        queue_length = queue_info.get("queue_length", 0)
+        workers_running = queue_info.get("workers_running", 0)
+        workers_total = queue_info.get("workers_total", 3)
+        
+        # Get average processing time for this operation type
+        avg_time = get_avg_processing_time(operation_type)
+        
+        # Calculate estimated wait time
+        # If queue is empty and workers available, minimal wait
+        if queue_length == 0 and workers_running < workers_total:
+            estimated_wait = int(avg_time)
+            status = "low_load"
+            message = "Servers ready - processing will start immediately"
+        elif queue_length == 0:
+            # All workers busy but no queue
+            estimated_wait = int(avg_time * 1.5)
+            status = "low_load"
+            message = "Servers busy - short wait expected"
+        elif queue_length <= 2:
+            # Small queue
+            estimated_wait = int((queue_length + 1) * avg_time)
+            status = "moderate_load"
+            message = f"{queue_length} request(s) ahead of you"
+        elif queue_length <= 5:
+            # Moderate queue
+            estimated_wait = int((queue_length + 1) * avg_time * 1.2)  # Add buffer
+            status = "high_load"
+            message = f"{queue_length} requests in queue - please be patient"
+        else:
+            # Heavy load
+            estimated_wait = int((queue_length + 1) * avg_time * 1.5)  # Add larger buffer
+            status = "very_high_load"
+            message = f"High traffic ({queue_length} in queue) - longer wait expected"
+        
+        # Format display string
+        if estimated_wait < 60:
+            display = f"~{estimated_wait} seconds"
+        elif estimated_wait < 120:
+            display = "~1-2 minutes"
+        elif estimated_wait < 300:
+            minutes = estimated_wait // 60
+            display = f"~{minutes}-{minutes+1} minutes"
+        elif estimated_wait < 600:
+            display = "~5-10 minutes"
+        elif estimated_wait < 1200:
+            display = "~10-20 minutes"
+        else:
+            display = "~20+ minutes"
+        
+        return QueueStatusResponse(
+            queue_length=queue_length,
+            workers_running=workers_running,
+            workers_total=workers_total,
+            estimated_wait_seconds=estimated_wait,
+            estimated_wait_display=display,
+            avg_processing_time=avg_time,
+            status=status,
+            message=message
+        )
+        
+    except Exception as e:
+        print(f"Queue status error: {e}")
+        # Return safe defaults
+        return QueueStatusResponse(
+            queue_length=0,
+            workers_running=0,
+            workers_total=3,
+            estimated_wait_seconds=30,
+            estimated_wait_display="~30 seconds",
+            avg_processing_time=get_avg_processing_time(operation_type),
+            status="unknown",
+            message="Processing will begin shortly"
+        )
+
+
+async def get_runpod_queue_status() -> dict:
+    """Query RunPod API for current queue status."""
+    try:
+        if not RUNPOD_ENDPOINT or not RUNPOD_API_KEY:
+            return {"queue_length": 0, "workers_running": 0, "workers_total": 3}
+        
+        # Extract endpoint ID from URL
+        # URL format: https://api.runpod.ai/v2/{endpoint_id}/...
+        import re
+        match = re.search(r'/v2/([a-zA-Z0-9]+)/', RUNPOD_ENDPOINT)
+        if not match:
+            return {"queue_length": 0, "workers_running": 0, "workers_total": 3}
+        
+        endpoint_id = match.group(1)
+        
+        # Query RunPod health endpoint for queue info
+        health_url = f"https://api.runpod.ai/v2/{endpoint_id}/health"
+        
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.get(
+                health_url,
+                headers={"Authorization": f"Bearer {RUNPOD_API_KEY}"}
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                # RunPod health response includes workers and jobs info
+                workers = data.get("workers", {})
+                jobs = data.get("jobs", {})
+                
+                return {
+                    "queue_length": jobs.get("inQueue", 0) + jobs.get("inProgress", 0),
+                    "workers_running": workers.get("running", 0),
+                    "workers_total": workers.get("ready", 0) + workers.get("running", 0),
+                    "workers_idle": workers.get("idle", 0),
+                    "jobs_completed": jobs.get("completed", 0),
+                    "jobs_failed": jobs.get("failed", 0)
+                }
+            else:
+                print(f"RunPod health check returned {response.status_code}")
+                return {"queue_length": 0, "workers_running": 0, "workers_total": 3}
+                
+    except Exception as e:
+        print(f"Error getting RunPod queue status: {e}")
+        return {"queue_length": 0, "workers_running": 0, "workers_total": 3}
+
+
 @app.get("/api/prompt")
 async def get_default_prompt():
     return {"default_prompt": DEFAULT_OCR_PROMPT}
@@ -1221,14 +1428,17 @@ async def process_ocr(
         
         # Call RunPod with retry logic
         result, success = await runpod_client.call_runpod(payload)
-        
+
         processing_time = time.time() - start_time
         
+        # Record processing time for ETA calculations
+        record_processing_time("image", processing_time)
+
         if success and result.get("status") == "COMPLETED":
             output = result.get("output", {}) or {}
             extracted_text = output.get("text", "")
             token_confidence = output.get("token_confidence")
-            
+
             if not extracted_text:
                 extracted_text = "No text extracted from image"
 
@@ -2311,17 +2521,20 @@ async def process_structured_ocr(
         
         # Call RunPod
         result, success = await runpod_client.call_runpod(payload, "structured")
-        
+
         processing_time = time.time() - start_time
         
+        # Record processing time for ETA calculations
+        record_processing_time("structured", processing_time)
+
         if success and result.get("status") == "COMPLETED":
             output = result.get("output", {}) or {}
             raw_text = output.get("text", "")
             token_confidence = output.get("token_confidence")
-            
+
             if not raw_text:
                 raw_text = ""
-            
+
             # Parse structured data from response using robust parser
             structured_data = None
             parsing_successful = False
