@@ -522,6 +522,65 @@ export default function Home() {
 
         {/* Signed In View */}
         <SignedIn>
+          {/* Processing Status Banner - STICKY AT TOP */}
+          {isProcessing && (
+            <div className="sticky top-0 z-50 -mx-4 px-4 mb-6">
+              <div className="bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-2xl p-4 shadow-lg">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 bg-white/20 rounded-xl flex items-center justify-center">
+                      <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                      </svg>
+                    </div>
+                    <div>
+                      <div className="font-semibold">
+                        {isPDF ? `Processing PDF (${pdfProcessedCount}/${pdfTotalPages || '?'} pages)` : 
+                         structuredMode ? 'Extracting Form Data' : 'Processing Image'}
+                      </div>
+                      <div className="text-sm text-blue-100">
+                        {queueStatus?.message || 'Please wait...'}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-2xl font-mono font-bold">
+                      {Math.floor(elapsedTime / 60)}:{String(elapsedTime % 60).padStart(2, '0')}
+                    </div>
+                    <div className="text-sm text-blue-100">
+                      {queueStatus ? `Est: ${queueStatus.estimated_wait_display}` : 'Calculating...'}
+                    </div>
+                  </div>
+                </div>
+                {queueStatus && (
+                  <div className="mt-3">
+                    <div className="flex items-center justify-between text-xs text-blue-100 mb-1">
+                      <span>Progress</span>
+                      {queueStatus.queue_length > 0 && (
+                        <span className={`px-2 py-0.5 rounded-full ${
+                          queueStatus.status === 'very_high_load' ? 'bg-red-500/30' :
+                          queueStatus.status === 'high_load' ? 'bg-amber-500/30' :
+                          'bg-white/20'
+                        }`}>
+                          {queueStatus.queue_length} in queue
+                        </span>
+                      )}
+                    </div>
+                    <div className="w-full bg-white/20 rounded-full h-2">
+                      <div 
+                        className="bg-white h-2 rounded-full transition-all duration-1000"
+                        style={{ 
+                          width: `${Math.min(100, (elapsedTime / Math.max(queueStatus.estimated_wait_seconds, 1)) * 100)}%` 
+                        }}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+          
           {/* Main Content - Conditional Layout */}
           {isPDF && pdfTotalPages > 0 ? (
             // PDF Processing View
@@ -634,52 +693,6 @@ export default function Home() {
                       structuredMode ? 'Extract Form Data' : `Process ${isPDF ? 'PDF' : 'Image'}`
                     )}
                   </button>
-                  
-                  {/* Processing Status & ETA */}
-                  {isProcessing && (
-                    <div className="bg-blue-50 border border-blue-100 rounded-xl p-4 space-y-2">
-                      <div className="flex items-center justify-between">
-                        <span className="text-sm font-medium text-blue-900">
-                          <Clock className="w-4 h-4 inline mr-1.5" />
-                          Processing
-                        </span>
-                        <span className="text-sm font-mono text-blue-700">
-                          {Math.floor(elapsedTime / 60)}:{String(elapsedTime % 60).padStart(2, '0')}
-                        </span>
-                      </div>
-                      
-                      {queueStatus && (
-                        <>
-                          <div className="text-xs text-blue-700">
-                            {queueStatus.message}
-                          </div>
-                          <div className="flex items-center justify-between text-xs">
-                            <span className="text-blue-600">
-                              Estimated: {queueStatus.estimated_wait_display}
-                            </span>
-                            {queueStatus.queue_length > 0 && (
-                              <span className={`px-2 py-0.5 rounded-full ${
-                                queueStatus.status === 'very_high_load' ? 'bg-red-100 text-red-700' :
-                                queueStatus.status === 'high_load' ? 'bg-amber-100 text-amber-700' :
-                                queueStatus.status === 'moderate_load' ? 'bg-yellow-100 text-yellow-700' :
-                                'bg-green-100 text-green-700'
-                              }`}>
-                                {queueStatus.queue_length} in queue
-                              </span>
-                            )}
-                          </div>
-                          <div className="w-full bg-blue-200 rounded-full h-1.5">
-                            <div 
-                              className="bg-blue-600 h-1.5 rounded-full transition-all duration-1000"
-                              style={{ 
-                                width: `${Math.min(100, (elapsedTime / queueStatus.estimated_wait_seconds) * 100)}%` 
-                              }}
-                            />
-                          </div>
-                        </>
-                      )}
-                    </div>
-                  )}
 
                   {selectedImage && (
                     <button
