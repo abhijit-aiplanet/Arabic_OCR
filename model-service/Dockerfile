@@ -1,6 +1,6 @@
 # RunPod Dockerfile for AIN Vision Language Model OCR
 # Using RunPod's Python base with CUDA support
-# Build trigger: 2025-01-13-v1 (Pre-baked model for faster cold starts)
+# Build trigger: 2025-01-13-v2 (Pre-baked model for faster cold starts)
 FROM runpod/base:0.4.0-cuda11.8.0
 
 # Set working directory
@@ -9,8 +9,6 @@ WORKDIR /app
 # =============================================================================
 # ENVIRONMENT VARIABLES FOR HUGGINGFACE CACHE
 # =============================================================================
-# Set HuggingFace cache directory inside the container
-# This ensures the pre-downloaded model is used at runtime
 ENV HF_HOME=/app/hf_cache
 ENV TRANSFORMERS_CACHE=/app/hf_cache
 ENV HUGGINGFACE_HUB_CACHE=/app/hf_cache
@@ -28,52 +26,44 @@ COPY requirements.txt .
 RUN pip3 install --no-cache-dir --force-reinstall -r requirements.txt
 
 # Try to install Flash Attention 2 (optional - will use SDPA fallback if fails)
-# This requires ninja for faster compilation
 RUN pip3 install --no-cache-dir ninja packaging || true
 RUN pip3 install --no-cache-dir flash-attn --no-build-isolation || echo "Flash Attention 2 not installed - using SDPA fallback"
 
 # =============================================================================
 # PRE-DOWNLOAD MODEL DURING BUILD (CRITICAL FOR FAST COLD STARTS)
 # =============================================================================
-# This downloads the ~7GB AIN model during Docker build, NOT at runtime
-# Cold start goes from ~180s (download+load) to ~30-60s (just load)
+# Create download script for cleaner execution
+RUN echo '#!/usr/bin/env python3\n\
+import os\n\
+os.environ["HF_HOME"] = "/app/hf_cache"\n\
+os.environ["TRANSFORMERS_CACHE"] = "/app/hf_cache"\n\
+\n\
+from huggingface_hub import snapshot_download\n\
+\n\
+model_id = "MBZUAI/AIN"\n\
+cache_dir = "/app/hf_cache"\n\
+\n\
+print("📥 Downloading AIN model files...")\n\
+snapshot_download(model_id, cache_dir=cache_dir)\n\
+print("✅ Model download complete!")\n\
+' > /app/download_model.py
 
-RUN echo "📥 Pre-downloading AIN model for faster cold starts..." && \
-    python3 -c "\
-from transformers import Qwen2VLForConditionalGeneration, AutoProcessor, AutoTokenizer; \
-from huggingface_hub import snapshot_download; \
-import os; \
-\
-model_id = 'MBZUAI/AIN'; \
-cache_dir = '/app/hf_cache'; \
-\
-print('Downloading model files...'); \
-snapshot_download(model_id, cache_dir=cache_dir); \
-\
-print('Verifying model can be loaded...'); \
-model = Qwen2VLForConditionalGeneration.from_pretrained( \
-    model_id, \
-    cache_dir=cache_dir, \
-    trust_remote_code=True, \
-    torch_dtype='auto', \
-    device_map='cpu' \
-); \
-del model; \
-\
-print('Verifying processor can be loaded...'); \
-try: \
-    processor = AutoProcessor.from_pretrained(model_id, cache_dir=cache_dir, trust_remote_code=True); \
-except: \
-    tokenizer = AutoTokenizer.from_pretrained(model_id, cache_dir=cache_dir, trust_remote_code=True); \
-\
-print('✅ Model pre-download complete!'); \
-" && echo "✅ Model baked into image successfully!"
+# Run the download script
+RUN python3 /app/download_model.py
+
+# Verify model files exist
+RUN echo "📊 Verifying model cache:" && \
+    ls -la /app/hf_cache/ && \
+    du -sh /app/hf_cache/ && \
+    echo "✅ Model files verified!"
 
 # Copy handler code
 COPY handler.py .
 
+# Cleanup download script
+RUN rm -f /app/download_model.py
+
 # =============================================================================
 # RUNTIME
 # =============================================================================
-# Set the handler - model loading will now be fast since files are local
 CMD ["python3", "-u", "handler.py"]
