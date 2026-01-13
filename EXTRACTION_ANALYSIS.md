@@ -230,7 +230,6 @@ Look for section header patterns:
 3. **Handle items without values** as standalone list entries
 4. **Strip trailing punctuation** from list items
 5. **Group items by section**
-
 ---
 
 ## Generalization Strategy
