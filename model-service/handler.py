@@ -1,11 +1,12 @@
 """
 RunPod Handler for AIN Vision Language Model OCR
 This service runs on RunPod GPU instances and processes OCR requests
-Build trigger: 2025-01-11-v2 (Flash Attention 2 + Improved Structured Extraction)
+Build trigger: 2025-01-13-v1 (Pre-baked model for faster cold starts)
 """
 
 import runpod
 import torch
+import os
 from PIL import Image, ImageEnhance, ImageFilter
 from qwen_vl_utils import process_vision_info
 from transformers import Qwen2VLForConditionalGeneration, AutoProcessor, AutoTokenizer
@@ -17,8 +18,19 @@ import numpy as np
 import cv2
 from scipy import ndimage
 
-# Model configuration
+# =============================================================================
+# MODEL CONFIGURATION - Uses pre-downloaded model from Docker image
+# =============================================================================
 MODEL_ID = "MBZUAI/AIN"
+
+# HuggingFace cache directory - matches Dockerfile ENV
+# Model is pre-downloaded here during Docker build for fast cold starts
+HF_CACHE_DIR = os.environ.get('HF_HOME', '/app/hf_cache')
+
+# Ensure environment variables are set (redundant but safe)
+os.environ['HF_HOME'] = HF_CACHE_DIR
+os.environ['TRANSFORMERS_CACHE'] = HF_CACHE_DIR
+os.environ['HUGGINGFACE_HUB_CACHE'] = HF_CACHE_DIR
 
 # Image resolution settings - Balanced for quality and speed
 MIN_PIXELS = 256 * 28 * 28  # 200,704 - Keep same for small images
@@ -42,13 +54,27 @@ def check_flash_attn_available():
 
 
 def load_model():
-    """Load the Arabic VLM model and processor with optimized attention for GPU."""
+    """Load the Arabic VLM model and processor with optimized attention for GPU.
+    
+    Model is PRE-DOWNLOADED during Docker build, so this only loads from disk.
+    Cold start time: ~30-60s (vs ~180s if downloading from HuggingFace)
+    """
     global model, processor
     
     if model is not None and processor is not None:
         return
     
-    print("🔄 Loading Arabic VLM model on RunPod...")
+    print("🔄 Loading Arabic VLM model from local cache...")
+    print(f"   Cache directory: {HF_CACHE_DIR}")
+    
+    # Check if model is pre-downloaded
+    if os.path.exists(HF_CACHE_DIR):
+        cache_size = sum(os.path.getsize(os.path.join(dirpath, filename)) 
+                        for dirpath, dirnames, filenames in os.walk(HF_CACHE_DIR) 
+                        for filename in filenames) / (1024**3)
+        print(f"   Cache size: {cache_size:.2f} GB")
+    else:
+        print("   ⚠️ Cache directory not found - model will be downloaded")
     
     try:
         # Use GPU if available
@@ -80,13 +106,16 @@ def load_model():
             print("⚠️ Using CPU (not recommended)")
         
         # Load model with Flash Attention 2 for A100
+        # Uses pre-downloaded model from HF_CACHE_DIR (set during Docker build)
         print(f"🔧 Loading model with attention implementation: {attn_implementation}")
         loaded_model = Qwen2VLForConditionalGeneration.from_pretrained(
             MODEL_ID,
             torch_dtype=torch_dtype,
             device_map=device_map,
             trust_remote_code=True,
-            attn_implementation=attn_implementation,  # Flash Attention 2 for A100!
+            attn_implementation=attn_implementation,
+            cache_dir=HF_CACHE_DIR,  # Use pre-downloaded model
+            local_files_only=False,   # Allow download as fallback if cache missing
         )
         
         # Load processor
@@ -94,13 +123,18 @@ def load_model():
             loaded_processor = AutoProcessor.from_pretrained(
                 MODEL_ID,
                 trust_remote_code=True,
+                cache_dir=HF_CACHE_DIR,  # Use pre-downloaded processor
             )
             print("✅ Processor loaded successfully (standard method)")
         except ValueError as e:
             if "size must contain 'shortest_edge' and 'longest_edge' keys" in str(e):
                 print("⚠️ Standard processor loading failed, trying manual construction...")
                 # Manually construct processor
-                tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=True)
+                tokenizer = AutoTokenizer.from_pretrained(
+                    MODEL_ID, 
+                    trust_remote_code=True,
+                    cache_dir=HF_CACHE_DIR,
+                )
                 
                 image_processor = Qwen2VLImageProcessor(
                     size={"shortest_edge": 224, "longest_edge": 1120},
