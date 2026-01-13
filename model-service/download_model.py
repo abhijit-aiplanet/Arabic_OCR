@@ -2,6 +2,8 @@
 """
 Pre-download AIN model during Docker build for faster cold starts.
 This script is run during Docker build, NOT at runtime.
+
+OPTIMIZED: Only downloads necessary files (~7-8GB instead of 61GB)
 """
 
 import os
@@ -26,16 +28,38 @@ print()
 # Create cache directory if it doesn't exist
 os.makedirs(CACHE_DIR, exist_ok=True)
 
-print("Downloading model files from HuggingFace Hub...")
-print("This may take several minutes (~7GB)...")
+print("Downloading ONLY necessary model files...")
+print("Skipping: fp32 weights, GGUF, GGML, docs (saves ~50GB)")
 print()
 
 try:
-    # Download all model files
+    # Download only necessary files - skip large unnecessary formats
     local_dir = snapshot_download(
         repo_id=MODEL_ID,
         cache_dir=CACHE_DIR,
         resume_download=True,
+        # Only download essential files for inference
+        ignore_patterns=[
+            # Skip fp32 weights (we use bf16/fp16)
+            "*fp32*",
+            "*FP32*",
+            "*.fp32.*",
+            # Skip alternative formats
+            "*.gguf",
+            "*.ggml", 
+            "*.ggmlv3",
+            "*.bin.index.json",  # Old format index
+            # Skip consolidated/merged checkpoints if separate shards exist
+            "consolidated*",
+            "pytorch_model.bin",  # Old single-file format (use safetensors)
+            # Skip documentation and non-essential files
+            "*.md",
+            "*.txt",
+            "*.pdf",
+            # Skip original/training checkpoints
+            "original/",
+            "training/",
+        ],
     )
     
     print()
@@ -46,15 +70,27 @@ try:
     print("📊 Verifying downloaded files:")
     total_size = 0
     file_count = 0
+    safetensor_count = 0
     for root, dirs, files in os.walk(CACHE_DIR):
         for f in files:
             filepath = os.path.join(root, f)
             size = os.path.getsize(filepath)
             total_size += size
             file_count += 1
+            if f.endswith('.safetensors'):
+                safetensor_count += 1
     
+    size_gb = total_size / (1024**3)
     print(f"   Files: {file_count}")
-    print(f"   Total size: {total_size / (1024**3):.2f} GB")
+    print(f"   Safetensor shards: {safetensor_count}")
+    print(f"   Total size: {size_gb:.2f} GB")
+    
+    # Warn if size is still too large
+    if size_gb > 15:
+        print()
+        print(f"⚠️  WARNING: Download size ({size_gb:.1f}GB) larger than expected (~7-8GB)")
+        print("   This may include unnecessary files")
+    
     print()
     print("✅ MODEL PRE-DOWNLOAD COMPLETE!")
     print("=" * 60)

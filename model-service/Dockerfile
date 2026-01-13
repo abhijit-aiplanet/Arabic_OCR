@@ -1,6 +1,6 @@
 # RunPod Dockerfile for AIN Vision Language Model OCR
 # Using RunPod's Python base with CUDA support
-# Build trigger: 2025-01-13-v3 (Pre-baked model for faster cold starts)
+# Build trigger: 2025-01-13-v4 (Optimized download - skip fp32/GGUF, ~7GB instead of 61GB)
 FROM runpod/base:0.4.0-cuda11.8.0
 
 # Set working directory
