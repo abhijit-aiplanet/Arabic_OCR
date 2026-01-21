@@ -1,8 +1,8 @@
 # RunPod Dockerfile for Qwen 2.5 72B Reasoning LLM
 # Used for agentic OCR orchestration - analysis, region estimation, merging
-# Build trigger: 2025-01-08-v1
+# Build trigger: 2025-01-21-v2
 
-FROM runpod/pytorch:2.1.1-py3.10-cuda11.8.0
+FROM runpod/pytorch:2.2.1-py3.10-cuda12.1.1-devel-ubuntu22.04
 
 WORKDIR /app
 
