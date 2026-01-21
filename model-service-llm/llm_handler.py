@@ -7,7 +7,10 @@ This service provides reasoning capabilities for the agentic OCR system:
 - Merging original and refined OCR results
 - Making intelligent decisions about final output
 
-Build trigger: 2025-01-08-v1
+Build trigger: 2025-01-21-v3-network-volume
+
+SETUP: Requires a Network Volume mounted at /runpod-volume with the model
+pre-downloaded to /runpod-volume/huggingface. See README.md for setup.
 """
 
 import runpod
@@ -21,19 +24,25 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 # MODEL CONFIGURATION
 # =============================================================================
 
-# Model selection (match download_model.py)
+# Model selection - Qwen 2.5 32B for best reasoning quality
 MODEL_ID = "Qwen/Qwen2.5-32B-Instruct"
 
-# For 72B AWQ quantized (uncomment if using)
-# MODEL_ID = "Qwen/Qwen2.5-72B-Instruct-AWQ"
+# Alternative models (uncomment to use):
+# MODEL_ID = "Qwen/Qwen2.5-72B-Instruct-AWQ"  # 72B AWQ quantized
+# MODEL_ID = "Qwen/Qwen2.5-7B-Instruct"       # Smaller, faster
 
-# For development/testing
-# MODEL_ID = "Qwen/Qwen2.5-7B-Instruct"
+# =============================================================================
+# NETWORK VOLUME CONFIGURATION
+# =============================================================================
 
-# HuggingFace cache directory
-HF_CACHE_DIR = os.environ.get('HF_HOME', '/app/hf_cache')
+# Network Volume mount path (standard RunPod path)
+NETWORK_VOLUME_PATH = "/runpod-volume"
+HF_CACHE_DIR = os.path.join(NETWORK_VOLUME_PATH, "huggingface")
+
+# Set environment variables for HuggingFace
 os.environ['HF_HOME'] = HF_CACHE_DIR
 os.environ['TRANSFORMERS_CACHE'] = HF_CACHE_DIR
+os.environ['HUGGINGFACE_HUB_CACHE'] = HF_CACHE_DIR
 
 # Generation settings
 DEFAULT_MAX_TOKENS = 4096
@@ -43,6 +52,30 @@ DEFAULT_TOP_P = 0.9
 # Global model and tokenizer
 model = None
 tokenizer = None
+
+
+# =============================================================================
+# NETWORK VOLUME CHECK
+# =============================================================================
+
+def check_network_volume():
+    """Check if network volume is mounted and create cache directory."""
+    if not os.path.exists(NETWORK_VOLUME_PATH):
+        print(f"WARNING: Network volume not mounted at {NETWORK_VOLUME_PATH}")
+        print("Model will be downloaded to container (slow, not persistent)")
+        # Fallback to container storage
+        fallback_dir = "/app/hf_cache"
+        os.makedirs(fallback_dir, exist_ok=True)
+        os.environ['HF_HOME'] = fallback_dir
+        os.environ['TRANSFORMERS_CACHE'] = fallback_dir
+        os.environ['HUGGINGFACE_HUB_CACHE'] = fallback_dir
+        return fallback_dir
+    
+    # Create cache directory on network volume
+    os.makedirs(HF_CACHE_DIR, exist_ok=True)
+    print(f"Network volume mounted at {NETWORK_VOLUME_PATH}")
+    print(f"Model cache directory: {HF_CACHE_DIR}")
+    return HF_CACHE_DIR
 
 
 # =============================================================================
@@ -57,9 +90,12 @@ def load_model():
         print("Model already loaded")
         return
     
+    # Check network volume
+    cache_dir = check_network_volume()
+    
     print(f"=" * 60)
     print(f"Loading model: {MODEL_ID}")
-    print(f"Cache directory: {HF_CACHE_DIR}")
+    print(f"Cache directory: {cache_dir}")
     print(f"=" * 60)
     
     # Check CUDA availability
@@ -72,9 +108,10 @@ def load_model():
     try:
         # Load tokenizer
         print("\nLoading tokenizer...")
+        print("(This may download the model on first run - please wait)")
         tokenizer = AutoTokenizer.from_pretrained(
             MODEL_ID,
-            cache_dir=HF_CACHE_DIR,
+            cache_dir=cache_dir,
             trust_remote_code=True
         )
         
@@ -83,7 +120,8 @@ def load_model():
             tokenizer.pad_token = tokenizer.eos_token
         
         # Load model with automatic device mapping
-        print("\nLoading model...")
+        print("\nLoading model weights...")
+        print("(First run will download ~60GB - subsequent runs load from cache)")
         
         # Try to load with bitsandbytes 4-bit quantization for memory efficiency
         try:
@@ -98,7 +136,7 @@ def load_model():
             
             model = AutoModelForCausalLM.from_pretrained(
                 MODEL_ID,
-                cache_dir=HF_CACHE_DIR,
+                cache_dir=cache_dir,
                 device_map="auto",
                 quantization_config=quantization_config,
                 trust_remote_code=True,
@@ -112,7 +150,7 @@ def load_model():
             
             model = AutoModelForCausalLM.from_pretrained(
                 MODEL_ID,
-                cache_dir=HF_CACHE_DIR,
+                cache_dir=cache_dir,
                 device_map="auto",
                 trust_remote_code=True,
                 torch_dtype="auto",
