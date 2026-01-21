@@ -1,5 +1,5 @@
 """
-RunPod Handler for Qwen 2.5 Reasoning LLM
+RunPod Handler for Qwen 2.5 7B Reasoning LLM
 
 This service provides reasoning capabilities for the agentic OCR system:
 - Analyzing OCR output for issues
@@ -7,10 +7,10 @@ This service provides reasoning capabilities for the agentic OCR system:
 - Merging original and refined OCR results
 - Making intelligent decisions about final output
 
-Build trigger: 2025-01-21-v3-network-volume
+Build trigger: 2026-01-21-v4-7b-model
 
-SETUP: Requires a Network Volume mounted at /runpod-volume with the model
-pre-downloaded to /runpod-volume/huggingface. See README.md for setup.
+SETUP: Requires a Network Volume mounted at /runpod-volume.
+Model (~14GB) will be downloaded to network volume on first run.
 """
 
 import runpod
@@ -24,12 +24,13 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 # MODEL CONFIGURATION
 # =============================================================================
 
-# Model selection - Qwen 2.5 32B for best reasoning quality
-MODEL_ID = "Qwen/Qwen2.5-32B-Instruct"
+# Model selection - Qwen 2.5 7B for reliable, fast reasoning
+# 7B model is stable, fits easily in 48GB VRAM, and is still excellent for reasoning
+MODEL_ID = "Qwen/Qwen2.5-7B-Instruct"
 
-# Alternative models (uncomment to use):
-# MODEL_ID = "Qwen/Qwen2.5-72B-Instruct-AWQ"  # 72B AWQ quantized
-# MODEL_ID = "Qwen/Qwen2.5-7B-Instruct"       # Smaller, faster
+# Alternative models (for larger GPUs):
+# MODEL_ID = "Qwen/Qwen2.5-32B-Instruct"       # Needs 48GB+ VRAM with quantization
+# MODEL_ID = "Qwen/Qwen2.5-72B-Instruct-AWQ"   # Needs 80GB+ VRAM
 
 # =============================================================================
 # NETWORK VOLUME CONFIGURATION
@@ -121,7 +122,7 @@ def load_model():
         
         # Load model with automatic device mapping
         print("\nLoading model weights...")
-        print("(First run will download ~60GB - subsequent runs load from cache)")
+        print("(First run will download ~14GB for 7B model - subsequent runs load from cache)")
         
         # Try to load with bitsandbytes 4-bit quantization for memory efficiency
         try:
@@ -380,13 +381,32 @@ def handler(job):
 # =============================================================================
 
 if __name__ == "__main__":
-    print("\n" + "=" * 60)
-    print("Qwen 2.5 Reasoning LLM Service for Agentic OCR")
-    print("=" * 60 + "\n")
-    
-    # Load model on startup
-    load_model()
-    
-    # Start RunPod handler
-    print("Starting RunPod handler...")
-    runpod.serverless.start({"handler": handler})
+    try:
+        print("\n" + "=" * 60)
+        print("Qwen 2.5 7B Reasoning LLM Service for Agentic OCR")
+        print("=" * 60 + "\n")
+        
+        print(f"Python version: {__import__('sys').version}")
+        print(f"Torch version: {torch.__version__}")
+        print(f"CUDA available: {torch.cuda.is_available()}")
+        if torch.cuda.is_available():
+            print(f"CUDA device: {torch.cuda.get_device_name(0)}")
+        
+        # Load model on startup
+        print("\nLoading model...")
+        load_model()
+        
+        # Start RunPod handler
+        print("Starting RunPod handler...")
+        runpod.serverless.start({"handler": handler})
+        
+    except Exception as e:
+        print(f"\n{'='*60}")
+        print(f"FATAL ERROR during startup:")
+        print(f"{'='*60}")
+        print(f"{type(e).__name__}: {e}")
+        traceback.print_exc()
+        print(f"{'='*60}")
+        # Exit with code 1 to signal failure
+        import sys
+        sys.exit(1)

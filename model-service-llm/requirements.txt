@@ -1,4 +1,4 @@
-# Qwen 2.5 72B LLM Service Dependencies
+# Qwen 2.5 LLM Service Dependencies
 # For agentic OCR reasoning tasks
 
 # RunPod SDK
@@ -8,21 +8,15 @@ runpod>=1.6.0
 torch>=2.1.0
 transformers>=4.37.0
 accelerate>=0.25.0
+
+# 4-bit quantization (optional, will gracefully fallback if unavailable)
 bitsandbytes>=0.41.0
+
+# Tokenizer dependencies
 sentencepiece>=0.1.99
 protobuf>=3.20.0
-
-# For efficient inference (optional but recommended)
-# vllm>=0.2.7  # Uncomment if vllm works on your setup
-
-# Auto-GPTQ for quantization (4-bit inference)
-auto-gptq>=0.5.0
-optimum>=1.14.0
 
 # Utilities
 huggingface_hub>=0.19.0
 safetensors>=0.4.0
 einops>=0.7.0
-
-# JSON parsing
-json5>=0.9.0

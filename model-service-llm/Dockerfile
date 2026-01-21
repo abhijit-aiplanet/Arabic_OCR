@@ -1,9 +1,9 @@
-# RunPod Dockerfile for Qwen 2.5 Reasoning LLM
+# RunPod Dockerfile for Qwen 2.5 7B Reasoning LLM
 # Used for agentic OCR orchestration - analysis, region estimation, merging
-# Build trigger: 2025-01-21-v3-network-volume
+# Build trigger: 2026-01-21-v4-7b-model
 #
 # SETUP: This container expects a Network Volume mounted at /runpod-volume
-# with the model pre-downloaded. See README.md for setup instructions.
+# Model will be downloaded on first run (~14GB for 7B model)
 
 FROM runpod/pytorch:2.2.1-py3.10-cuda12.1.1-devel-ubuntu22.04
 
@@ -16,30 +16,27 @@ WORKDIR /app
 ENV HF_HOME=/runpod-volume/huggingface
 ENV TRANSFORMERS_CACHE=/runpod-volume/huggingface
 ENV HUGGINGFACE_HUB_CACHE=/runpod-volume/huggingface
-
-# Update pip
-RUN python3 -m pip install --no-cache-dir --upgrade pip
+ENV PYTHONUNBUFFERED=1
 
 # =============================================================================
 # INSTALL DEPENDENCIES
 # =============================================================================
 
-# Copy requirements first (for Docker cache optimization)
-COPY requirements.txt .
+# Update pip
+RUN python3 -m pip install --no-cache-dir --upgrade pip
 
-# Install Python dependencies
+# Copy and install requirements
+COPY requirements.txt .
 RUN pip3 install --no-cache-dir -r requirements.txt
 
 # =============================================================================
-# COPY HANDLER AND DOWNLOAD SCRIPT
+# COPY HANDLER
 # =============================================================================
 
 COPY llm_handler.py .
-COPY download_model.py .
 
-# NOTE: Model is NOT downloaded during build.
-# It will be downloaded to Network Volume on first run, or you can
-# pre-download it using a GPU Pod. See README.md for instructions.
+# Verify Python syntax before container starts
+RUN python3 -m py_compile llm_handler.py && echo "Handler syntax OK"
 
 # =============================================================================
 # RUNTIME
