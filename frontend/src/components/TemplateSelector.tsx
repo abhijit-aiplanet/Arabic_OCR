@@ -2,10 +2,13 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import toast from 'react-hot-toast'
-import { Plus, RefreshCw, Trash2, FormInput, FileText, ChevronDown, ChevronUp } from 'lucide-react'
+import { Plus, RefreshCw, Trash2, FormInput, FileText, ChevronDown, ChevronUp, Zap } from 'lucide-react'
 import type { ContentType, OCRTemplate } from '@/lib/api'
 import { createTemplate, deleteTemplate, fetchPublicTemplates, fetchTemplates } from '@/lib/api'
 import TemplateBuilder from '@/components/TemplateBuilder'
+
+// OCR Mode types
+export type OCRMode = 'standard' | 'structured' | 'agentic'
 
 interface TemplateSelectorProps {
   authToken: string | null
@@ -15,6 +18,9 @@ interface TemplateSelectorProps {
   onContentTypeOverrideChange: (t: ContentType) => void
   structuredMode: boolean
   onStructuredModeChange: (enabled: boolean) => void
+  // New: Agentic mode
+  ocrMode?: OCRMode
+  onOCRModeChange?: (mode: OCRMode) => void
 }
 
 const CONTENT_TYPE_OPTIONS: ContentType[] = [
@@ -38,8 +44,22 @@ export default function TemplateSelector({
   contentTypeOverride,
   onContentTypeOverrideChange,
   structuredMode,
-  onStructuredModeChange
+  onStructuredModeChange,
+  ocrMode = 'standard',
+  onOCRModeChange
 }: TemplateSelectorProps) {
+  // Derive mode from props if onOCRModeChange is provided
+  const currentMode: OCRMode = onOCRModeChange 
+    ? ocrMode 
+    : (structuredMode ? 'structured' : 'standard')
+  
+  const handleModeChange = (mode: OCRMode) => {
+    if (onOCRModeChange) {
+      onOCRModeChange(mode)
+    }
+    // Also update structuredMode for backward compatibility
+    onStructuredModeChange(mode === 'structured')
+  }
   const [templates, setTemplates] = useState<OCRTemplate[]>([])
   const [publicTemplates, setPublicTemplates] = useState<OCRTemplate[]>([])
   const [isLoading, setIsLoading] = useState(false)
@@ -159,53 +179,95 @@ export default function TemplateSelector({
 
       <div className="p-5 space-y-4">
         {/* Mode Toggle */}
-        <div className="flex gap-3">
+        <div className="grid grid-cols-3 gap-2">
+          {/* Standard OCR */}
           <button
-            onClick={() => onStructuredModeChange(false)}
-            className={`flex-1 p-4 rounded-xl border-2 transition-all ${
-              !structuredMode 
+            onClick={() => handleModeChange('standard')}
+            className={`p-3 rounded-xl border-2 transition-all ${
+              currentMode === 'standard'
                 ? 'border-gray-900 bg-gray-50' 
                 : 'border-gray-100 hover:border-gray-200'
             }`}
           >
-            <div className="flex items-center gap-3">
+            <div className="flex flex-col items-center gap-2">
               <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${
-                !structuredMode ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-500'
+                currentMode === 'standard' ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-500'
               }`}>
                 <FileText className="w-5 h-5" />
               </div>
-              <div className="text-left">
-                <p className={`font-medium ${!structuredMode ? 'text-gray-900' : 'text-gray-700'}`}>
-                  Standard OCR
+              <div className="text-center">
+                <p className={`font-medium text-sm ${currentMode === 'standard' ? 'text-gray-900' : 'text-gray-700'}`}>
+                  Standard
                 </p>
-                <p className="text-xs text-gray-500">Extract all text as-is</p>
+                <p className="text-xs text-gray-500">Fast, all text</p>
               </div>
             </div>
           </button>
 
+          {/* Structured Extraction */}
           <button
-            onClick={() => onStructuredModeChange(true)}
-            className={`flex-1 p-4 rounded-xl border-2 transition-all ${
-              structuredMode 
+            onClick={() => handleModeChange('structured')}
+            className={`p-3 rounded-xl border-2 transition-all ${
+              currentMode === 'structured'
                 ? 'border-gray-900 bg-gray-50' 
                 : 'border-gray-100 hover:border-gray-200'
             }`}
           >
-            <div className="flex items-center gap-3">
+            <div className="flex flex-col items-center gap-2">
               <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${
-                structuredMode ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-500'
+                currentMode === 'structured' ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-500'
               }`}>
                 <FormInput className="w-5 h-5" />
               </div>
-              <div className="text-left">
-                <p className={`font-medium ${structuredMode ? 'text-gray-900' : 'text-gray-700'}`}>
-                  Structured Extraction
+              <div className="text-center">
+                <p className={`font-medium text-sm ${currentMode === 'structured' ? 'text-gray-900' : 'text-gray-700'}`}>
+                  Structured
                 </p>
-                <p className="text-xs text-gray-500">Extract key-value pairs</p>
+                <p className="text-xs text-gray-500">Key-value pairs</p>
+              </div>
+            </div>
+          </button>
+
+          {/* Agentic OCR */}
+          <button
+            onClick={() => handleModeChange('agentic')}
+            className={`p-3 rounded-xl border-2 transition-all ${
+              currentMode === 'agentic'
+                ? 'border-purple-600 bg-purple-50' 
+                : 'border-gray-100 hover:border-purple-200'
+            }`}
+          >
+            <div className="flex flex-col items-center gap-2">
+              <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${
+                currentMode === 'agentic' ? 'bg-purple-600 text-white' : 'bg-gray-100 text-gray-500'
+              }`}>
+                <Zap className="w-5 h-5" />
+              </div>
+              <div className="text-center">
+                <p className={`font-medium text-sm ${currentMode === 'agentic' ? 'text-purple-700' : 'text-gray-700'}`}>
+                  Agentic
+                </p>
+                <p className="text-xs text-gray-500">Multi-pass, best quality</p>
               </div>
             </div>
           </button>
         </div>
+
+        {/* Agentic mode info banner */}
+        {currentMode === 'agentic' && (
+          <div className="p-3 bg-purple-50 border border-purple-100 rounded-lg">
+            <div className="flex items-start gap-2">
+              <Zap className="w-4 h-4 text-purple-600 mt-0.5 flex-shrink-0" />
+              <div className="text-xs text-purple-700">
+                <p className="font-medium">Multi-pass Self-Correcting OCR</p>
+                <p className="mt-0.5 text-purple-600">
+                  Uses AI reasoning to identify and re-examine uncertain fields. 
+                  Takes 1-3 minutes but achieves highest accuracy on complex forms.
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Template Selection */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

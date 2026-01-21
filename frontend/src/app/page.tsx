@@ -15,6 +15,7 @@ import {
   processPDFOCR, 
   processStructuredOCR,
   processStructuredPDFOCR,
+  processAgenticOCR,
   createTemplate,
   getQueueStatus,
   PDFPageResult, 
@@ -25,8 +26,10 @@ import {
   type OCRConfidence,
   type StructuredExtractionData,
   type CreateTemplateRequest,
-  type QueueStatus
+  type QueueStatus,
+  type AgenticOCRResponse
 } from '@/lib/api'
+import type { OCRMode } from '@/components/TemplateSelector'
 import { getEffectivePrompt } from '@/lib/promptGenerator'
 import { parseStructuredOutput, type StructuredExtraction } from '@/lib/structuredParser'
 import toast from 'react-hot-toast'
@@ -73,6 +76,10 @@ export default function Home() {
   const [structuredMode, setStructuredMode] = useState(false)
   const [structuredData, setStructuredData] = useState<StructuredExtraction | null>(null)
   const [parsingSuccessful, setParsingSuccessful] = useState(false)
+  
+  // Agentic OCR mode
+  const [ocrMode, setOCRMode] = useState<OCRMode>('standard')
+  const [agenticResult, setAgenticResult] = useState<AgenticOCRResponse | null>(null)
   
   // Per-page structured data for PDFs
   const [perPageStructuredData, setPerPageStructuredData] = useState<Map<number, StructuredExtraction>>(new Map())
@@ -339,7 +346,72 @@ export default function Home() {
         )
         
         toast.success('PDF processing complete!', { id: loadingToast })
-      } else if (structuredMode) {
+      } else if (ocrMode === 'agentic') {
+        // Agentic OCR mode - multi-pass self-correcting
+        const loadingToast = toast.loading('Starting agentic OCR (this may take 1-3 minutes)...')
+        
+        try {
+          const result = await processAgenticOCR(
+            selectedImage,
+            { maxIterations: 3 },
+            token,
+            (message) => {
+              toast.loading(message, { id: loadingToast })
+            }
+          )
+          
+          if (result.status === 'success') {
+            // Store the agentic result
+            setAgenticResult(result)
+            setExtractedText(result.raw_text)
+            
+            // Convert to structured data format for display
+            const fieldsAsStructured: StructuredExtraction = {
+              form_title: 'Agentic OCR Extraction',
+              sections: [{
+                name: `Extracted Fields (${result.iterations_used} iterations)`,
+                fields: result.fields.map(f => ({
+                  label: f.field_name,
+                  value: f.value,
+                  type: 'text' as const
+                }))
+              }],
+              tables: [],
+              checkboxes: [],
+              raw_text: result.raw_text
+            }
+            
+            setStructuredData(fieldsAsStructured)
+            setParsingSuccessful(true)
+            
+            // Create confidence summary message
+            const { high, medium, low } = result.confidence_summary
+            const reviewCount = result.fields_needing_review.length
+            
+            let toastMsg = `Extracted ${result.fields.length} fields in ${result.processing_time_seconds.toFixed(1)}s`
+            if (reviewCount > 0) {
+              toastMsg += ` (${reviewCount} need review)`
+            }
+            
+            toast.success(toastMsg, { id: loadingToast, duration: 5000 })
+            
+            if (reviewCount > 0) {
+              toast(`Fields needing review: ${result.fields_needing_review.join(', ')}`, {
+                icon: '⚠️',
+                duration: 8000
+              })
+            }
+          } else {
+            throw new Error(result.error || 'Agentic OCR failed')
+          }
+        } catch (error: any) {
+          if (error.message?.includes('LLM endpoint')) {
+            toast.error('Agentic mode requires LLM service. Please configure or use Standard mode.', { id: loadingToast })
+          } else {
+            throw error
+          }
+        }
+      } else if (structuredMode || ocrMode === 'structured') {
         // Structured extraction mode
         const loadingToast = toast.loading('Extracting form data...')
         
@@ -737,6 +809,8 @@ export default function Home() {
                   onContentTypeOverrideChange={setContentTypeOverride}
                   structuredMode={structuredMode}
                   onStructuredModeChange={setStructuredMode}
+                  ocrMode={ocrMode}
+                  onOCRModeChange={setOCRMode}
                 />
 
                 {/* Advanced Settings - only show for standard mode */}
@@ -763,7 +837,9 @@ export default function Home() {
                         {isPDF ? `Processing (${pdfProcessedCount}/${pdfTotalPages || '?'})` : 'Processing...'}
                       </span>
                     ) : (
-                      structuredMode ? 'Extract Form Data' : `Process ${isPDF ? 'PDF' : 'Image'}`
+                      ocrMode === 'agentic' 
+                        ? 'Start Agentic OCR' 
+                        : (structuredMode ? 'Extract Form Data' : `Process ${isPDF ? 'PDF' : 'Image'}`)
                     )}
                   </button>
 
@@ -782,16 +858,54 @@ export default function Home() {
 
               {/* Right Column - Output */}
               <div>
-                {structuredMode ? (
-                  <StructuredExtractor
-                    imagePreview={imagePreview}
-                    structuredData={structuredData}
-                    isProcessing={isProcessing}
-                    parsingSuccessful={parsingSuccessful}
-                    onFieldEdit={handleStructuredFieldEdit}
-                    onSaveAsTemplate={structuredData ? handleSaveAsTemplate : undefined}
-                    rawText={structuredData?.raw_text}
-                  />
+                {(structuredMode || ocrMode === 'agentic' || ocrMode === 'structured') ? (
+                  <div className="space-y-4">
+                    {/* Agentic mode stats banner */}
+                    {ocrMode === 'agentic' && agenticResult && (
+                      <div className="p-4 bg-purple-50 border border-purple-100 rounded-xl">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <Zap className="w-5 h-5 text-purple-600" />
+                            <span className="font-medium text-purple-900">Agentic OCR Results</span>
+                          </div>
+                          <div className="flex items-center gap-4 text-sm">
+                            <span className="text-purple-700">
+                              {agenticResult.iterations_used} iteration{agenticResult.iterations_used > 1 ? 's' : ''}
+                            </span>
+                            <span className="text-purple-600">
+                              {agenticResult.processing_time_seconds.toFixed(1)}s
+                            </span>
+                          </div>
+                        </div>
+                        {agenticResult.fields_needing_review.length > 0 && (
+                          <div className="mt-2 text-sm text-amber-700 bg-amber-50 p-2 rounded-lg">
+                            <span className="font-medium">Fields needing review:</span>{' '}
+                            {agenticResult.fields_needing_review.join(', ')}
+                          </div>
+                        )}
+                        <div className="mt-2 flex gap-4 text-xs text-purple-600">
+                          <span className="bg-green-100 text-green-700 px-2 py-0.5 rounded">
+                            {agenticResult.confidence_summary.high} high confidence
+                          </span>
+                          <span className="bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded">
+                            {agenticResult.confidence_summary.medium} medium
+                          </span>
+                          <span className="bg-red-100 text-red-700 px-2 py-0.5 rounded">
+                            {agenticResult.confidence_summary.low} low
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                    <StructuredExtractor
+                      imagePreview={imagePreview}
+                      structuredData={structuredData}
+                      isProcessing={isProcessing}
+                      parsingSuccessful={parsingSuccessful}
+                      onFieldEdit={handleStructuredFieldEdit}
+                      onSaveAsTemplate={structuredData ? handleSaveAsTemplate : undefined}
+                      rawText={structuredData?.raw_text}
+                    />
+                  </div>
                 ) : (
                   <DocumentRenderer
                     rawText={extractedText}

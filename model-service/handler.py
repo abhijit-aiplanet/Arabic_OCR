@@ -32,12 +32,39 @@ os.environ['HF_HOME'] = HF_CACHE_DIR
 os.environ['TRANSFORMERS_CACHE'] = HF_CACHE_DIR
 os.environ['HUGGINGFACE_HUB_CACHE'] = HF_CACHE_DIR
 
-# Image resolution settings - Balanced for quality and speed
-MIN_PIXELS = 256 * 28 * 28  # 200,704 - Keep same for small images
-MAX_PIXELS = 1280 * 28 * 28  # 1,003,520 - Reduced for faster processing
+# =============================================================================
+# RESOLUTION SETTINGS - OPTIMIZED FOR HANDWRITING RECOGNITION
+# =============================================================================
+# Higher resolution is critical for handwriting - thin strokes get lost at low res
+# AIN model uses visual tokens, more pixels = more visual information
+
+# Base resolution settings
+MIN_PIXELS = 256 * 28 * 28  # 200,704 - Minimum for any image
+
+# Resolution presets for different document types
+RESOLUTION_PRESETS = {
+    # Standard printed text - can use lower resolution
+    "printed": 1280 * 28 * 28,     # 1,003,520 pixels
+    
+    # Handwriting-heavy documents - NEED higher resolution
+    "handwriting": 1680 * 28 * 28,  # 1,317,120 pixels (~30% more)
+    
+    # Complex forms with small fields - highest resolution
+    "complex_form": 2016 * 28 * 28, # 1,580,544 pixels (~57% more)
+    
+    # Default - use handwriting preset for Arabic forms
+    "default": 1680 * 28 * 28,      # 1,317,120 pixels
+}
+
+# Default MAX_PIXELS - increased for better handwriting recognition
+MAX_PIXELS = RESOLUTION_PRESETS["default"]  # 1,317,120 pixels
 
 # Maximum tokens for generation - RESTORED for complete text extraction
 DEFAULT_MAX_TOKENS = 8192  # Full capacity to prevent text truncation
+
+def get_resolution_for_document_type(doc_type: str = "default") -> int:
+    """Get appropriate MAX_PIXELS for document type."""
+    return RESOLUTION_PRESETS.get(doc_type, RESOLUTION_PRESETS["default"])
 
 # Global model and processor
 model = None
@@ -211,9 +238,19 @@ def _clean_repetition_loops(text: str, max_repeats: int = 5) -> str:
     return text
 
 
-def preprocess_image(image: Image.Image) -> Image.Image:
+def preprocess_image(image: Image.Image, optimize_for_handwriting: bool = True) -> Image.Image:
     """
-    ENHANCED preprocessing for Arabic OCR with VLM best practices.
+    ENHANCED preprocessing for Arabic OCR with HANDWRITING optimization.
+    
+    Key improvements for handwriting:
+    - Preserves thin strokes (critical for Arabic handwriting)
+    - Better contrast for faint handwriting
+    - Gentle noise reduction that doesn't blur strokes
+    - Higher effective resolution maintenance
+    
+    Args:
+        image: Input PIL Image
+        optimize_for_handwriting: If True, use gentler processing to preserve thin strokes
     """
     try:
         print(f"📸 Original image size: {image.size}, mode: {image.mode}")
@@ -228,10 +265,20 @@ def preprocess_image(image: Image.Image) -> Image.Image:
         img_array = np.array(image)
         gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
         
-        # Auto-deskewing
+        # =================================================================
+        # STEP 1: Detect if this is a form with handwriting
+        # =================================================================
+        # Check for form-like structure (grid lines, boxes)
         edges = cv2.Canny(gray, 50, 150, apertureSize=3)
         lines = cv2.HoughLines(edges, 1, np.pi/180, 200)
+        is_form = lines is not None and len(lines) > 5
         
+        if is_form:
+            print("📋 Detected form-like document structure")
+        
+        # =================================================================
+        # STEP 2: Auto-deskewing (gentle)
+        # =================================================================
         if lines is not None and len(lines) > 10:
             angles = []
             for rho, theta in lines[:, 0]:
@@ -241,31 +288,55 @@ def preprocess_image(image: Image.Image) -> Image.Image:
             
             if angles:
                 median_angle = np.median(angles)
+                # Only correct significant skew (>2 degrees)
                 if abs(median_angle) > 2:
                     print(f"✓ Rotation detected: {median_angle:.2f}°, correcting...")
                     image = image.rotate(median_angle, resample=Image.BICUBIC, expand=True, fillcolor='white')
                     img_array = np.array(image)
                     gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+                else:
+                    print(f"✓ Image alignment good ({median_angle:.2f}°), no rotation needed")
         
-        # Smart resizing
-        max_dimension = 1600
+        # =================================================================
+        # STEP 3: Smart resizing - HIGHER limit for handwriting
+        # =================================================================
+        # Increased from 1600 to 2000 to preserve handwriting detail
+        max_dimension = 2000 if optimize_for_handwriting else 1600
         width, height = image.size
         
         if width > max_dimension or height > max_dimension:
             scale = max_dimension / max(width, height)
             new_width = int(width * scale)
             new_height = int(height * scale)
+            # Use LANCZOS for best quality downscaling
             image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
             print(f"✓ Resized: {image.size[0]}x{image.size[1]}")
             img_array = np.array(image)
             gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
         
-        # CLAHE contrast enhancement
+        # =================================================================
+        # STEP 4: GENTLE contrast enhancement for handwriting
+        # =================================================================
+        # Use lower CLAHE clip limit to avoid over-enhancing noise
         img_lab = cv2.cvtColor(img_array, cv2.COLOR_RGB2LAB)
         l, a, b = cv2.split(img_lab)
         contrast_std = gray.std()
         
-        clip_limit = 3.0 if contrast_std < 40 else 2.5 if contrast_std < 60 else 2.0
+        # Gentler CLAHE for handwriting to preserve stroke integrity
+        if optimize_for_handwriting:
+            # Lower clip limits to avoid artifacts
+            if contrast_std < 40:
+                clip_limit = 2.5
+                print(f"✓ Low contrast detected (std={contrast_std:.1f}), applying gentle CLAHE")
+            elif contrast_std < 60:
+                clip_limit = 2.0
+                print(f"✓ Medium contrast (std={contrast_std:.1f}), applying mild CLAHE")
+            else:
+                clip_limit = 1.5
+                print(f"✓ Good contrast detected (std={contrast_std:.1f}), minimal CLAHE")
+        else:
+            clip_limit = 3.0 if contrast_std < 40 else 2.5 if contrast_std < 60 else 2.0
+        
         clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(8, 8))
         l_clahe = clahe.apply(l)
         
@@ -273,41 +344,67 @@ def preprocess_image(image: Image.Image) -> Image.Image:
         img_rgb = cv2.cvtColor(img_clahe, cv2.COLOR_LAB2RGB)
         image = Image.fromarray(img_rgb)
         
-        # Gamma correction
+        # =================================================================
+        # STEP 5: Gamma correction for brightness normalization
+        # =================================================================
         img_array = np.array(image)
         gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
         brightness_avg = gray.mean()
         
         if brightness_avg < 100:
-            gamma = 0.8
+            gamma = 0.85  # Slightly gentler than before
+            print(f"✓ Image is dark (brightness={brightness_avg:.0f}), applying gamma correction")
             inv_gamma = 1.0 / gamma
             table = np.array([((i / 255.0) ** inv_gamma) * 255 for i in range(256)]).astype("uint8")
             img_array = cv2.LUT(img_array, table)
             image = Image.fromarray(img_array)
         elif brightness_avg > 180:
-            gamma = 1.2
+            gamma = 1.15  # Slightly gentler
+            print(f"✓ Image is bright (brightness={brightness_avg:.0f}), applying gamma correction")
             inv_gamma = 1.0 / gamma
             table = np.array([((i / 255.0) ** inv_gamma) * 255 for i in range(256)]).astype("uint8")
             img_array = cv2.LUT(img_array, table)
             image = Image.fromarray(img_array)
+        else:
+            print(f"✓ Brightness is good ({brightness_avg:.0f}), no gamma needed")
         
-        # Sharpness detection and enhancement
+        # =================================================================
+        # STEP 6: GENTLE sharpening for handwriting
+        # =================================================================
+        # Important: Over-sharpening can create artifacts that confuse OCR
         img_array = np.array(image)
         gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
         laplacian = cv2.Laplacian(gray, cv2.CV_64F)
         sharpness_score = laplacian.var()
         
-        if sharpness_score < 50:
-            radius, percent = 2.0, 150
-        elif sharpness_score < 200:
-            radius, percent = 1.5, 120
+        if optimize_for_handwriting:
+            # Gentler sharpening for handwriting - preserve thin strokes
+            if sharpness_score < 50:
+                # Very blurry - apply moderate sharpening
+                radius, percent = 1.5, 100  # Reduced from 2.0, 150
+                print(f"✓ Image is blurry (sharpness={sharpness_score:.0f}), applying moderate sharpen")
+            elif sharpness_score < 200:
+                # Slightly blurry - gentle sharpening
+                radius, percent = 1.0, 80   # Reduced from 1.5, 120
+                print(f"✓ Image is slightly soft (sharpness={sharpness_score:.0f}), applying gentle sharpen")
+            else:
+                # Sharp enough - minimal processing
+                radius, percent = 0.5, 50   # Reduced from 0.5, 80
+                print(f"✓ Image is sharp (sharpness={sharpness_score:.0f}), minimal sharpen")
         else:
-            radius, percent = 0.5, 80
+            # Standard sharpening for printed text
+            if sharpness_score < 50:
+                radius, percent = 2.0, 150
+            elif sharpness_score < 200:
+                radius, percent = 1.5, 120
+            else:
+                radius, percent = 0.5, 80
         
+        # Higher threshold (3) to avoid sharpening noise
         image = image.filter(ImageFilter.UnsharpMask(radius=radius, percent=percent, threshold=3))
         
         final_pixels = image.size[0] * image.size[1]
-        print(f"✅ Preprocessing complete: {image.size[0]}x{image.size[1]}")
+        print(f"✅ Preprocessing complete: {image.size[0]}x{image.size[1]} (optimized for {'handwriting' if optimize_for_handwriting else 'standard'})")
         
         return image
         
@@ -461,16 +558,51 @@ def extract_text_from_image(
         with torch.no_grad():
             # Use torch.cuda.amp for mixed precision inference (faster on A100)
             with torch.cuda.amp.autocast(enabled=torch.cuda.is_available()):
+                # =============================================================
+                # DETERMINISTIC GENERATION SETTINGS FOR ANTI-HALLUCINATION
+                # =============================================================
+                # Key principles:
+                # 1. do_sample=False - No random sampling
+                # 2. temperature=0.0 - Deterministic (greedy)
+                # 3. num_beams=1 - Simple greedy (beams can introduce variation)
+                # 4. repetition_penalty=1.05 - Gentle penalty (too high hurts accuracy)
+                # 5. no_repeat_ngram_size=0 - Disable (can hurt Arabic text)
+                # =============================================================
+                
                 generation = model.generate(
                     **inputs,
                     max_new_tokens=max_new_tokens,
-                    do_sample=False,
-                    repetition_penalty=1.1,
-                    no_repeat_ngram_size=4,
+                    
+                    # ==========================================
+                    # DETERMINISTIC SETTINGS
+                    # ==========================================
+                    do_sample=False,        # No random sampling
+                    temperature=0.0,        # Fully deterministic
+                    num_beams=1,            # Greedy decoding (fastest, most consistent)
+                    
+                    # ==========================================
+                    # ANTI-HALLUCINATION SETTINGS
+                    # ==========================================
+                    repetition_penalty=1.05,  # Gentle penalty - too high damages Arabic text
+                    no_repeat_ngram_size=0,   # Disabled - can hurt Arabic which has repeated patterns
+                    
+                    # ==========================================
+                    # LENGTH CONTROL
+                    # ==========================================
+                    min_new_tokens=1,       # Must generate at least something
+                    early_stopping=True,    # Stop when EOS is generated
+                    
+                    # ==========================================
+                    # TOKEN HANDLING
+                    # ==========================================
                     pad_token_id=pad_token_id,
                     eos_token_id=eos_token_id,
+                    
+                    # ==========================================
+                    # OUTPUT CONFIGURATION
+                    # ==========================================
                     return_dict_in_generate=True,
-                    output_scores=True,
+                    output_scores=True,     # Need for confidence calculation
                 )
             generated_ids = generation.sequences
         

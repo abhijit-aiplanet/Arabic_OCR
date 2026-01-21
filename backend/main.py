@@ -142,117 +142,149 @@ def get_avg_processing_time(operation_type: str) -> float:
     """Get average processing time for an operation type."""
     return avg_processing_times.get(operation_type, 20.0)
 
-# Default OCR Prompt - OPTIMIZED FOR FORMS WITH HANDWRITTEN TEXT
-DEFAULT_OCR_PROMPT = """استخرج كل النص العربي من هذه الصورة.
-
-Extract ALL Arabic text from this image - both PRINTED and HANDWRITTEN.
-
-IMPORTANT - THIS IMAGE MAY CONTAIN:
-1. PRINTED TEXT: Labels, headers, field names (e.g., "الاسم:", "رقم الهوية:")
-2. HANDWRITTEN TEXT: Values filled in by hand (names, numbers, dates, signatures)
-3. FORM ELEMENTS: Dotted lines (......), underscores (____), boxes - these are PLACEHOLDERS, not text!
-
-CRITICAL INSTRUCTIONS:
-- The dotted lines and underscores are just empty placeholders - IGNORE them
-- HANDWRITTEN text is often written ON TOP OF or NEAR these placeholders
-- You MUST read and extract the handwritten text, not just the printed labels
-- Handwritten Arabic may look different from printed text - still extract it!
-
-EXAMPLE - What to extract from a form:
-If you see: "الاسم: محمد أحمد ..............."
-Extract: "الاسم: محمد أحمد" (the handwritten name, NOT the dots)
-
-If you see: "رقم الهوية: ١٠٥٤٣٢١٩٨٧"
-Extract: "رقم الهوية: ١٠٥٤٣٢١٩٨٧" (the handwritten number)
-
-REQUIREMENTS:
-1. Extract ALL text - printed headers AND handwritten values
-2. Do NOT skip handwritten text just because it's harder to read
-3. Maintain the structure: keep labels with their values
-4. Preserve line breaks and layout
-5. Do NOT translate - keep everything in Arabic
-6. Do NOT add descriptions or commentary
-7. Tables and forms: extract ALL cell content including handwritten entries
-
-Output the extracted Arabic text, preserving structure:"""
-
 # =============================================================================
-# STRUCTURED EXTRACTION PROMPT - OPTIMIZED FOR ARABIC HANDWRITTEN FORMS
+# STRICT TRANSCRIPTION PROMPTS - PRODUCTION GRADE
 # =============================================================================
-#
-# KEY INSIGHT: Arabic forms have TWO visual layers:
-#   1. PRINTED TEMPLATE: Labels + dotted lines (........) as placeholders
-#   2. HANDWRITTEN VALUES: Written ON TOP of or NEAR the dotted areas
-#
-# The VLM must READ THE HANDWRITTEN TEXT, not just see dots!
+# KEY PRINCIPLE: NEVER hallucinate. Only transcribe what is visually present.
+# Use markers: [فارغ] for empty, [غير واضح: X] for unclear, [غير مقروء] for unreadable
 # =============================================================================
 
-STRUCTURED_EXTRACTION_PROMPT = """اقرأ هذا النموذج العربي واستخرج جميع الحقول والقيم المكتوبة بخط اليد.
+DEFAULT_OCR_PROMPT = """أنت نظام نسخ بصري دقيق. مهمتك الوحيدة هي نسخ ما تراه بالضبط.
 
-Read this Arabic form and extract ALL field names and their HANDWRITTEN values.
+You are a STRICT VISUAL TRANSCRIPTION system, NOT a form-filling assistant.
 
-THIS IS A FILLED FORM:
-- PRINTED TEXT: Field labels like "اسم المالك:", "رقم الهوية:", "تاريخ الميلاد:"
-- HANDWRITTEN TEXT: Values written by someone filling the form
-- DOTTED LINES: These are just placeholder backgrounds, IGNORE them
+═══════════════════════════════════════════════════════════════
+ABSOLUTE RULES - VIOLATION IS FAILURE:
+═══════════════════════════════════════════════════════════════
 
-YOUR TASK: Find each field label and read the handwritten value next to it.
+1. ONLY transcribe text you can VISUALLY SEE
+2. NEVER infer, guess, complete, or imagine text
+3. NEVER fill in blank fields with plausible values
+4. If a field has NO visible handwriting → output: [فارغ]
+5. If text is unclear/ambiguous → output: [غير واضح: أفضل تخمين]
+6. If you cannot read something at all → output: [غير مقروء]
 
-EXAMPLES OF WHAT TO LOOK FOR:
+═══════════════════════════════════════════════════════════════
+WHAT "BLANK/EMPTY" MEANS:
+═══════════════════════════════════════════════════════════════
 
-اسم المالك: [handwritten name like محمد أحمد العلي]
-→ Output: اسم المالك: محمد أحمد العلي
+- Dotted lines (......) with NO ink on them = [فارغ]
+- Underscores (____) with NO writing = [فارغ]
+- Empty boxes with NO marks = [فارغ]
+- Only printed label with no handwritten value = [فارغ]
+- White space or blank area = [فارغ]
 
-رقم الهوية: [handwritten number like ١٠٥٤٣٢١٩٨٧]
-→ Output: رقم الهوية: ١٠٥٤٣٢١٩٨٧
+═══════════════════════════════════════════════════════════════
+WHAT TO TRANSCRIBE:
+═══════════════════════════════════════════════════════════════
 
-تاريخ الميلاد: [handwritten date like ١٤٠٥/٣/١٥]
-→ Output: تاريخ الميلاد: ١٤٠٥/٣/١٥
+- Handwritten ink that forms letters/numbers
+- Printed text (labels, headers, section titles)
+- Stamps → describe as [ختم]
+- Signatures → describe as [توقيع]
+- Checkmarks → describe as [✓] or [علامة صح]
 
-المدينة: [handwritten city like جدة]
-→ Output: المدينة: جدة
+═══════════════════════════════════════════════════════════════
+PRESERVE EXACTLY AS WRITTEN:
+═══════════════════════════════════════════════════════════════
 
-ONLY USE "-" IF THE FIELD IS COMPLETELY EMPTY (no handwriting at all).
+- Arabic numerals: ٠١٢٣٤٥٦٧٨٩ (do NOT convert to Western)
+- Date formats exactly as seen (do NOT normalize)
+- Phone numbers exactly as written (do NOT add country codes)
+- Spelling errors in handwriting (transcribe the error, don't correct)
+- Incomplete words (transcribe what you see)
 
+═══════════════════════════════════════════════════════════════
 OUTPUT FORMAT:
-field_name: value
-field_name: value
-...
+═══════════════════════════════════════════════════════════════
 
-For section headers in boxes:
+Transcribe the document preserving its structure.
+Use these markers:
+- [فارغ] = field is empty/blank
+- [غير واضح: X] = unclear, best guess is X
+- [غير مقروء] = completely unreadable
+- [توقيع] = signature present
+- [ختم] = stamp present
+
+Now transcribe ONLY what you can visually see:"""
+
+# =============================================================================
+# STRUCTURED EXTRACTION PROMPT - STRICT TRANSCRIPTION MODE
+# =============================================================================
+# CRITICAL: This prompt must enforce visual-only transcription.
+# The model must NEVER hallucinate values that aren't visually present.
+# =============================================================================
+
+STRUCTURED_EXTRACTION_PROMPT = """أنت نظام نسخ بصري دقيق للنماذج العربية. انسخ فقط ما تراه.
+
+You are a STRICT VISUAL TRANSCRIPTION system for Arabic forms.
+
+═══════════════════════════════════════════════════════════════
+CRITICAL ANTI-HALLUCINATION RULES:
+═══════════════════════════════════════════════════════════════
+
+1. ONLY transcribe text you can VISUALLY SEE with ink/print
+2. NEVER invent, guess, or complete missing information
+3. NEVER fill blank fields with plausible-looking data
+4. If you cannot see handwriting in a field → [فارغ]
+5. If handwriting is unclear → [غير واضح: your best guess]
+6. If completely unreadable → [غير مقروء]
+
+═══════════════════════════════════════════════════════════════
+UNDERSTANDING ARABIC FORMS:
+═══════════════════════════════════════════════════════════════
+
+Forms have TWO layers:
+- PRINTED: Labels like "اسم المالك:", "رقم الهوية:" (always visible)
+- HANDWRITTEN: Values written by someone (may or may not be present)
+- PLACEHOLDERS: Dots (......), lines (____) = NOT text, just guides
+
+YOUR TASK: For each printed label, report what handwriting exists.
+
+═══════════════════════════════════════════════════════════════
+OUTPUT FORMAT (one field per line):
+═══════════════════════════════════════════════════════════════
+
+field_label: handwritten_value
+field_label: [فارغ]
+field_label: [غير واضح: possible_value]
+field_label: [غير مقروء]
+
+For section headers:
 [قسم] section_name
 
-Now read and extract ALL fields with their handwritten values:"""
+For signatures/stamps:
+توقيع: [توقيع]
+ختم: [ختم]
 
+═══════════════════════════════════════════════════════════════
+PRESERVE EXACTLY:
+═══════════════════════════════════════════════════════════════
 
-# Alternative detailed prompt with more context
-DETAILED_EXTRACTION_PROMPT = """أنت قارئ نماذج عربية محترف. اقرأ كل ما هو مكتوب بخط اليد في هذا النموذج.
+- Arabic numerals as written: ٠١٢٣٤٥٦٧٨٩
+- Dates exactly as seen (١٤٨٥/٧/١ not 1485/7/1)
+- Phone numbers as written (٠٥٠٧... not 00966...)
+- Spelling errors (transcribe the error)
 
-You are a professional Arabic form reader. Read ALL handwritten content in this form.
+═══════════════════════════════════════════════════════════════
+EXAMPLES:
+═══════════════════════════════════════════════════════════════
 
-UNDERSTANDING THE FORM:
-1. This is a PRINTED form template with HANDWRITTEN fill-in values
-2. Each field has a LABEL (printed) followed by a VALUE (handwritten)
-3. The dots (......) and lines (____) are just placeholder backgrounds - ignore them
-4. Focus on reading the HANDWRITTEN TEXT that was written to fill the form
+If field has clear handwriting:
+اسم المالك: عياض محمد العتيبي
 
-STEP BY STEP:
-1. Scan the form for field labels (printed text ending with : or followed by dots)
-2. For each label, look at the space next to/below it
-3. Read any handwritten text in that space
-4. Write: label: handwritten_value
+If field has unclear handwriting:
+رقم الهوية: [غير واضح: ١٠٣٨٣٦٧٦٨٠]
 
-COMMON FIELDS TO FIND:
-- Names (اسم، الاسم الكامل)
-- ID numbers (رقم الهوية، رقم البطاقة)  
-- Dates (تاريخ الميلاد، تاريخ الإصدار)
-- Places (المدينة، العنوان)
-- Numbers (رقم الهاتف، رقم اللوحة)
+If field is completely empty (just dots/lines):
+رقم الهاتف: [فارغ]
 
-OUTPUT: One field per line in format "label: value"
-ONLY use "-" for truly empty fields with NO handwriting.
+If field has unreadable scribble:
+الحي: [غير مقروء]
 
-Extract all fields now:"""
+═══════════════════════════════════════════════════════════════
+
+Now transcribe ONLY the fields and values you can actually see:"""
 
 
 # =============================================================================
@@ -2696,6 +2728,482 @@ async def process_structured_ocr(
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+# =============================================================================
+# AGENTIC OCR ENDPOINT - Multi-Pass Self-Correcting OCR
+# =============================================================================
+
+# LLM Configuration for Agentic OCR
+_llm_endpoint_raw = os.getenv("RUNPOD_LLM_ENDPOINT_URL", "")
+RUNPOD_LLM_ENDPOINT = _llm_endpoint_raw.strip() if _llm_endpoint_raw else None
+if RUNPOD_LLM_ENDPOINT and not RUNPOD_LLM_ENDPOINT.startswith(("http://", "https://")):
+    RUNPOD_LLM_ENDPOINT = f"https://{RUNPOD_LLM_ENDPOINT}"
+
+RUNPOD_LLM_API_KEY = os.getenv("RUNPOD_LLM_API_KEY", RUNPOD_API_KEY)  # Fallback to main key
+
+
+class AgenticFieldResult(BaseModel):
+    """Field result from agentic OCR."""
+    field_name: str
+    value: str
+    confidence: str
+    source: str
+    needs_review: bool = False
+    review_reason: Optional[str] = None
+    is_empty: bool = False
+
+
+class AgenticOCRResponse(BaseModel):
+    """Response model for agentic OCR."""
+    fields: List[AgenticFieldResult]
+    raw_text: str
+    iterations_used: int
+    processing_time_seconds: float
+    confidence_summary: Dict[str, int]
+    fields_needing_review: List[str]
+    status: str
+    error: Optional[str] = None
+
+
+@app.post("/api/ocr/agentic", response_model=AgenticOCRResponse)
+async def agentic_ocr(
+    file: UploadFile = File(...),
+    max_iterations: int = Form(default=3),
+    user: dict = Depends(verify_clerk_token)
+):
+    """
+    Multi-pass agentic OCR with self-correction.
+    
+    Uses dual-model architecture:
+    - AIN VLM for vision/OCR tasks
+    - Qwen 2.5 LLM for reasoning/orchestration
+    
+    Process:
+    1. Initial full-page OCR
+    2. LLM analyzes for issues
+    3. Crops uncertain regions
+    4. Re-OCRs cropped regions
+    5. LLM merges results
+    6. Repeats until confident or max iterations
+    
+    Takes 1-3 minutes for complex images.
+    """
+    try:
+        # Validate endpoints
+        if not RUNPOD_ENDPOINT:
+            raise HTTPException(status_code=500, detail="VLM service not configured")
+        
+        if not RUNPOD_LLM_ENDPOINT:
+            # Fallback to single-pass OCR
+            print("[Agentic] LLM not configured, falling back to single-pass OCR")
+            # Call the regular structured OCR endpoint logic instead
+            raise HTTPException(
+                status_code=503, 
+                detail="Agentic OCR requires LLM endpoint. Please configure RUNPOD_LLM_ENDPOINT_URL."
+            )
+        
+        # Read and validate image
+        contents = await file.read()
+        try:
+            image = Image.open(io.BytesIO(contents))
+            if image.mode not in ('RGB', 'L', 'RGBA'):
+                image = image.convert('RGB')
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid image: {str(e)}")
+        
+        # Import agentic module
+        try:
+            from agentic import AgenticOCRController
+            from agentic.clients import VLMClient, LLMClient
+        except ImportError as e:
+            raise HTTPException(
+                status_code=500, 
+                detail=f"Agentic module not available: {str(e)}"
+            )
+        
+        # Create clients
+        vlm_client = VLMClient(
+            endpoint_url=RUNPOD_ENDPOINT,
+            api_key=RUNPOD_API_KEY,
+            timeout=300.0
+        )
+        
+        llm_client = LLMClient(
+            endpoint_url=RUNPOD_LLM_ENDPOINT,
+            api_key=RUNPOD_LLM_API_KEY,
+            timeout=120.0
+        )
+        
+        # Create controller and process
+        controller = AgenticOCRController(
+            vlm_client=vlm_client,
+            llm_client=llm_client,
+            max_iterations=min(max_iterations, 5)  # Cap at 5 iterations
+        )
+        
+        result = await controller.process(image)
+        
+        # Clean up clients
+        await vlm_client.close()
+        await llm_client.close()
+        
+        # Convert to response model
+        return AgenticOCRResponse(
+            fields=[
+                AgenticFieldResult(
+                    field_name=f.field_name,
+                    value=f.value,
+                    confidence=f.confidence,
+                    source=f.source,
+                    needs_review=f.needs_review,
+                    review_reason=f.review_reason,
+                    is_empty=f.is_empty
+                )
+                for f in result.fields
+            ],
+            raw_text=result.raw_text,
+            iterations_used=result.iterations_used,
+            processing_time_seconds=result.processing_time_seconds,
+            confidence_summary=result.confidence_summary,
+            fields_needing_review=result.fields_needing_review,
+            status=result.status,
+            error=result.error
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Agentic OCR failed: {str(e)}")
+
+
+# =============================================================================
+# REVIEW QUEUE ENDPOINTS - Human-in-the-Loop OCR Verification
+# =============================================================================
+
+class ReviewQueueItem(BaseModel):
+    """Model for a review queue item."""
+    id: str
+    ocr_history_id: Optional[str] = None
+    field_name: str
+    extracted_value: Optional[str] = None
+    confidence_score: Optional[float] = None
+    confidence_level: Optional[str] = None
+    review_reason: Optional[str] = None
+    validation_status: Optional[str] = None
+    is_suspicious: bool = False
+    suspicion_score: Optional[float] = None
+    full_image_url: Optional[str] = None
+    status: str = "pending"
+    created_at: Optional[str] = None
+
+class ReviewQueueResponse(BaseModel):
+    """Response model for review queue list."""
+    items: List[ReviewQueueItem]
+    total: int
+    pending_count: int
+    approved_count: int
+    corrected_count: int
+
+class ReviewActionRequest(BaseModel):
+    """Request model for review actions."""
+    action: str  # "approve", "correct", "reject", "skip"
+    corrected_value: Optional[str] = None
+    notes: Optional[str] = None
+
+class AddToReviewQueueRequest(BaseModel):
+    """Request to add a field to the review queue."""
+    ocr_history_id: Optional[str] = None
+    field_name: str
+    extracted_value: Optional[str] = None
+    confidence_score: Optional[float] = None
+    confidence_level: Optional[str] = None
+    review_reason: Optional[str] = None
+    validation_status: Optional[str] = None
+    is_suspicious: bool = False
+    suspicion_score: Optional[float] = None
+    suspicion_reasons: Optional[List[str]] = None
+    full_image_url: Optional[str] = None
+
+@app.get("/api/review-queue", response_model=ReviewQueueResponse)
+async def get_review_queue(
+    status: Optional[str] = "pending",
+    limit: int = 50,
+    offset: int = 0,
+    user: dict = Depends(verify_clerk_token)
+):
+    """
+    Get review queue items for the current user.
+    
+    Args:
+        status: Filter by status ('pending', 'approved', 'corrected', 'rejected', 'all')
+        limit: Maximum items to return
+        offset: Pagination offset
+    """
+    try:
+        user_id = user.get("sub", "anonymous")
+        
+        # Build query
+        query = supabase.table("ocr_review_queue").select("*")
+        query = query.eq("user_id", user_id)
+        
+        if status != "all":
+            query = query.eq("status", status)
+        
+        # Get total counts
+        count_query = supabase.table("ocr_review_queue").select("id, status", count="exact")
+        count_query = count_query.eq("user_id", user_id)
+        count_result = count_query.execute()
+        
+        total = len(count_result.data) if count_result.data else 0
+        pending_count = sum(1 for item in count_result.data if item.get("status") == "pending")
+        approved_count = sum(1 for item in count_result.data if item.get("status") == "approved")
+        corrected_count = sum(1 for item in count_result.data if item.get("status") == "corrected")
+        
+        # Get paginated items, sorted by confidence (lowest first for review priority)
+        query = query.order("confidence_score", desc=False)
+        query = query.range(offset, offset + limit - 1)
+        result = query.execute()
+        
+        items = []
+        for item in result.data or []:
+            items.append(ReviewQueueItem(
+                id=item.get("id"),
+                ocr_history_id=item.get("ocr_history_id"),
+                field_name=item.get("field_name", ""),
+                extracted_value=item.get("extracted_value"),
+                confidence_score=item.get("confidence_score"),
+                confidence_level=item.get("confidence_level"),
+                review_reason=item.get("review_reason"),
+                validation_status=item.get("validation_status"),
+                is_suspicious=item.get("is_suspicious", False),
+                suspicion_score=item.get("suspicion_score"),
+                full_image_url=item.get("full_image_url"),
+                status=item.get("status", "pending"),
+                created_at=str(item.get("created_at")) if item.get("created_at") else None
+            ))
+        
+        return ReviewQueueResponse(
+            items=items,
+            total=total,
+            pending_count=pending_count,
+            approved_count=approved_count,
+            corrected_count=corrected_count
+        )
+        
+    except Exception as e:
+        print(f"Error fetching review queue: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/review-queue")
+async def add_to_review_queue(
+    request: AddToReviewQueueRequest,
+    user: dict = Depends(verify_clerk_token)
+):
+    """Add a field to the review queue."""
+    try:
+        user_id = user.get("sub", "anonymous")
+        
+        data = {
+            "user_id": user_id,
+            "ocr_history_id": request.ocr_history_id,
+            "field_name": request.field_name,
+            "extracted_value": request.extracted_value,
+            "confidence_score": request.confidence_score,
+            "confidence_level": request.confidence_level,
+            "review_reason": request.review_reason,
+            "validation_status": request.validation_status,
+            "is_suspicious": request.is_suspicious,
+            "suspicion_score": request.suspicion_score,
+            "suspicion_reasons": request.suspicion_reasons,
+            "full_image_url": request.full_image_url,
+            "status": "pending"
+        }
+        
+        result = supabase.table("ocr_review_queue").insert(data).execute()
+        
+        return {"success": True, "id": result.data[0].get("id") if result.data else None}
+        
+    except Exception as e:
+        print(f"Error adding to review queue: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/review-queue/{item_id}/approve")
+async def approve_extraction(
+    item_id: str,
+    user: dict = Depends(verify_clerk_token)
+):
+    """Approve an extracted value as correct."""
+    try:
+        user_id = user.get("sub", "anonymous")
+        
+        result = supabase.table("ocr_review_queue").update({
+            "status": "approved",
+            "reviewed_by": user_id,
+            "reviewed_at": "now()"
+        }).eq("id", item_id).eq("user_id", user_id).execute()
+        
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Review item not found")
+        
+        return {"success": True, "status": "approved"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error approving extraction: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/review-queue/{item_id}/correct")
+async def correct_extraction(
+    item_id: str,
+    request: ReviewActionRequest,
+    user: dict = Depends(verify_clerk_token)
+):
+    """Provide a corrected value for an extraction."""
+    try:
+        user_id = user.get("sub", "anonymous")
+        
+        if not request.corrected_value:
+            raise HTTPException(status_code=400, detail="corrected_value is required")
+        
+        result = supabase.table("ocr_review_queue").update({
+            "status": "corrected",
+            "corrected_value": request.corrected_value,
+            "reviewer_notes": request.notes,
+            "reviewed_by": user_id,
+            "reviewed_at": "now()"
+        }).eq("id", item_id).eq("user_id", user_id).execute()
+        
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Review item not found")
+        
+        return {"success": True, "status": "corrected", "corrected_value": request.corrected_value}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error correcting extraction: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/review-queue/{item_id}/reject")
+async def reject_extraction(
+    item_id: str,
+    request: ReviewActionRequest,
+    user: dict = Depends(verify_clerk_token)
+):
+    """Reject an extraction as incorrect/hallucinated."""
+    try:
+        user_id = user.get("sub", "anonymous")
+        
+        result = supabase.table("ocr_review_queue").update({
+            "status": "rejected",
+            "reviewer_notes": request.notes,
+            "reviewed_by": user_id,
+            "reviewed_at": "now()"
+        }).eq("id", item_id).eq("user_id", user_id).execute()
+        
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Review item not found")
+        
+        return {"success": True, "status": "rejected"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error rejecting extraction: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/review-queue/batch")
+async def batch_review(
+    actions: List[dict],
+    user: dict = Depends(verify_clerk_token)
+):
+    """
+    Batch process multiple review items.
+    
+    Each action should have: {id, action, corrected_value (optional)}
+    """
+    try:
+        user_id = user.get("sub", "anonymous")
+        results = []
+        
+        for action in actions:
+            item_id = action.get("id")
+            action_type = action.get("action")
+            corrected_value = action.get("corrected_value")
+            
+            if not item_id or not action_type:
+                results.append({"id": item_id, "success": False, "error": "Missing id or action"})
+                continue
+            
+            try:
+                update_data = {
+                    "reviewed_by": user_id,
+                    "reviewed_at": "now()"
+                }
+                
+                if action_type == "approve":
+                    update_data["status"] = "approved"
+                elif action_type == "correct":
+                    update_data["status"] = "corrected"
+                    update_data["corrected_value"] = corrected_value
+                elif action_type == "reject":
+                    update_data["status"] = "rejected"
+                elif action_type == "skip":
+                    update_data["status"] = "skipped"
+                else:
+                    results.append({"id": item_id, "success": False, "error": f"Unknown action: {action_type}"})
+                    continue
+                
+                supabase.table("ocr_review_queue").update(update_data).eq("id", item_id).eq("user_id", user_id).execute()
+                results.append({"id": item_id, "success": True, "status": update_data["status"]})
+                
+            except Exception as e:
+                results.append({"id": item_id, "success": False, "error": str(e)})
+        
+        return {"results": results, "processed": len(results)}
+        
+    except Exception as e:
+        print(f"Error in batch review: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/review-queue/stats")
+async def get_review_stats(user: dict = Depends(verify_clerk_token)):
+    """Get review queue statistics for the current user."""
+    try:
+        user_id = user.get("sub", "anonymous")
+        
+        result = supabase.table("ocr_review_queue").select("status, confidence_level, is_suspicious").eq("user_id", user_id).execute()
+        
+        items = result.data or []
+        
+        stats = {
+            "total": len(items),
+            "by_status": {
+                "pending": sum(1 for i in items if i.get("status") == "pending"),
+                "approved": sum(1 for i in items if i.get("status") == "approved"),
+                "corrected": sum(1 for i in items if i.get("status") == "corrected"),
+                "rejected": sum(1 for i in items if i.get("status") == "rejected"),
+                "skipped": sum(1 for i in items if i.get("status") == "skipped"),
+            },
+            "by_confidence": {
+                "high": sum(1 for i in items if i.get("confidence_level") == "high"),
+                "medium": sum(1 for i in items if i.get("confidence_level") == "medium"),
+                "low": sum(1 for i in items if i.get("confidence_level") == "low"),
+                "unreadable": sum(1 for i in items if i.get("confidence_level") == "unreadable"),
+            },
+            "suspicious_count": sum(1 for i in items if i.get("is_suspicious")),
+        }
+        
+        return stats
+        
+    except Exception as e:
+        print(f"Error fetching review stats: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # =============================================================================

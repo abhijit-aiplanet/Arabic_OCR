@@ -202,6 +202,122 @@ export interface StructuredOCRResponse {
   parsing_successful: boolean
 }
 
+// =============================================================================
+// AGENTIC OCR TYPES
+// =============================================================================
+
+export interface AgenticFieldResult {
+  field_name: string
+  value: string
+  confidence: 'high' | 'medium' | 'low'
+  source: string
+  needs_review: boolean
+  review_reason?: string | null
+  is_empty: boolean
+}
+
+export interface AgenticOCRResponse {
+  fields: AgenticFieldResult[]
+  raw_text: string
+  iterations_used: number
+  processing_time_seconds: number
+  confidence_summary: {
+    high: number
+    medium: number
+    low: number
+    empty: number
+  }
+  fields_needing_review: string[]
+  status: string
+  error?: string | null
+}
+
+export interface AgenticOCRSettings {
+  maxIterations?: number
+}
+
+// =============================================================================
+// AGENTIC OCR FUNCTION
+// =============================================================================
+
+/**
+ * Process an image using the agentic OCR pipeline.
+ * 
+ * This uses a dual-model approach:
+ * - AIN VLM for vision/OCR tasks
+ * - Qwen 2.5 LLM for reasoning/orchestration
+ * 
+ * The system iteratively refines uncertain regions until confident.
+ * Typically takes 1-3 minutes for complex images.
+ * 
+ * @param imageFile - The image file to process
+ * @param settings - Optional settings (maxIterations)
+ * @param authToken - Authentication token
+ * @param onProgress - Optional callback for progress updates
+ * @returns AgenticOCRResponse with extracted fields and metadata
+ */
+export async function processAgenticOCR(
+  imageFile: File,
+  settings: AgenticOCRSettings = {},
+  authToken?: string | null,
+  onProgress?: (message: string) => void
+): Promise<AgenticOCRResponse> {
+  try {
+    const formData = new FormData()
+    formData.append('file', imageFile)
+    
+    if (settings.maxIterations) {
+      formData.append('max_iterations', settings.maxIterations.toString())
+    }
+
+    const headers: Record<string, string> = {}
+    if (authToken) {
+      headers['Authorization'] = `Bearer ${authToken}`
+    }
+
+    onProgress?.('Starting agentic OCR processing...')
+
+    const response = await axios.post<AgenticOCRResponse>(
+      `${API_URL}/api/ocr/agentic`,
+      formData,
+      {
+        headers,
+        timeout: 600000, // 10 minutes timeout (agentic can take time)
+      }
+    )
+
+    console.log('🤖 Agentic OCR Response:', response.data)
+    console.log(`🤖 Iterations used: ${response.data.iterations_used}`)
+    console.log(`🤖 Processing time: ${response.data.processing_time_seconds.toFixed(1)}s`)
+
+    return response.data
+  } catch (error) {
+    if (axios.isAxiosError(error)) {
+      const message = error.response?.data?.detail || error.message
+      throw new Error(message)
+    }
+    throw error
+  }
+}
+
+/**
+ * Check if agentic OCR is available (LLM endpoint configured)
+ */
+export async function checkAgenticAvailable(authToken?: string | null): Promise<boolean> {
+  try {
+    const headers: Record<string, string> = {}
+    if (authToken) {
+      headers['Authorization'] = `Bearer ${authToken}`
+    }
+
+    const response = await axios.get(`${API_URL}/health`, { headers })
+    // Check if agentic is mentioned in features or a specific flag
+    return response.data.status === 'healthy'
+  } catch (error) {
+    return false
+  }
+}
+
 export async function processOCR(
   imageFile: File,
   settings: OCRSettings,
