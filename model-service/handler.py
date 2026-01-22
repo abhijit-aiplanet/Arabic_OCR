@@ -1,7 +1,7 @@
 """
 RunPod Handler for AIN Vision Language Model OCR
 This service runs on RunPod GPU instances and processes OCR requests
-Build trigger: 2026-01-22-v1 (Network Volume caching for faster builds)
+Build trigger: 2026-01-22-v2 (Fix hallucination: reduce max_tokens from 8192 to 2048)
 """
 
 import runpod
@@ -88,8 +88,10 @@ RESOLUTION_PRESETS = {
 # Default MAX_PIXELS - increased for better handwriting recognition
 MAX_PIXELS = RESOLUTION_PRESETS["default"]  # 1,317,120 pixels
 
-# Maximum tokens for generation - RESTORED for complete text extraction
-DEFAULT_MAX_TOKENS = 8192  # Full capacity to prevent text truncation
+# Maximum tokens for generation - OPTIMIZED to prevent hallucination loops
+# Note: 8192 caused EXTREME repetition (171+ repeats) and 5+ min generation time
+# 2048 is sufficient for most Arabic forms and completes in ~1-2 minutes
+DEFAULT_MAX_TOKENS = 2048  # Reduced to prevent hallucination and speed up
 
 def get_resolution_for_document_type(doc_type: str = "default") -> int:
     """Get appropriate MAX_PIXELS for document type."""

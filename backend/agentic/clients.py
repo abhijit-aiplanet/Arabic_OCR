@@ -177,7 +177,7 @@ class VLMClient(BaseRunPodClient):
         self,
         endpoint_url: str,
         api_key: str,
-        default_max_tokens: int = 8192,
+        default_max_tokens: int = 2048,  # Reduced from 8192 to prevent hallucination
         default_min_pixels: int = 200704,
         default_max_pixels: int = 1317120,  # Optimized for handwriting
         **kwargs

@@ -2792,6 +2792,9 @@ async def agentic_ocr(
     
     Takes 1-3 minutes for complex images.
     """
+    import time as time_module
+    start_time = time_module.time()
+    
     try:
         # Validate VLM endpoint
         if not RUNPOD_ENDPOINT:
@@ -2805,12 +2808,17 @@ async def agentic_ocr(
                 detail="Agentic OCR requires an LLM. Please configure MISTRAL_API_KEY."
             )
         
+        print(f"[Agentic] Starting request at {time_module.strftime('%H:%M:%S')}")
+        print(f"[Agentic] MISTRAL_API_KEY configured: {bool(MISTRAL_API_KEY)}")
+        print(f"[Agentic] RUNPOD_ENDPOINT: {RUNPOD_ENDPOINT}")
+        
         # Read and validate image
         contents = await file.read()
         try:
             image = Image.open(io.BytesIO(contents))
             if image.mode not in ('RGB', 'L', 'RGBA'):
                 image = image.convert('RGB')
+            print(f"[Agentic] Image loaded: {image.size[0]}x{image.size[1]}")
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Invalid image: {str(e)}")
         
@@ -2819,27 +2827,30 @@ async def agentic_ocr(
             from agentic import AgenticOCRController
             from agentic.clients import VLMClient, MistralLLMClient, LLMClient
         except ImportError as e:
+            print(f"[Agentic] Import error: {e}")
             raise HTTPException(
                 status_code=500, 
                 detail=f"Agentic module not available: {str(e)}"
             )
         
-        # Create VLM client
+        # Create VLM client with reduced timeout (Vercel max is 300s)
+        # Leave room for LLM calls after VLM completes
         vlm_client = VLMClient(
             endpoint_url=RUNPOD_ENDPOINT,
             api_key=RUNPOD_API_KEY,
-            timeout=300.0
+            timeout=240.0  # Reduced from 300 to leave room for LLM
         )
         
         # Create LLM client (Mistral preferred, RunPod as fallback)
         llm_client = None
         if MISTRAL_API_KEY:
-            print(f"[Agentic] Using Mistral API with model: {MISTRAL_MODEL}")
+            print(f"[Agentic] Initializing Mistral API with model: {MISTRAL_MODEL}")
             try:
                 llm_client = MistralLLMClient(
                     api_key=MISTRAL_API_KEY,
                     model=MISTRAL_MODEL
                 )
+                print("[Agentic] Mistral client created successfully")
             except ImportError as e:
                 print(f"[Agentic] Mistral SDK not available: {e}")
                 if RUNPOD_LLM_ENDPOINT:
@@ -2849,26 +2860,40 @@ async def agentic_ocr(
                         status_code=500,
                         detail="Mistral SDK not installed. Run: pip install mistralai"
                     )
+            except Exception as e:
+                print(f"[Agentic] Mistral client creation failed: {e}")
+                traceback.print_exc()
+                if RUNPOD_LLM_ENDPOINT:
+                    print("[Agentic] Falling back to RunPod LLM")
+                else:
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Mistral API initialization failed: {str(e)}"
+                    )
         
         if llm_client is None and RUNPOD_LLM_ENDPOINT:
             print("[Agentic] Using RunPod LLM endpoint")
             llm_client = LLMClient(
                 endpoint_url=RUNPOD_LLM_ENDPOINT,
                 api_key=RUNPOD_LLM_API_KEY,
-                timeout=120.0
+                timeout=60.0  # LLM calls should be fast
             )
         
         if llm_client is None:
             raise HTTPException(
                 status_code=503,
-                detail="No LLM client could be initialized"
+                detail="No LLM client could be initialized. Check MISTRAL_API_KEY."
             )
         
         # Create controller and process
+        # Limit to 2 iterations max for Vercel timeout constraints
+        effective_iterations = min(max_iterations, 2)
+        print(f"[Agentic] Starting processing with max_iterations={effective_iterations}")
+        
         controller = AgenticOCRController(
             vlm_client=vlm_client,
             llm_client=llm_client,
-            max_iterations=min(max_iterations, 5)  # Cap at 5 iterations
+            max_iterations=effective_iterations
         )
         
         result = await controller.process(image)
@@ -2876,6 +2901,9 @@ async def agentic_ocr(
         # Clean up clients
         await vlm_client.close()
         await llm_client.close()
+        
+        elapsed = time_module.time() - start_time
+        print(f"[Agentic] Completed in {elapsed:.1f}s with {result.iterations_used} iterations")
         
         # Convert to response model
         return AgenticOCRResponse(
@@ -2902,7 +2930,16 @@ async def agentic_ocr(
         
     except HTTPException:
         raise
+    except asyncio.TimeoutError:
+        elapsed = time_module.time() - start_time
+        print(f"[Agentic] Timeout after {elapsed:.1f}s")
+        raise HTTPException(
+            status_code=504,
+            detail=f"Request timed out after {elapsed:.0f} seconds. Try with a simpler image."
+        )
     except Exception as e:
+        elapsed = time_module.time() - start_time
+        print(f"[Agentic] Error after {elapsed:.1f}s: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Agentic OCR failed: {str(e)}")
 
