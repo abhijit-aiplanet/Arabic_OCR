@@ -293,7 +293,14 @@ export async function processAgenticOCR(
     return response.data
   } catch (error) {
     if (axios.isAxiosError(error)) {
+      const status = error.response?.status
       const message = error.response?.data?.detail || error.message
+      
+      if (status === 401) {
+        throw new Error('Session expired. Please sign in again.')
+      } else if (status === 504) {
+        throw new Error('Request timed out. Please try a simpler image.')
+      }
       throw new Error(message)
     }
     throw error

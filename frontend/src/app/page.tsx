@@ -214,6 +214,13 @@ export default function Home() {
     try {
       const token = await getToken()
       
+      // Check for authentication - required for all OCR operations
+      if (!token) {
+        toast.error('Please sign in to use OCR features')
+        setIsProcessing(false)
+        return
+      }
+      
       // Fetch queue status for ETA
       const operationType = structuredMode ? 'structured' : (isPDF ? 'pdf_page' : 'image')
       const status = await getQueueStatus(operationType, token)
@@ -490,9 +497,19 @@ export default function Home() {
           throw new Error(result.error || 'Failed to extract text')
         }
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('OCR Error:', error)
-      toast.error(error instanceof Error ? error.message : 'Failed to process file')
+      
+      // Handle specific error types
+      const errorMessage = error?.response?.data?.detail || error?.message || 'Failed to process file'
+      
+      if (errorMessage.includes('401') || errorMessage.includes('authorization') || errorMessage.includes('sign in') || errorMessage.includes('expired')) {
+        toast.error('Session expired. Please sign in again.')
+      } else if (errorMessage.includes('timeout') || errorMessage.includes('504')) {
+        toast.error('Request timed out. Please try again with a simpler image.')
+      } else {
+        toast.error(errorMessage)
+      }
     } finally {
       setIsProcessing(false)
       setProcessingStartTime(null)
