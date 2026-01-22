@@ -156,7 +156,7 @@ Width: {width}px, Height: {height}px
     {{
       "field_name": "رقم الهوية",
       "bbox_normalized": [0.5, 0.12, 0.95, 0.18],
-      "bbox_pixels": [{x1}, {y1}, {x2}, {y2}],
+      "bbox_pixels": [540, 97, 1029, 146],
       "location_confidence": "high",
       "notes": "ID field in standard position"
     }}
@@ -164,7 +164,8 @@ Width: {width}px, Height: {height}px
   "estimation_notes": "Based on standard Saudi form layout"
 }}
 
-Note: bbox format is [x1, y1, x2, y2] where (0,0) is top-left corner."""
+Note: bbox format is [x1, y1, x2, y2] where (0,0) is top-left corner.
+Calculate bbox_pixels by multiplying normalized coordinates by image dimensions."""
 
 
 # =============================================================================
