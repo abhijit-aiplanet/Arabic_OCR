@@ -3,7 +3,7 @@ API Clients for Agentic OCR System
 
 Provides clients for communicating with:
 - VLM (AIN model) on RunPod for vision/OCR tasks
-- LLM (Qwen 2.5) on RunPod for reasoning tasks
+- LLM for reasoning tasks (Mistral API or RunPod)
 """
 
 import httpx
@@ -11,7 +11,9 @@ import asyncio
 import base64
 import io
 import json
+import re
 import time
+import traceback
 from typing import Optional, Dict, Any, List, Tuple
 from PIL import Image
 
@@ -446,6 +448,279 @@ class LLMClient(BaseRunPodClient):
 
 
 # =============================================================================
+# MISTRAL LLM CLIENT (Mistral API for Reasoning)
+# =============================================================================
+
+class MistralLLMClient:
+    """
+    Client for Mistral API for reasoning tasks.
+    
+    Used for:
+    - Analyzing OCR output for issues
+    - Estimating field region coordinates
+    - Merging and reconciling multiple OCR passes
+    
+    This is a simpler alternative to self-hosting LLMs on RunPod,
+    suitable for PoC/development stages.
+    """
+    
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "mistral-large-latest",
+        default_max_tokens: int = 4096,
+        default_temperature: float = 0.1,
+    ):
+        """
+        Initialize Mistral LLM client.
+        
+        Args:
+            api_key: Mistral API key
+            model: Model to use (default: mistral-large-latest)
+            default_max_tokens: Default max tokens to generate
+            default_temperature: Default sampling temperature (low for consistency)
+        """
+        try:
+            from mistralai import Mistral
+            self.client = Mistral(api_key=api_key)
+        except ImportError:
+            raise ImportError(
+                "mistralai package not installed. "
+                "Install with: pip install mistralai"
+            )
+        
+        self.model = model
+        self.default_max_tokens = default_max_tokens
+        self.default_temperature = default_temperature
+    
+    async def close(self):
+        """Close the client (no-op for Mistral, included for interface compatibility)."""
+        pass
+    
+    def _parse_json_response(self, text: str) -> Optional[Dict[str, Any]]:
+        """
+        Parse JSON from LLM response.
+        
+        Handles common issues:
+        - JSON wrapped in markdown code blocks
+        - Trailing text after JSON
+        """
+        if not text:
+            return None
+        
+        # Remove markdown code blocks
+        if "```json" in text:
+            start = text.find("```json") + 7
+            end = text.find("```", start)
+            if end > start:
+                text = text[start:end]
+        elif "```" in text:
+            start = text.find("```") + 3
+            end = text.find("```", start)
+            if end > start:
+                text = text[start:end]
+        
+        # Try to find JSON object
+        text = text.strip()
+        
+        # Find first { and last }
+        first_brace = text.find("{")
+        last_brace = text.rfind("}")
+        
+        if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+            text = text[first_brace:last_brace + 1]
+        
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError as e:
+            print(f"JSON parse error: {e}")
+            print(f"Text was: {text[:500]}...")
+            return None
+    
+    async def _call_llm(
+        self,
+        prompt: str,
+        system_prompt: Optional[str] = None,
+        parse_json: bool = True,
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None
+    ) -> Tuple[Any, bool]:
+        """
+        Call Mistral LLM with prompt.
+        
+        Args:
+            prompt: User prompt
+            system_prompt: Optional system prompt
+            parse_json: Whether to parse response as JSON
+            max_tokens: Max tokens to generate
+            temperature: Sampling temperature
+            
+        Returns:
+            Tuple of (result, success_bool)
+        """
+        try:
+            completion_args = {
+                "temperature": temperature if temperature is not None else self.default_temperature,
+                "max_tokens": max_tokens or self.default_max_tokens,
+                "top_p": 0.9
+            }
+            
+            inputs = [{"role": "user", "content": prompt}]
+            
+            # Call Mistral API using conversations.start
+            # Run in thread pool since the SDK may be synchronous
+            response = await asyncio.to_thread(
+                self.client.beta.conversations.start,
+                inputs=inputs,
+                model=self.model,
+                instructions=system_prompt or "",
+                completion_args=completion_args,
+                tools=[]
+            )
+            
+            # Extract text from response
+            # The response structure has outputs with content
+            text = ""
+            if hasattr(response, 'outputs') and response.outputs:
+                # Get the last output (assistant response)
+                last_output = response.outputs[-1]
+                if hasattr(last_output, 'content'):
+                    text = last_output.content
+                elif hasattr(last_output, 'text'):
+                    text = last_output.text
+                elif isinstance(last_output, dict):
+                    text = last_output.get('content', '') or last_output.get('text', '')
+                elif isinstance(last_output, str):
+                    text = last_output
+            elif hasattr(response, 'content'):
+                text = response.content
+            elif hasattr(response, 'text'):
+                text = response.text
+            elif isinstance(response, str):
+                text = response
+            
+            print(f"[Mistral] Response length: {len(text)} chars")
+            
+            if parse_json:
+                parsed = self._parse_json_response(text)
+                if parsed is not None:
+                    return parsed, True
+                else:
+                    print(f"[Mistral] Failed to parse JSON from response")
+                    return {"error": "Failed to parse JSON", "raw_text": text}, False
+            
+            return text, True
+            
+        except Exception as e:
+            print(f"[Mistral] API error: {e}")
+            traceback.print_exc()
+            return {"error": str(e)}, False
+    
+    async def analyze(self, initial_extraction: str) -> Tuple[Optional[AnalysisResult], bool]:
+        """
+        Analyze OCR extraction for issues.
+        
+        Args:
+            initial_extraction: Raw OCR output text
+            
+        Returns:
+            Tuple of (AnalysisResult or None, success_bool)
+        """
+        prompt = ANALYSIS_PROMPT.format(initial_extraction=initial_extraction)
+        
+        result, success = await self._call_llm(
+            prompt=prompt,
+            system_prompt=ANALYSIS_SYSTEM_PROMPT,
+            parse_json=True
+        )
+        
+        if success and isinstance(result, dict):
+            try:
+                return AnalysisResult.from_dict(result), True
+            except Exception as e:
+                print(f"[Mistral] Failed to parse analysis result: {e}")
+                return None, False
+        
+        return None, False
+    
+    async def estimate_regions(
+        self,
+        fields_to_reexamine: List[Dict[str, Any]],
+        image_width: int,
+        image_height: int
+    ) -> Tuple[List[RegionEstimate], bool]:
+        """
+        Estimate bounding box coordinates for fields.
+        
+        Args:
+            fields_to_reexamine: List of field dicts from analysis
+            image_width: Image width in pixels
+            image_height: Image height in pixels
+            
+        Returns:
+            Tuple of (list of RegionEstimate, success_bool)
+        """
+        prompt = REGION_ESTIMATION_PROMPT.format(
+            fields_to_reexamine=json.dumps(fields_to_reexamine, ensure_ascii=False, indent=2),
+            width=image_width,
+            height=image_height
+        )
+        
+        result, success = await self._call_llm(
+            prompt=prompt,
+            system_prompt=REGION_SYSTEM_PROMPT,
+            parse_json=True
+        )
+        
+        if success and isinstance(result, dict):
+            try:
+                regions = []
+                for r in result.get("regions", []):
+                    regions.append(RegionEstimate.from_dict(r))
+                return regions, True
+            except Exception as e:
+                print(f"[Mistral] Failed to parse region estimates: {e}")
+                return [], False
+        
+        return [], False
+    
+    async def merge(
+        self,
+        original_extraction: str,
+        refined_values: Dict[str, str]
+    ) -> Tuple[Optional[MergeResult], bool]:
+        """
+        Merge original and refined OCR results.
+        
+        Args:
+            original_extraction: Original full-page OCR text
+            refined_values: Dict of field_name -> refined_value from cropped re-OCR
+            
+        Returns:
+            Tuple of (MergeResult or None, success_bool)
+        """
+        prompt = MERGE_PROMPT.format(
+            original_extraction=original_extraction,
+            refined_values=json.dumps(refined_values, ensure_ascii=False, indent=2)
+        )
+        
+        result, success = await self._call_llm(
+            prompt=prompt,
+            system_prompt=MERGE_SYSTEM_PROMPT,
+            parse_json=True
+        )
+        
+        if success and isinstance(result, dict):
+            try:
+                return MergeResult.from_dict(result), True
+            except Exception as e:
+                print(f"[Mistral] Failed to parse merge result: {e}")
+                return None, False
+        
+        return None, False
+
+
+# =============================================================================
 # CLIENT FACTORY
 # =============================================================================
 
@@ -457,7 +732,7 @@ def create_clients(
     **kwargs
 ) -> Tuple[VLMClient, LLMClient]:
     """
-    Create VLM and LLM clients.
+    Create VLM and LLM clients (RunPod version).
     
     Args:
         vlm_endpoint: RunPod endpoint URL for VLM
@@ -471,3 +746,21 @@ def create_clients(
     vlm_client = VLMClient(vlm_endpoint, vlm_api_key, **kwargs)
     llm_client = LLMClient(llm_endpoint, llm_api_key, **kwargs)
     return vlm_client, llm_client
+
+
+def create_mistral_client(
+    api_key: str,
+    model: str = "mistral-large-latest",
+    **kwargs
+) -> MistralLLMClient:
+    """
+    Create Mistral LLM client.
+    
+    Args:
+        api_key: Mistral API key
+        model: Model to use (default: mistral-large-latest)
+        
+    Returns:
+        MistralLLMClient instance
+    """
+    return MistralLLMClient(api_key=api_key, model=model, **kwargs)

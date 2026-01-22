@@ -9,4 +9,4 @@ PyMuPDF==1.23.8  # For PDF to image conversion
 PyJWT[crypto]==2.10.1  # For Clerk JWT verification
 cryptography==45.0.5  # Required by PyJWT for RS256
 supabase==2.25.1  # For OCR history storage
-
+mistralai>=1.0.0  # For Mistral LLM API (agentic OCR reasoning)

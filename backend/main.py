@@ -2734,13 +2734,16 @@ async def process_structured_ocr(
 # AGENTIC OCR ENDPOINT - Multi-Pass Self-Correcting OCR
 # =============================================================================
 
-# LLM Configuration for Agentic OCR
+# LLM Configuration for Agentic OCR (Mistral API)
+MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY", "").strip() or None
+MISTRAL_MODEL = os.getenv("MISTRAL_MODEL", "mistral-large-latest")
+
+# Legacy RunPod LLM config (kept for backward compatibility, but Mistral is preferred)
 _llm_endpoint_raw = os.getenv("RUNPOD_LLM_ENDPOINT_URL", "")
 RUNPOD_LLM_ENDPOINT = _llm_endpoint_raw.strip() if _llm_endpoint_raw else None
 if RUNPOD_LLM_ENDPOINT and not RUNPOD_LLM_ENDPOINT.startswith(("http://", "https://")):
     RUNPOD_LLM_ENDPOINT = f"https://{RUNPOD_LLM_ENDPOINT}"
-
-RUNPOD_LLM_API_KEY = os.getenv("RUNPOD_LLM_API_KEY", RUNPOD_API_KEY)  # Fallback to main key
+RUNPOD_LLM_API_KEY = os.getenv("RUNPOD_LLM_API_KEY", RUNPOD_API_KEY)
 
 
 class AgenticFieldResult(BaseModel):
@@ -2777,7 +2780,7 @@ async def agentic_ocr(
     
     Uses dual-model architecture:
     - AIN VLM for vision/OCR tasks
-    - Qwen 2.5 LLM for reasoning/orchestration
+    - Mistral LLM for reasoning/orchestration (or RunPod LLM as fallback)
     
     Process:
     1. Initial full-page OCR
@@ -2790,17 +2793,16 @@ async def agentic_ocr(
     Takes 1-3 minutes for complex images.
     """
     try:
-        # Validate endpoints
+        # Validate VLM endpoint
         if not RUNPOD_ENDPOINT:
             raise HTTPException(status_code=500, detail="VLM service not configured")
         
-        if not RUNPOD_LLM_ENDPOINT:
-            # Fallback to single-pass OCR
-            print("[Agentic] LLM not configured, falling back to single-pass OCR")
-            # Call the regular structured OCR endpoint logic instead
+        # Check for LLM configuration (Mistral preferred, RunPod as fallback)
+        if not MISTRAL_API_KEY and not RUNPOD_LLM_ENDPOINT:
+            print("[Agentic] No LLM configured (neither Mistral nor RunPod)")
             raise HTTPException(
                 status_code=503, 
-                detail="Agentic OCR requires LLM endpoint. Please configure RUNPOD_LLM_ENDPOINT_URL."
+                detail="Agentic OCR requires an LLM. Please configure MISTRAL_API_KEY."
             )
         
         # Read and validate image
@@ -2815,25 +2817,52 @@ async def agentic_ocr(
         # Import agentic module
         try:
             from agentic import AgenticOCRController
-            from agentic.clients import VLMClient, LLMClient
+            from agentic.clients import VLMClient, MistralLLMClient, LLMClient
         except ImportError as e:
             raise HTTPException(
                 status_code=500, 
                 detail=f"Agentic module not available: {str(e)}"
             )
         
-        # Create clients
+        # Create VLM client
         vlm_client = VLMClient(
             endpoint_url=RUNPOD_ENDPOINT,
             api_key=RUNPOD_API_KEY,
             timeout=300.0
         )
         
-        llm_client = LLMClient(
-            endpoint_url=RUNPOD_LLM_ENDPOINT,
-            api_key=RUNPOD_LLM_API_KEY,
-            timeout=120.0
-        )
+        # Create LLM client (Mistral preferred, RunPod as fallback)
+        llm_client = None
+        if MISTRAL_API_KEY:
+            print(f"[Agentic] Using Mistral API with model: {MISTRAL_MODEL}")
+            try:
+                llm_client = MistralLLMClient(
+                    api_key=MISTRAL_API_KEY,
+                    model=MISTRAL_MODEL
+                )
+            except ImportError as e:
+                print(f"[Agentic] Mistral SDK not available: {e}")
+                if RUNPOD_LLM_ENDPOINT:
+                    print("[Agentic] Falling back to RunPod LLM")
+                else:
+                    raise HTTPException(
+                        status_code=500,
+                        detail="Mistral SDK not installed. Run: pip install mistralai"
+                    )
+        
+        if llm_client is None and RUNPOD_LLM_ENDPOINT:
+            print("[Agentic] Using RunPod LLM endpoint")
+            llm_client = LLMClient(
+                endpoint_url=RUNPOD_LLM_ENDPOINT,
+                api_key=RUNPOD_LLM_API_KEY,
+                timeout=120.0
+            )
+        
+        if llm_client is None:
+            raise HTTPException(
+                status_code=503,
+                detail="No LLM client could be initialized"
+            )
         
         # Create controller and process
         controller = AgenticOCRController(
