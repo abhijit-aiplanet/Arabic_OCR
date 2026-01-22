@@ -1,7 +1,7 @@
 """
 RunPod Handler for AIN Vision Language Model OCR
 This service runs on RunPod GPU instances and processes OCR requests
-Build trigger: 2025-01-13-v1 (Pre-baked model for faster cold starts)
+Build trigger: 2026-01-22-v1 (Network Volume caching for faster builds)
 """
 
 import runpod
@@ -19,15 +19,44 @@ import cv2
 from scipy import ndimage
 
 # =============================================================================
-# MODEL CONFIGURATION - Uses pre-downloaded model from Docker image
+# MODEL CONFIGURATION - Uses Network Volume for model caching
 # =============================================================================
 MODEL_ID = "MBZUAI/AIN"
 
-# HuggingFace cache directory - matches Dockerfile ENV
-# Model is pre-downloaded here during Docker build for fast cold starts
-HF_CACHE_DIR = os.environ.get('HF_HOME', '/app/hf_cache')
+# Network Volume path (standard RunPod mount point)
+NETWORK_VOLUME_PATH = "/runpod-volume"
+NETWORK_VOLUME_CACHE = os.path.join(NETWORK_VOLUME_PATH, "huggingface")
 
-# Ensure environment variables are set (redundant but safe)
+# Fallback to container cache if network volume not available
+CONTAINER_CACHE = "/app/hf_cache"
+
+
+def get_cache_directory():
+    """
+    Determine the best cache directory to use.
+    
+    Priority:
+    1. Network Volume (/runpod-volume/huggingface) - persistent across builds
+    2. Container cache (/app/hf_cache) - fallback
+    """
+    if os.path.exists(NETWORK_VOLUME_PATH):
+        # Network volume is mounted
+        os.makedirs(NETWORK_VOLUME_CACHE, exist_ok=True)
+        print(f"✅ Network Volume detected at {NETWORK_VOLUME_PATH}")
+        print(f"   Using cache directory: {NETWORK_VOLUME_CACHE}")
+        return NETWORK_VOLUME_CACHE
+    else:
+        # Fallback to container cache
+        os.makedirs(CONTAINER_CACHE, exist_ok=True)
+        print(f"⚠️ Network Volume not mounted at {NETWORK_VOLUME_PATH}")
+        print(f"   Using container cache: {CONTAINER_CACHE}")
+        return CONTAINER_CACHE
+
+
+# Initialize cache directory
+HF_CACHE_DIR = get_cache_directory()
+
+# Set environment variables for HuggingFace
 os.environ['HF_HOME'] = HF_CACHE_DIR
 os.environ['TRANSFORMERS_CACHE'] = HF_CACHE_DIR
 os.environ['HUGGINGFACE_HUB_CACHE'] = HF_CACHE_DIR
@@ -83,25 +112,45 @@ def check_flash_attn_available():
 def load_model():
     """Load the Arabic VLM model and processor with optimized attention for GPU.
     
-    Model is PRE-DOWNLOADED during Docker build, so this only loads from disk.
-    Cold start time: ~30-60s (vs ~180s if downloading from HuggingFace)
+    Model is cached on Network Volume for fast cold starts.
+    First run: Downloads model (~30GB) to Network Volume - takes 5-10 minutes
+    Subsequent runs: Loads from cache - takes ~30-60 seconds
     """
     global model, processor
     
     if model is not None and processor is not None:
         return
     
-    print("🔄 Loading Arabic VLM model from local cache...")
+    print("=" * 60)
+    print("🔄 Loading Arabic VLM model (MBZUAI/AIN)")
+    print("=" * 60)
     print(f"   Cache directory: {HF_CACHE_DIR}")
     
-    # Check if model is pre-downloaded
-    if os.path.exists(HF_CACHE_DIR):
-        cache_size = sum(os.path.getsize(os.path.join(dirpath, filename)) 
-                        for dirpath, dirnames, filenames in os.walk(HF_CACHE_DIR) 
-                        for filename in filenames) / (1024**3)
-        print(f"   Cache size: {cache_size:.2f} GB")
+    # Check if using Network Volume
+    using_network_volume = HF_CACHE_DIR.startswith(NETWORK_VOLUME_PATH)
+    if using_network_volume:
+        print(f"   ✅ Using Network Volume for persistent caching")
     else:
-        print("   ⚠️ Cache directory not found - model will be downloaded")
+        print(f"   ⚠️ Using container cache (not persistent)")
+    
+    # Check cache status
+    if os.path.exists(HF_CACHE_DIR):
+        try:
+            cache_size = sum(os.path.getsize(os.path.join(dirpath, filename)) 
+                            for dirpath, dirnames, filenames in os.walk(HF_CACHE_DIR) 
+                            for filename in filenames) / (1024**3)
+            print(f"   Cache size: {cache_size:.2f} GB")
+            
+            if cache_size > 20:
+                print(f"   ✅ Model appears to be cached (fast load expected)")
+            else:
+                print(f"   ⚠️ Cache is small - model may need to download")
+        except Exception as e:
+            print(f"   Could not calculate cache size: {e}")
+    else:
+        print("   📥 Cache directory empty - model will be downloaded")
+        print("   ⏳ First run will take 5-10 minutes to download ~30GB")
+        os.makedirs(HF_CACHE_DIR, exist_ok=True)
     
     try:
         # Use GPU if available

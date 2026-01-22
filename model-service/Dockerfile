@@ -1,17 +1,23 @@
 # RunPod Dockerfile for AIN Vision Language Model OCR
 # Using RunPod's Python base with CUDA support
-# Build trigger: 2025-01-13-v6 (Download only - no model loading, uses hf_hub_download)
+# Build trigger: 2026-01-22-v1 (Network Volume caching - no model pre-download)
+#
+# SETUP: Attach a Network Volume to store the model cache.
+# The model (~30GB) will download on first run and be cached.
+# Subsequent runs use the cached model (fast cold starts).
 FROM runpod/base:0.4.0-cuda11.8.0
 
 # Set working directory
 WORKDIR /app
 
 # =============================================================================
-# ENVIRONMENT VARIABLES FOR HUGGINGFACE CACHE
+# ENVIRONMENT VARIABLES
 # =============================================================================
-ENV HF_HOME=/app/hf_cache
-ENV TRANSFORMERS_CACHE=/app/hf_cache
-ENV HUGGINGFACE_HUB_CACHE=/app/hf_cache
+# Default to network volume path - handler.py will detect and use it
+ENV HF_HOME=/runpod-volume/huggingface
+ENV TRANSFORMERS_CACHE=/runpod-volume/huggingface
+ENV HUGGINGFACE_HUB_CACHE=/runpod-volume/huggingface
+ENV PYTHONUNBUFFERED=1
 
 # Update pip
 RUN python3 -m pip install --no-cache-dir --upgrade pip
@@ -30,19 +36,18 @@ RUN pip3 install --no-cache-dir ninja packaging || true
 RUN pip3 install --no-cache-dir flash-attn --no-build-isolation || echo "Flash Attention 2 not installed - using SDPA fallback"
 
 # =============================================================================
-# PRE-DOWNLOAD MODEL DURING BUILD (CRITICAL FOR FAST COLD STARTS)
+# NOTE: Model is NOT pre-downloaded during build anymore.
+# It will be downloaded on first run to the Network Volume and cached there.
+# This makes Docker builds fast (~5 min) and cold starts fast after first run.
 # =============================================================================
-# Copy and run the download script
-COPY download_model.py .
-RUN python3 download_model.py
 
 # =============================================================================
-# COPY HANDLER AND CLEANUP
+# COPY HANDLER
 # =============================================================================
 COPY handler.py .
 
-# Remove download script (not needed at runtime)
-RUN rm -f download_model.py
+# Verify syntax
+RUN python3 -m py_compile handler.py && echo "Handler syntax OK"
 
 # =============================================================================
 # RUNTIME
