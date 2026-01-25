@@ -374,11 +374,17 @@ class AgenticOCRController:
         Expected format:
         field_name: value [CONFIDENCE]
         
+        CRITICAL RULE: Empty values (---) should NEVER have high confidence.
+        An empty field means we couldn't read it, which is inherently uncertain.
+        
         Returns:
             Tuple of (fields_dict, confidence_dict)
         """
         fields = {}
         confidence = {}
+        
+        # Empty value markers
+        EMPTY_MARKERS = ["---", "[فارغ]", "[EMPTY]", "غير موجود", "[غير موجود]", "فارغ", ""]
         
         for line in text.strip().split("\n"):
             line = line.strip()
@@ -393,7 +399,7 @@ class AgenticOCRController:
             field_name = parts[0].strip()
             rest = parts[1].strip()
             
-            # Extract confidence level
+            # Extract confidence level from markers
             conf = "MEDIUM"  # default
             if "[HIGH]" in rest.upper():
                 conf = "HIGH"
@@ -405,10 +411,21 @@ class AgenticOCRController:
                 conf = "LOW"
                 rest = rest.replace("[LOW]", "").replace("[low]", "").strip()
             elif "[EMPTY]" in rest.upper():
-                conf = "HIGH"  # Empty is confirmed
+                conf = "LOW"  # Empty fields should be LOW confidence
                 rest = "---"
             
             value = rest.strip()
+            
+            # CRITICAL: Empty/missing values should NEVER have high confidence
+            # If we couldn't find a value, we are NOT confident about it
+            is_empty = any(marker in value or value == marker for marker in EMPTY_MARKERS)
+            if is_empty:
+                conf = "LOW"  # Force LOW confidence for empty values
+                value = "---"  # Normalize empty marker
+            
+            # Also check for unclear markers
+            if "؟" in value or "[غير واضح" in value:
+                conf = "LOW"
             
             # Store
             fields[field_name] = value
@@ -426,6 +443,9 @@ class AgenticOCRController:
     ) -> AgenticResult:
         """Build the final AgenticResult from processed data."""
         
+        # Empty value markers
+        EMPTY_MARKERS = ["---", "[فارغ]", "[EMPTY]", "غير موجود", "[غير موجود]", "فارغ", ""]
+        
         # Build field results
         field_results = []
         fields_needing_review = []
@@ -435,12 +455,35 @@ class AgenticOCRController:
             conf = confidence.get(field_name, "MEDIUM")
             
             # Check for empty markers
-            is_empty = value in ["---", "[فارغ]", "[EMPTY]", ""]
-            needs_review = conf == "LOW" or "؟" in value
+            is_empty = any(marker in value or value == marker for marker in EMPTY_MARKERS)
+            
+            # CRITICAL: Empty values should ALWAYS have LOW confidence
+            # and should ALWAYS need review
+            if is_empty:
+                conf = "LOW"
+                value = "---"  # Normalize
+            
+            # Check for unclear markers
+            has_uncertainty = "؟" in value or "[غير واضح" in value
+            if has_uncertainty:
+                conf = "LOW"
+            
+            # Determine if needs review
+            needs_review = conf == "LOW" or is_empty or has_uncertainty
             
             # Get validation result for this field
             val_result = validation.field_results.get(field_name)
-            validation_score = 100 if (not val_result or val_result.is_valid) else 50
+            
+            # Calculate validation score
+            # Empty fields get 20 (not 0, but not good either)
+            # Invalid fields get 50
+            # Valid fields get 100
+            if is_empty:
+                validation_score = 20
+            elif val_result and not val_result.is_valid:
+                validation_score = 50
+            else:
+                validation_score = 100
             
             # Count confidence levels
             if is_empty:
@@ -451,13 +494,25 @@ class AgenticOCRController:
             if needs_review:
                 fields_needing_review.append(field_name)
             
+            # Build review reason
+            review_reason = None
+            if needs_review:
+                reasons = []
+                if is_empty:
+                    reasons.append("Empty/missing value")
+                if has_uncertainty:
+                    reasons.append("Uncertain reading")
+                if conf == "LOW" and not is_empty and not has_uncertainty:
+                    reasons.append("Low confidence")
+                review_reason = "; ".join(reasons) if reasons else "Needs verification"
+            
             field_results.append(FieldResult(
                 field_name=field_name,
                 value=value,
                 confidence=conf.lower(),
                 source="agentic",
                 needs_review=needs_review,
-                review_reason="Low confidence or unclear" if needs_review else None,
+                review_reason=review_reason,
                 is_empty=is_empty,
                 validation_score=validation_score,
             ))
