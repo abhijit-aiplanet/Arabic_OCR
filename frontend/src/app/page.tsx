@@ -27,8 +27,10 @@ import {
   type StructuredExtractionData,
   type CreateTemplateRequest,
   type QueueStatus,
-  type AgenticOCRResponse
+  type AgenticOCRResponse,
+  type AgentTrace
 } from '@/lib/api'
+import AgentTracePanel from '@/components/AgentTrace'
 import type { OCRMode } from '@/components/TemplateSelector'
 import { getEffectivePrompt } from '@/lib/promptGenerator'
 import { parseStructuredOutput, type StructuredExtraction } from '@/lib/structuredParser'
@@ -877,42 +879,82 @@ export default function Home() {
               <div>
                 {(structuredMode || ocrMode === 'agentic' || ocrMode === 'structured') ? (
                   <div className="space-y-4">
-                    {/* Agentic mode stats banner */}
+                    {/* Agentic mode - Show Agent Trace */}
+                    {ocrMode === 'agentic' && (
+                      <AgentTracePanel
+                        trace={agenticResult?.agent_trace || null}
+                        isProcessing={isProcessing}
+                      />
+                    )}
+                    
+                    {/* Agentic mode quality banner */}
                     {ocrMode === 'agentic' && agenticResult && (
-                      <div className="p-4 bg-purple-50 border border-purple-100 rounded-xl">
+                      <div className={`p-4 rounded-xl border ${
+                        agenticResult.quality_status === 'passed' ? 'bg-green-50 border-green-200' :
+                        agenticResult.quality_status === 'warning' ? 'bg-yellow-50 border-yellow-200' :
+                        'bg-red-50 border-red-200'
+                      }`}>
                         <div className="flex items-center justify-between">
                           <div className="flex items-center gap-2">
-                            <Zap className="w-5 h-5 text-purple-600" />
-                            <span className="font-medium text-purple-900">Agentic OCR Results</span>
+                            <Zap className={`w-5 h-5 ${
+                              agenticResult.quality_status === 'passed' ? 'text-green-600' :
+                              agenticResult.quality_status === 'warning' ? 'text-yellow-600' :
+                              'text-red-600'
+                            }`} />
+                            <span className={`font-medium ${
+                              agenticResult.quality_status === 'passed' ? 'text-green-900' :
+                              agenticResult.quality_status === 'warning' ? 'text-yellow-900' :
+                              'text-red-900'
+                            }`}>
+                              Quality: {agenticResult.quality_score}% ({agenticResult.quality_status})
+                            </span>
                           </div>
                           <div className="flex items-center gap-4 text-sm">
-                            <span className="text-purple-700">
-                              {agenticResult.iterations_used} iteration{agenticResult.iterations_used > 1 ? 's' : ''}
+                            <span className="text-gray-600">
+                              🔧 {agenticResult.tool_calls} tools
                             </span>
-                            <span className="text-purple-600">
-                              {agenticResult.processing_time_seconds.toFixed(1)}s
+                            <span className="text-gray-600">
+                              ⏱️ {agenticResult.processing_time_seconds.toFixed(1)}s
                             </span>
                           </div>
                         </div>
-                        {agenticResult.fields_needing_review.length > 0 && (
-                          <div className="mt-2 text-sm text-amber-700 bg-amber-50 p-2 rounded-lg">
-                            <span className="font-medium">Fields needing review:</span>{' '}
-                            {agenticResult.fields_needing_review.join(', ')}
+                        
+                        {/* Hallucination warning */}
+                        {agenticResult.hallucination_detected && (
+                          <div className="mt-2 text-sm text-red-700 bg-red-100 p-2 rounded-lg">
+                            ⚠️ <span className="font-medium">Hallucination detected:</span>{' '}
+                            {agenticResult.hallucination_indicators.join(', ')}
                           </div>
                         )}
-                        <div className="mt-2 flex gap-4 text-xs text-purple-600">
-                          <span className="bg-green-100 text-green-700 px-2 py-0.5 rounded">
-                            {agenticResult.confidence_summary.high} high confidence
+                        
+                        {/* Fields needing review */}
+                        {agenticResult.fields_needing_review.length > 0 && (
+                          <div className="mt-2 text-sm text-amber-700 bg-amber-50 p-2 rounded-lg">
+                            <span className="font-medium">Fields needing review ({agenticResult.fields_needing_review.length}):</span>{' '}
+                            {agenticResult.fields_needing_review.slice(0, 5).join(', ')}
+                            {agenticResult.fields_needing_review.length > 5 && '...'}
+                          </div>
+                        )}
+                        
+                        {/* Confidence summary */}
+                        <div className="mt-3 flex flex-wrap gap-2 text-xs">
+                          <span className="bg-green-100 text-green-700 px-2 py-1 rounded-full">
+                            ✓ {agenticResult.confidence_summary.high} high
                           </span>
-                          <span className="bg-yellow-100 text-yellow-700 px-2 py-0.5 rounded">
-                            {agenticResult.confidence_summary.medium} medium
+                          <span className="bg-yellow-100 text-yellow-700 px-2 py-1 rounded-full">
+                            ~ {agenticResult.confidence_summary.medium} medium
                           </span>
-                          <span className="bg-red-100 text-red-700 px-2 py-0.5 rounded">
-                            {agenticResult.confidence_summary.low} low
+                          <span className="bg-red-100 text-red-700 px-2 py-1 rounded-full">
+                            ? {agenticResult.confidence_summary.low} low
+                          </span>
+                          <span className="bg-gray-100 text-gray-600 px-2 py-1 rounded-full">
+                            ∅ {agenticResult.confidence_summary.empty} empty
                           </span>
                         </div>
                       </div>
                     )}
+                    
+                    {/* Structured data display */}
                     <StructuredExtractor
                       imagePreview={imagePreview}
                       structuredData={structuredData}

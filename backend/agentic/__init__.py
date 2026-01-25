@@ -1,26 +1,31 @@
 """
-Agentic OCR Package - Surgical Precision Edition
+Agentic OCR Package - ReAct Agent Edition
 
 Multi-pass, self-correcting OCR system using Azure OpenAI GPT-4o-mini Vision.
 
 KEY FEATURES:
-- Surgical section-by-section extraction
-- Iterative zoom-in refinement for unclear fields
-- Format validation for Saudi documents (IDs, phones, dates)
-- Self-critique for hallucination detection
-- Continuous learning from user corrections
+- ReAct-style reasoning loop (Think → Act → Observe → Reflect)
+- Tool-based architecture (read_region, zoom_and_read, validate, reflect)
+- Full document + region-by-region extraction
+- Automatic zoom refinement for unclear fields
+- Format validation for Saudi documents
+- Real-time agent trace for transparency
+- Continuous learning from corrections
 
 Architecture:
-- controller: AgenticOCRController - surgical OCR pipeline
+- agent: AgenticOCRAgent - ReAct-style reasoning agent
+- tools: OCRTools - Tool collection for the agent
+- controller: AgenticOCRController - legacy surgical pipeline
 - azure_client: AzureVisionOCR - GPT-4o-mini vision client
-- image_processor: Image preprocessing and section detection
 - format_validator: Saudi document format validation
 - learning: Correction storage and few-shot learning
-- prompts: Section-specific extraction prompts
-- models: Pydantic models for data structures
 """
 
-# New surgical OCR imports
+# New ReAct Agent imports
+from .agent import AgenticOCRAgent, create_agent
+from .tools import OCRTools, ToolResult, FORM_REGIONS
+
+# Surgical OCR imports
 from .controller import AgenticOCRController, SinglePassController, create_controller
 from .azure_client import AzureVisionOCR, create_azure_client
 from .image_processor import ImageProcessor, Section, SectionType
@@ -67,7 +72,14 @@ except ImportError:
     QualityLevel = None
 
 __all__ = [
-    # New surgical OCR
+    # ReAct Agent (NEW)
+    "AgenticOCRAgent",
+    "create_agent",
+    "OCRTools",
+    "ToolResult",
+    "FORM_REGIONS",
+    
+    # Surgical OCR
     "AgenticOCRController",
     "SinglePassController",
     "create_controller",
@@ -101,4 +113,4 @@ __all__ = [
     "QualityLevel",
 ]
 
-__version__ = "3.0.0"  # Major version: Surgical OCR with Azure OpenAI
+__version__ = "4.0.0"  # Major version: ReAct Agent with Tools

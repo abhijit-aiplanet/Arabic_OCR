@@ -2783,6 +2783,25 @@ class QualityReportResponse(BaseModel):
     needs_human_review: bool = False
 
 
+class AgentStepResponse(BaseModel):
+    """A single step in the agent's reasoning process."""
+    step: int
+    state: str
+    thought: str
+    action: Optional[str] = None
+    observation: Optional[str] = None
+    confidence: str = "MEDIUM"
+
+
+class AgentTraceResponse(BaseModel):
+    """Complete trace of agent's reasoning."""
+    steps: List[AgentStepResponse]
+    total_time: float
+    tool_calls: int
+    iterations: int
+    quality_score: int
+
+
 class AgenticOCRResponse(BaseModel):
     """Response model for agentic OCR with quality information."""
     fields: List[AgenticFieldResult]
@@ -2794,12 +2813,16 @@ class AgenticOCRResponse(BaseModel):
     status: str
     error: Optional[str] = None
     
-    # Quality assessment fields (NEW)
+    # Quality assessment fields
     quality_score: int = 100
     quality_status: str = "passed"  # "passed", "warning", "failed", "rejected"
     quality_report: Optional[QualityReportResponse] = None
     hallucination_detected: bool = False
     hallucination_indicators: List[str] = []
+    
+    # Agent trace for UI (NEW)
+    agent_trace: Optional[AgentTraceResponse] = None
+    tool_calls: int = 0
 
 
 @app.post("/api/ocr/agentic", response_model=AgenticOCRResponse)
@@ -2809,18 +2832,22 @@ async def agentic_ocr(
     user: dict = Depends(verify_clerk_token)
 ):
     """
-    Surgical Agentic OCR with Azure OpenAI GPT-4o-mini.
+    ReAct-Style Agentic OCR with Azure OpenAI GPT-4o-mini.
     
-    Uses surgical precision approach:
-    1. Preprocess image (grayscale, contrast enhancement)
-    2. Detect document sections (header, general data, address, etc.)
-    3. Extract each section with section-specific prompts
-    4. Zoom-in refinement for unclear fields
-    5. Format validation (Saudi document formats)
-    6. Self-critique for hallucination detection
-    7. Learning integration from past corrections
+    The agent follows a reasoning loop:
+    1. THINK: Analyze current state
+    2. ACT: Use OCR tools (read_region, zoom_and_read, validate)
+    3. OBSERVE: Process results
+    4. REFLECT: Evaluate quality
+    5. REPEAT until confident
     
-    Typical processing time: 10-30 seconds.
+    Features:
+    - Full document extraction + region-by-region refinement
+    - Automatic zoom on unclear fields
+    - Format validation for Saudi documents
+    - Real-time agent trace for transparency
+    
+    Typical processing time: 30-90 seconds.
     """
     import time as time_module
     start_time = time_module.time()
@@ -2833,8 +2860,8 @@ async def agentic_ocr(
                 detail="Azure OpenAI not configured. Set AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT."
             )
         
-        print(f"[Surgical OCR] Starting request at {time_module.strftime('%H:%M:%S')}")
-        print(f"[Surgical OCR] Azure endpoint: {AZURE_OPENAI_ENDPOINT[:40]}...")
+        print(f"[Agent OCR] Starting request at {time_module.strftime('%H:%M:%S')}")
+        print(f"[Agent OCR] Azure endpoint: {AZURE_OPENAI_ENDPOINT[:40]}...")
         
         # Read and validate image
         contents = await file.read()
@@ -2842,21 +2869,20 @@ async def agentic_ocr(
             image = Image.open(io.BytesIO(contents))
             if image.mode not in ('RGB', 'L', 'RGBA'):
                 image = image.convert('RGB')
-            print(f"[Surgical OCR] Image loaded: {image.size[0]}x{image.size[1]}")
+            print(f"[Agent OCR] Image loaded: {image.size[0]}x{image.size[1]}")
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Invalid image: {str(e)}")
         
-        # Import agentic module (new surgical approach)
+        # Import new agentic module
         try:
-            from agentic.controller import AgenticOCRController
+            from agentic.agent import AgenticOCRAgent
             from agentic.azure_client import AzureVisionOCR
-            from agentic.learning import LearningModule
         except ImportError as e:
-            print(f"[Surgical OCR] Import error: {e}")
+            print(f"[Agent OCR] Import error: {e}")
             traceback.print_exc()
             raise HTTPException(
                 status_code=500, 
-                detail=f"Agentic module not available: {str(e)}"
+                detail=f"Agent module not available: {str(e)}"
             )
         
         # Create Azure Vision client
@@ -2866,79 +2892,78 @@ async def agentic_ocr(
             deployment=AZURE_DEPLOYMENT,
             api_version=AZURE_API_VERSION,
         )
-        print("[Surgical OCR] Azure client initialized")
+        print("[Agent OCR] Azure client initialized")
         
-        # Create learning module with Supabase
-        learning_module = LearningModule(supabase_client=supabase)
+        # Create the ReAct agent
+        agent = AgenticOCRAgent(azure_client=azure_client)
         
-        # Create surgical OCR controller
-        controller = AgenticOCRController(
-            azure_client=azure_client,
-            learning_module=learning_module,
-            enable_zoom_refinement=True,
-            enable_self_critique=True,
-        )
-        
-        # Get user ID for learning context
-        user_id = user.get("sub", "anonymous") if user else "anonymous"
-        
-        # Process image with surgical precision
-        print(f"[Surgical OCR] Starting surgical processing...")
-        result = await controller.process(image, user_id=user_id)
+        # Process image with agentic reasoning
+        print(f"[Agent OCR] Starting agentic processing...")
+        result = await agent.process(image)
         
         # Clean up
         await azure_client.close()
         
         elapsed = time_module.time() - start_time
-        print(f"[Agentic] Completed in {elapsed:.1f}s with {result.iterations_used} iterations")
+        print(f"[Agent OCR] Completed in {elapsed:.1f}s with {result.get('tool_calls', 0)} tool calls")
         
         # Log quality information
-        print(f"[Agentic] Quality score: {result.quality_score}/100")
-        print(f"[Agentic] Quality status: {result.quality_status}")
-        if result.hallucination_detected:
-            print(f"[Agentic] ⚠️ HALLUCINATION DETECTED: {result.hallucination_indicators}")
+        print(f"[Agent OCR] Quality score: {result.get('quality_score', 0)}/100")
+        print(f"[Agent OCR] Quality status: {result.get('quality_status', 'unknown')}")
+        if result.get('hallucination_detected'):
+            print(f"[Agent OCR] ⚠️ HALLUCINATION DETECTED")
         
-        # Build quality report response if available
-        quality_report_response = None
-        if result.quality_report:
-            quality_report_response = QualityReportResponse(
-                quality_score=result.quality_report.quality_score,
-                quality_status=result.quality_report.quality_status,
-                rejection_reasons=result.quality_report.rejection_reasons,
-                warning_reasons=result.quality_report.warning_reasons,
-                hallucination_indicators=result.quality_report.hallucination_indicators,
-                fields_to_review=result.quality_report.fields_to_review,
-                should_retry=result.quality_report.should_retry,
-                needs_human_review=result.quality_report.needs_human_review,
+        # Build agent trace for UI
+        agent_trace_response = None
+        if result.get('agent_trace'):
+            trace = result['agent_trace']
+            agent_trace_response = AgentTraceResponse(
+                steps=[
+                    AgentStepResponse(
+                        step=s.get('step', 0),
+                        state=s.get('state', ''),
+                        thought=s.get('thought', ''),
+                        action=s.get('action'),
+                        observation=s.get('observation'),
+                        confidence=s.get('confidence', 'MEDIUM'),
+                    )
+                    for s in trace.get('steps', [])
+                ],
+                total_time=trace.get('total_time', elapsed),
+                tool_calls=trace.get('tool_calls', 0),
+                iterations=trace.get('iterations', 1),
+                quality_score=trace.get('quality_score', 0),
             )
         
         # Convert to response model
         return AgenticOCRResponse(
             fields=[
                 AgenticFieldResult(
-                    field_name=f.field_name,
-                    value=f.value,
-                    confidence=f.confidence,
-                    source=f.source,
-                    needs_review=f.needs_review,
-                    review_reason=f.review_reason,
-                    is_empty=f.is_empty,
-                    validation_score=getattr(f, 'validation_score', 100)
+                    field_name=f.get('field_name', ''),
+                    value=f.get('value', ''),
+                    confidence=f.get('confidence', 'low'),
+                    source='agentic',
+                    needs_review=f.get('needs_review', False),
+                    review_reason=f.get('review_reason'),
+                    is_empty=f.get('is_empty', False),
+                    validation_score=f.get('validation_score', 100)
                 )
-                for f in result.fields
+                for f in result.get('fields', [])
             ],
-            raw_text=result.raw_text,
-            iterations_used=result.iterations_used,
-            processing_time_seconds=result.processing_time_seconds,
-            confidence_summary=result.confidence_summary,
-            fields_needing_review=result.fields_needing_review,
-            status=result.status,
-            error=result.error,
-            quality_score=result.quality_score,
-            quality_status=result.quality_status,
-            quality_report=quality_report_response,
-            hallucination_detected=result.hallucination_detected,
-            hallucination_indicators=result.hallucination_indicators,
+            raw_text=result.get('raw_text', ''),
+            iterations_used=result.get('iterations_used', 1),
+            processing_time_seconds=result.get('processing_time_seconds', elapsed),
+            confidence_summary=result.get('confidence_summary', {}),
+            fields_needing_review=result.get('fields_needing_review', []),
+            status=result.get('status', 'success'),
+            error=None,
+            quality_score=result.get('quality_score', 0),
+            quality_status=result.get('quality_status', 'warning'),
+            quality_report=None,  # Build from result if needed
+            hallucination_detected=result.get('hallucination_detected', False),
+            hallucination_indicators=result.get('hallucination_indicators', []),
+            agent_trace=agent_trace_response,
+            tool_calls=result.get('tool_calls', 0),
         )
         
     except HTTPException:

@@ -214,6 +214,35 @@ export interface AgenticFieldResult {
   needs_review: boolean
   review_reason?: string | null
   is_empty: boolean
+  validation_score?: number
+}
+
+export interface AgentStep {
+  step: number
+  state: string
+  thought: string
+  action?: string | null
+  observation?: string | null
+  confidence: string
+}
+
+export interface AgentTrace {
+  steps: AgentStep[]
+  total_time: number
+  tool_calls: number
+  iterations: number
+  quality_score: number
+}
+
+export interface QualityReport {
+  quality_score: number
+  quality_status: string
+  rejection_reasons?: string[]
+  warning_reasons?: string[]
+  hallucination_indicators?: string[]
+  fields_to_review?: string[]
+  should_retry?: boolean
+  needs_human_review?: boolean
 }
 
 export interface AgenticOCRResponse {
@@ -230,6 +259,15 @@ export interface AgenticOCRResponse {
   fields_needing_review: string[]
   status: string
   error?: string | null
+  // Quality info
+  quality_score: number
+  quality_status: string
+  quality_report?: QualityReport | null
+  hallucination_detected: boolean
+  hallucination_indicators: string[]
+  // Agent trace for UI
+  agent_trace?: AgentTrace | null
+  tool_calls: number
 }
 
 export interface AgenticOCRSettings {
