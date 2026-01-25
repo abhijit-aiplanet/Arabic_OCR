@@ -6,8 +6,8 @@ interface AgentStep {
   step: number;
   state: string;
   thought: string;
-  action?: string;
-  observation?: string;
+  action?: string | null;
+  observation?: string | null;
   confidence: string;
 }
 
