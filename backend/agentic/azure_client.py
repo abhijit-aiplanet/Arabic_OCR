@@ -175,7 +175,7 @@ class AzureVisionOCR:
                             ]
                         }
                     ],
-                    max_tokens=max_tokens,
+                    max_completion_tokens=max_tokens,
                     temperature=temperature,
                 )
                 
@@ -372,7 +372,7 @@ class AzureVisionOCR:
                         "content": prompt
                     }
                 ],
-                max_tokens=1024,
+                max_completion_tokens=1024,
                 temperature=0.1,
             )
             
@@ -518,7 +518,7 @@ async def test_connection() -> bool:
         response = await client.async_client.chat.completions.create(
             model=client.deployment,
             messages=[{"role": "user", "content": "Say 'connected'"}],
-            max_tokens=10,
+            max_completion_tokens=10,
         )
         return bool(response.choices)
     except Exception as e:
