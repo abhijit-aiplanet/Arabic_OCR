@@ -2755,10 +2755,23 @@ class AgenticFieldResult(BaseModel):
     needs_review: bool = False
     review_reason: Optional[str] = None
     is_empty: bool = False
+    validation_score: int = 100  # Per-field quality score
+
+
+class QualityReportResponse(BaseModel):
+    """Quality report for OCR extraction."""
+    quality_score: int
+    quality_status: str
+    rejection_reasons: List[str] = []
+    warning_reasons: List[str] = []
+    hallucination_indicators: List[str] = []
+    fields_to_review: List[str] = []
+    should_retry: bool = False
+    needs_human_review: bool = False
 
 
 class AgenticOCRResponse(BaseModel):
-    """Response model for agentic OCR."""
+    """Response model for agentic OCR with quality information."""
     fields: List[AgenticFieldResult]
     raw_text: str
     iterations_used: int
@@ -2767,6 +2780,13 @@ class AgenticOCRResponse(BaseModel):
     fields_needing_review: List[str]
     status: str
     error: Optional[str] = None
+    
+    # Quality assessment fields (NEW)
+    quality_score: int = 100
+    quality_status: str = "passed"  # "passed", "warning", "failed", "rejected"
+    quality_report: Optional[QualityReportResponse] = None
+    hallucination_detected: bool = False
+    hallucination_indicators: List[str] = []
 
 
 @app.post("/api/ocr/agentic", response_model=AgenticOCRResponse)
@@ -2905,6 +2925,26 @@ async def agentic_ocr(
         elapsed = time_module.time() - start_time
         print(f"[Agentic] Completed in {elapsed:.1f}s with {result.iterations_used} iterations")
         
+        # Log quality information
+        print(f"[Agentic] Quality score: {result.quality_score}/100")
+        print(f"[Agentic] Quality status: {result.quality_status}")
+        if result.hallucination_detected:
+            print(f"[Agentic] ⚠️ HALLUCINATION DETECTED: {result.hallucination_indicators}")
+        
+        # Build quality report response if available
+        quality_report_response = None
+        if result.quality_report:
+            quality_report_response = QualityReportResponse(
+                quality_score=result.quality_report.quality_score,
+                quality_status=result.quality_report.quality_status,
+                rejection_reasons=result.quality_report.rejection_reasons,
+                warning_reasons=result.quality_report.warning_reasons,
+                hallucination_indicators=result.quality_report.hallucination_indicators,
+                fields_to_review=result.quality_report.fields_to_review,
+                should_retry=result.quality_report.should_retry,
+                needs_human_review=result.quality_report.needs_human_review,
+            )
+        
         # Convert to response model
         return AgenticOCRResponse(
             fields=[
@@ -2915,7 +2955,8 @@ async def agentic_ocr(
                     source=f.source,
                     needs_review=f.needs_review,
                     review_reason=f.review_reason,
-                    is_empty=f.is_empty
+                    is_empty=f.is_empty,
+                    validation_score=getattr(f, 'validation_score', 100)
                 )
                 for f in result.fields
             ],
@@ -2925,7 +2966,12 @@ async def agentic_ocr(
             confidence_summary=result.confidence_summary,
             fields_needing_review=result.fields_needing_review,
             status=result.status,
-            error=result.error
+            error=result.error,
+            quality_score=result.quality_score,
+            quality_status=result.quality_status,
+            quality_report=quality_report_response,
+            hallucination_detected=result.hallucination_detected,
+            hallucination_indicators=result.hallucination_indicators,
         )
         
     except HTTPException:

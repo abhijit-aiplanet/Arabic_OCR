@@ -6,6 +6,7 @@ Data structures for:
 - Region estimates for cropping
 - Merge results from multiple OCR passes
 - Final agentic OCR output
+- Quality scoring and validation results
 """
 
 from dataclasses import dataclass, field
@@ -27,6 +28,118 @@ class FieldSource(Enum):
     ORIGINAL = "original"
     REFINED = "refined"
     MERGED = "merged"
+
+
+class QualityStatus(Enum):
+    """Quality status for extraction results."""
+    PASSED = "passed"           # Good quality, can use
+    WARNING = "warning"         # Usable but has issues
+    FAILED = "failed"           # Quality too low, should not use
+    REJECTED = "rejected"       # Definite hallucination detected
+
+
+class ValidationSeverity(Enum):
+    """Severity of validation issues."""
+    INFO = "info"
+    WARNING = "warning"
+    ERROR = "error"
+    CRITICAL = "critical"
+
+
+# =============================================================================
+# VALIDATION MODELS
+# =============================================================================
+
+@dataclass
+class ValidationIssue:
+    """A single validation issue found during quality checking."""
+    field_name: str
+    issue_type: str
+    severity: str  # "info", "warning", "error", "critical"
+    message: str
+    expected: Optional[str] = None
+    actual: Optional[str] = None
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "field_name": self.field_name,
+            "issue_type": self.issue_type,
+            "severity": self.severity,
+            "message": self.message,
+            "expected": self.expected,
+            "actual": self.actual,
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ValidationIssue":
+        return cls(
+            field_name=data.get("field_name", ""),
+            issue_type=data.get("issue_type", ""),
+            severity=data.get("severity", "warning"),
+            message=data.get("message", ""),
+            expected=data.get("expected"),
+            actual=data.get("actual"),
+        )
+
+
+@dataclass
+class QualityReport:
+    """Quality assessment report for an extraction."""
+    quality_score: int  # 0-100
+    quality_status: str  # "passed", "warning", "failed", "rejected"
+    
+    # Issue breakdown
+    validation_issues: List[ValidationIssue] = field(default_factory=list)
+    hallucination_indicators: List[str] = field(default_factory=list)
+    
+    # Field-level scores
+    field_scores: Dict[str, int] = field(default_factory=dict)
+    
+    # Duplicate detection
+    duplicate_values: Dict[str, List[str]] = field(default_factory=dict)
+    
+    # Recommendations
+    should_retry: bool = False
+    needs_human_review: bool = False
+    fields_to_review: List[str] = field(default_factory=list)
+    
+    # Summary
+    rejection_reasons: List[str] = field(default_factory=list)
+    warning_reasons: List[str] = field(default_factory=list)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "quality_score": self.quality_score,
+            "quality_status": self.quality_status,
+            "validation_issues": [i.to_dict() for i in self.validation_issues],
+            "hallucination_indicators": self.hallucination_indicators,
+            "field_scores": self.field_scores,
+            "duplicate_values": self.duplicate_values,
+            "should_retry": self.should_retry,
+            "needs_human_review": self.needs_human_review,
+            "fields_to_review": self.fields_to_review,
+            "rejection_reasons": self.rejection_reasons,
+            "warning_reasons": self.warning_reasons,
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "QualityReport":
+        return cls(
+            quality_score=data.get("quality_score", 0),
+            quality_status=data.get("quality_status", "failed"),
+            validation_issues=[
+                ValidationIssue.from_dict(i) 
+                for i in data.get("validation_issues", [])
+            ],
+            hallucination_indicators=data.get("hallucination_indicators", []),
+            field_scores=data.get("field_scores", {}),
+            duplicate_values=data.get("duplicate_values", {}),
+            should_retry=data.get("should_retry", False),
+            needs_human_review=data.get("needs_human_review", False),
+            fields_to_review=data.get("fields_to_review", []),
+            rejection_reasons=data.get("rejection_reasons", []),
+            warning_reasons=data.get("warning_reasons", []),
+        )
 
 
 # =============================================================================
@@ -100,6 +213,8 @@ class AnalysisStats:
     low_confidence: int = 0
     empty_fields: int = 0
     needs_reexamination: int = 0
+    hallucination_detected: bool = False
+    hallucination_type: Optional[str] = None
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "AnalysisStats":
@@ -110,6 +225,8 @@ class AnalysisStats:
             low_confidence=data.get("low_confidence", 0),
             empty_fields=data.get("empty_fields", 0),
             needs_reexamination=data.get("needs_reexamination", 0),
+            hallucination_detected=data.get("hallucination_detected", False),
+            hallucination_type=data.get("hallucination_type"),
         )
 
 
@@ -120,6 +237,7 @@ class AnalysisResult:
     fields_to_reexamine: List[FieldToReexamine] = field(default_factory=list)
     confident_fields: List[ConfidentField] = field(default_factory=list)
     empty_fields: List[EmptyField] = field(default_factory=list)
+    hallucination_warnings: List[str] = field(default_factory=list)
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "AnalysisResult":
@@ -139,11 +257,19 @@ class AnalysisResult:
                 EmptyField.from_dict(f)
                 for f in data.get("empty_fields", [])
             ],
+            hallucination_warnings=data.get("hallucination_warnings", []),
         )
     
     def has_fields_to_reexamine(self) -> bool:
         """Check if there are fields needing re-examination."""
         return len(self.fields_to_reexamine) > 0
+    
+    def has_hallucination_warning(self) -> bool:
+        """Check if hallucination was detected."""
+        return (
+            self.analysis.hallucination_detected or 
+            len(self.hallucination_warnings) > 0
+        )
 
 
 # =============================================================================
@@ -220,10 +346,29 @@ class MergeSummary:
 
 
 @dataclass
+class MergeQualityCheck:
+    """Quality check results from merge operation."""
+    duplicate_values_found: bool = False
+    year_as_value_found: bool = False
+    suspicious_fills: List[str] = field(default_factory=list)
+    quality_improved: bool = True
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "MergeQualityCheck":
+        return cls(
+            duplicate_values_found=data.get("duplicate_values_found", False),
+            year_as_value_found=data.get("year_as_value_found", False),
+            suspicious_fills=data.get("suspicious_fills", []),
+            quality_improved=data.get("quality_improved", True),
+        )
+
+
+@dataclass
 class MergeResult:
     """Complete merge result from LLM."""
     final_fields: Dict[str, FinalFieldValue] = field(default_factory=dict)
     summary: MergeSummary = field(default_factory=MergeSummary)
+    merge_quality_check: MergeQualityCheck = field(default_factory=MergeQualityCheck)
     iteration_complete: bool = True
     fields_still_uncertain: List[str] = field(default_factory=list)
     
@@ -236,8 +381,19 @@ class MergeResult:
         return cls(
             final_fields=final_fields,
             summary=MergeSummary.from_dict(data.get("summary", {})),
+            merge_quality_check=MergeQualityCheck.from_dict(
+                data.get("merge_quality_check", {})
+            ),
             iteration_complete=data.get("iteration_complete", True),
             fields_still_uncertain=data.get("fields_still_uncertain", []),
+        )
+    
+    def has_quality_issues(self) -> bool:
+        """Check if merge found quality issues."""
+        return (
+            self.merge_quality_check.duplicate_values_found or
+            self.merge_quality_check.year_as_value_found or
+            len(self.merge_quality_check.suspicious_fills) > 0
         )
 
 
@@ -255,6 +411,7 @@ class FieldResult:
     needs_review: bool = False
     review_reason: Optional[str] = None
     is_empty: bool = False
+    validation_score: int = 100  # Per-field quality score
     raw_extractions: Dict[str, str] = field(default_factory=dict)  # iteration -> value
 
 
@@ -281,6 +438,15 @@ class AgenticResult:
     status: str = "success"
     error: Optional[str] = None
     
+    # Quality assessment (NEW)
+    quality_score: int = 100  # 0-100, overall extraction quality
+    quality_status: str = "passed"  # "passed", "warning", "failed", "rejected"
+    quality_report: Optional[QualityReport] = None
+    
+    # Hallucination detection (NEW)
+    hallucination_detected: bool = False
+    hallucination_indicators: List[str] = field(default_factory=list)
+    
     # Processing trace (for debugging)
     trace: List[Dict[str, Any]] = field(default_factory=list)
     
@@ -296,6 +462,7 @@ class AgenticResult:
                     "needs_review": f.needs_review,
                     "review_reason": f.review_reason,
                     "is_empty": f.is_empty,
+                    "validation_score": f.validation_score,
                 }
                 for f in self.fields
             ],
@@ -306,6 +473,11 @@ class AgenticResult:
             "fields_needing_review": self.fields_needing_review,
             "status": self.status,
             "error": self.error,
+            "quality_score": self.quality_score,
+            "quality_status": self.quality_status,
+            "quality_report": self.quality_report.to_dict() if self.quality_report else None,
+            "hallucination_detected": self.hallucination_detected,
+            "hallucination_indicators": self.hallucination_indicators,
         }
     
     def get_field_value(self, field_name: str) -> Optional[str]:
@@ -318,3 +490,15 @@ class AgenticResult:
     def get_fields_dict(self) -> Dict[str, str]:
         """Get all fields as a simple dict."""
         return {f.field_name: f.value for f in self.fields}
+    
+    def is_usable(self) -> bool:
+        """Check if result is usable (not rejected)."""
+        return self.quality_status in ("passed", "warning")
+    
+    def needs_review(self) -> bool:
+        """Check if result needs human review."""
+        return (
+            self.quality_status == "warning" or
+            len(self.fields_needing_review) > 0 or
+            self.hallucination_detected
+        )

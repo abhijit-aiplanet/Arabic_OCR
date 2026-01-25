@@ -704,8 +704,120 @@ def extract_text_from_image(
         raise RuntimeError(error_msg)
 
 
+def _check_output_sanity(text: str) -> dict:
+    """
+    Basic sanity check on VLM output to detect obvious hallucinations.
+    
+    Checks for:
+    1. Value propagation (same value appearing too many times)
+    2. Year-only values in most fields
+    3. No Arabic content
+    4. Suspicious sequential numbers
+    
+    Returns:
+        dict with 'passed', 'warnings', and 'quality_score'
+    """
+    if not text or len(text) < 10:
+        return {
+            "passed": True,  # Empty is ok, let higher level handle
+            "warnings": [],
+            "quality_score": 50
+        }
+    
+    warnings = []
+    quality_score = 100
+    
+    # Parse lines
+    lines = [l.strip() for l in text.split('\n') if l.strip() and ':' in l]
+    
+    if len(lines) < 2:
+        return {"passed": True, "warnings": [], "quality_score": 70}
+    
+    # Extract values (after the colon)
+    values = []
+    for line in lines:
+        parts = line.split(':', 1)
+        if len(parts) == 2:
+            value = parts[1].strip()
+            # Remove confidence markers
+            for marker in ['[HIGH]', '[MEDIUM]', '[LOW]', '[فارغ]', '[غير واضح', '[غير مقروء]']:
+                value = value.replace(marker, '').strip()
+            if value:
+                values.append(value)
+    
+    if not values:
+        return {"passed": True, "warnings": [], "quality_score": 70}
+    
+    # Check 1: Value propagation
+    from collections import Counter
+    value_counts = Counter(values)
+    most_common_value, most_common_count = value_counts.most_common(1)[0]
+    
+    propagation_ratio = most_common_count / len(values)
+    if propagation_ratio >= 0.4 and most_common_count >= 3:
+        warnings.append(
+            f"VALUE_PROPAGATION: '{most_common_value[:20]}...' appears in "
+            f"{most_common_count}/{len(values)} fields ({propagation_ratio:.0%})"
+        )
+        quality_score -= 30
+    
+    # Check 2: Year-only values (1300-1500 range)
+    year_count = 0
+    for value in values:
+        # Extract digits
+        digits = ''.join(c for c in value if c.isdigit() or c in '٠١٢٣٤٥٦٧٨٩')
+        # Convert Arabic digits
+        for ar, en in [('٠','0'),('١','1'),('٢','2'),('٣','3'),('٤','4'),
+                       ('٥','5'),('٦','6'),('٧','7'),('٨','8'),('٩','9')]:
+            digits = digits.replace(ar, en)
+        
+        if len(digits) == 4:
+            try:
+                year = int(digits)
+                if 1300 <= year <= 1500:  # Hijri year range
+                    year_count += 1
+            except ValueError:
+                pass
+    
+    if year_count >= 3 and year_count / len(values) >= 0.3:
+        warnings.append(
+            f"YEAR_AS_VALUE: {year_count}/{len(values)} values are year-like numbers"
+        )
+        quality_score -= 20
+    
+    # Check 3: No Arabic content
+    arabic_count = sum(1 for v in values if any('\u0600' <= c <= '\u06FF' for c in v))
+    if arabic_count == 0 and len(values) >= 3:
+        warnings.append("NO_ARABIC: No Arabic text in any value")
+        quality_score -= 15
+    
+    # Check 4: Suspicious sequential numbers
+    suspicious_patterns = ['1234567890', '0987654321', '1111111111', '0000000000']
+    for value in values:
+        digits = ''.join(c for c in value if c.isdigit())
+        if digits in suspicious_patterns:
+            warnings.append(f"SEQUENTIAL: Suspicious pattern '{digits}' detected")
+            quality_score -= 15
+            break
+    
+    quality_score = max(0, quality_score)
+    passed = quality_score >= 40 and propagation_ratio < 0.5
+    
+    if warnings:
+        print(f"⚠️ Output sanity check warnings:")
+        for w in warnings:
+            print(f"   - {w}")
+        print(f"   Quality score: {quality_score}/100")
+    
+    return {
+        "passed": passed,
+        "warnings": warnings,
+        "quality_score": quality_score
+    }
+
+
 def handler(job):
-    """RunPod handler function."""
+    """RunPod handler function with output sanity checking."""
     try:
         job_input = job.get("input", {})
         
@@ -741,12 +853,21 @@ def handler(job):
         extracted_text = extracted.get("text", "") if isinstance(extracted, dict) else str(extracted)
         token_confidence = extracted.get("token_confidence") if isinstance(extracted, dict) else None
 
+        # Run output sanity check
+        sanity_result = _check_output_sanity(extracted_text)
+        
         print(f"✅ Returning {len(extracted_text)} characters")
+        print(f"📊 Output quality score: {sanity_result['quality_score']}/100")
         
         return {
             "text": extracted_text,
             "token_confidence": token_confidence,
-            "status": "success"
+            "status": "success",
+            "output_quality": {
+                "passed": sanity_result["passed"],
+                "score": sanity_result["quality_score"],
+                "warnings": sanity_result["warnings"]
+            }
         }
         
     except Exception as e:
