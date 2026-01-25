@@ -234,10 +234,12 @@ class AzureVisionOCR:
         if learning_context:
             full_prompt = f"{section_prompt}\n\n## Learning from past corrections:\n{learning_context}"
         
+        # o4-mini is a reasoning model - it needs MORE tokens because
+        # internal reasoning consumes tokens before generating output
         return await self.extract(
             image_base64=image_base64,
             prompt=full_prompt,
-            max_tokens=2048,
+            max_tokens=16000,  # Increased from 2048 - reasoning models need more
         )
     
     async def extract_field(
