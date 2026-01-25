@@ -76,68 +76,45 @@ class AgentTrace:
         }
 
 
-# The ONE prompt - conservative on high-risk fields
-EXTRACTION_PROMPT = """أنت خبير في قراءة النماذج الحكومية السعودية.
+# The ONE prompt - VERY conservative, no guessing
+EXTRACTION_PROMPT = """اقرأ هذا النموذج السعودي واستخرج القيم المكتوبة.
 
-## قاعدة ذهبية: لا تخمن أبداً
-إذا لم تكن متأكداً ١٠٠٪ من القراءة، اكتب --- أو أضف علامة ؟
+## قواعد صارمة جداً:
 
-## حقول عالية الخطورة (لا تخمن أبداً):
-- الأسماء: اكتب فقط ما تقرأه بوضوح. إذا غير واضح: ---
-- المؤهل: اكتب فقط إذا مكتوب بوضوح (أمي/ابتدائي/متوسط/ثانوي/جامعي)
-- نوع النشاط: اكتب فقط إذا مكتوب بوضوح. إذا غير واضح: ---
-- الحي: اكتب فقط إذا مكتوب. إذا فارغ: ---
-- مصدر الهوية/الرخصة: اكتب اسم المدينة المكتوب فقط
+### الأسماء (اسم_المالك، اسم_مقدم_الطلب):
+- إذا لم تستطع قراءة الاسم بوضوح تام: اكتب ---
+- لا تخمن أسماء عربية
+- الخطأ في الاسم خطير جداً
 
-## تنسيقات سعودية:
-- رقم الهوية: ١٠ أرقام تبدأ بـ ١ (مثال: ١٠٣٨٣٦٧٦٦٨)
-- الجوال: ١٠ أرقام تبدأ بـ ٠٥ (مثال: ٠٥٠٧٤٧٧٩٩٨)
-- التواريخ: يوم/شهر/سنة (السنة ٤ أرقام: ١٣٨٥ أو ١٤٣٧)
+### نوع_النشاط:
+- إذا غير واضح أو صعب القراءة: اكتب ---
+- لا تخمن نوع النشاط
 
-## الحقول:
-اسم_المالك
-رقم_الهوية
-مصدرها
-تاريخها
-تاريخ_الميلاد
-الحالة_الاجتماعية
-عدد_من_يعولهم
-المؤهل
-المدينة
-الحي
-الشارع
-رقم_المبنى
-جوال
-البريد_الإلكتروني
-فاكس
-نوع_النشاط
-مدينة_مزاولة_النشاط
-تاريخ_بدء_النشاط
-تاريخ_انتهاء_الترخيص
-رقم_رخصة_القيادة
-تاريخ_إصدار_الرخصة
-تاريخ_انتهاء_الرخصة
-مصدر_الرخصة
-نوع_المركبة
-الموديل
-اللون
-رقم_اللوحة
-سنة_الصنع
-اسم_مقدم_الطلب
-صفته
-توقيعه
-تاريخ_التوقيع
+### الأرقام (رقم_الهوية، رقم_رخصة_القيادة):
+- اكتب الأرقام التي تراها بوضوح
+- إذا رقم غير واضح أضف ؟ بدل الرقم
+- مثال: ١٠٣٨؟؟٦٦٨٠
+
+### التواريخ:
+- اكتب التاريخ كما تراه
+- لا تصحح أو تغير الأرقام
+
+### الحقول الفارغة:
+- إذا الحقل فارغ في الصورة: ---
+
+## الحقول المطلوبة:
+اسم_المالك، رقم_الهوية، مصدرها، تاريخها، تاريخ_الميلاد، الحالة_الاجتماعية، عدد_من_يعولهم، المؤهل، المدينة، الحي، الشارع، رقم_المبنى، جوال، البريد_الإلكتروني، فاكس، نوع_النشاط، مدينة_مزاولة_النشاط، تاريخ_بدء_النشاط، تاريخ_انتهاء_الترخيص، رقم_رخصة_القيادة، تاريخ_إصدار_الرخصة، تاريخ_انتهاء_الرخصة، مصدر_الرخصة، نوع_المركبة، الموديل، اللون، رقم_اللوحة، سنة_الصنع، اسم_مقدم_الطلب، صفته، توقيعه، تاريخ_التوقيع
 
 ## التنسيق:
-اسم_الحقل: القيمة [HIGH/MEDIUM/LOW]
+حقل: قيمة [HIGH/MEDIUM/LOW]
 
-## أمثلة صحيحة:
-اسم_المالك: عبدالله؟ محمد العتيبي [MEDIUM]
-رقم_الهوية: ١٠٣٨٣؟٧٦٦٨ [MEDIUM]
-المؤهل: --- [LOW]
-الحي: --- [LOW]
-نوع_النشاط: --- [LOW]
+## مثال:
+رقم_الهوية: ١٠٣٨٣٢٦٦٨٠ [HIGH]
+اسم_المالك: --- [LOW]
+المؤهل: أمي [HIGH]
 جوال: ٠٥٠٧٤٧٧٩٩٨ [HIGH]
+نوع_النشاط: --- [LOW]
+الحي: --- [LOW]
 توقيعه: [توقيع موجود] [HIGH]
 
 ابدأ:"""
@@ -270,55 +247,23 @@ class AgenticOCRAgent:
         return self._build_result(fields, confidence, validation)
     
     def _normalize_value(self, field_name: str, value: str) -> str:
-        """Apply Saudi format rules to normalize values."""
+        """Apply minimal Saudi format rules - only for phone numbers."""
         if not value or value == "---":
             return value
         
-        # Normalize phone numbers - must be 10 digits starting with 05
+        # Normalize phone numbers only - must be 10 digits starting with 05
+        # This is the ONE normalization that consistently works
         if "جوال" in field_name or "هاتف" in field_name:
-            # Remove any non-digit characters (keep Arabic numerals)
             digits = ''.join(c for c in value if c in '٠١٢٣٤٥٦٧٨٩0123456789')
-            # Convert to Arabic numerals
             digits = digits.translate(str.maketrans('0123456789', '٠١٢٣٤٥٦٧٨٩'))
-            # Add 05 prefix if missing
             if len(digits) == 8 and not digits.startswith('٠٥'):
                 digits = '٠٥٠' + digits
             elif len(digits) == 9 and digits.startswith('٥'):
                 digits = '٠' + digits
             return digits if digits else value
         
-        # Validate ID numbers - Saudi IDs start with 1, not 2
-        if "هوية" in field_name or "رقم_الهوية" == field_name:
-            # If starts with ٢, it's likely a misread ١
-            if value.startswith('٢'):
-                value = '١' + value[1:]  # Correct the leading digit
-            return value
-        
-        # Normalize dates - ensure 4-digit Hijri years
-        if "تاريخ" in field_name:
-            import re
-            arabic_pattern = r'([٠-٩]{1,2})[/\-]([٠-٩]{1,2})[/\-]([٠-٩]{2})(?![٠-٩])'
-            
-            # Fix Arabic numerals
-            def fix_arabic_year(m):
-                day, month, year = m.groups()
-                # Add century prefix (13 or 14)
-                if year.startswith('٨') or year.startswith('٩'):
-                    year = '١٣' + year
-                elif year.startswith('٠') or year.startswith('١') or year.startswith('٢') or year.startswith('٣') or year.startswith('٤'):
-                    year = '١٤' + year
-                return f"{day}/{month}/{year}"
-            
-            value = re.sub(arabic_pattern, fix_arabic_year, value)
-            return value
-        
-        # Validate education - only allow known values
-        if field_name == "المؤهل":
-            known_values = ['أمي', 'ابتدائي', 'متوسط', 'ثانوي', 'جامعي', 'دبلوم', 'ماجستير', 'دكتوراه']
-            # If value doesn't match known education levels, mark as uncertain
-            if value not in known_values and '؟' not in value:
-                return value + '؟'
-        
+        # NO other auto-corrections - let the model's raw output through
+        # Auto-corrections were masking errors and adding noise
         return value
     
     def _parse_response(self, text: str) -> tuple:
