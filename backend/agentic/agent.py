@@ -8,6 +8,7 @@ then parses the response. No over-engineered section detection or zoom.
 """
 
 import time
+import sys
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any, Callable
 from PIL import Image
@@ -17,6 +18,12 @@ import io
 
 from .azure_client import AzureVisionOCR
 from .format_validator import FormatValidator
+
+
+def log(msg: str):
+    """Force-flush logging."""
+    print(msg)
+    sys.stdout.flush()
 
 
 class AgentState(Enum):
@@ -190,7 +197,7 @@ class AgenticOCRAgent:
         start_time = time.time()
         self.trace = AgentTrace()
         
-        print("[Agent] Starting simple extraction...")
+        log("[Agent] Starting simple extraction...")
         
         # Step 1: Prepare
         self._add_step(
@@ -205,11 +212,18 @@ class AgenticOCRAgent:
             action="extract_all"
         )
         
+        log("[Agent] Converting image to base64...")
         image_b64 = self._image_to_base64(image)
+        log(f"[Agent] Base64 length: {len(image_b64)}")
+        
+        log("[Agent] Calling Azure Vision API...")
         result = await self.azure.extract_section(image_b64, EXTRACTION_PROMPT)
         self.trace.tool_calls += 1
         
+        log(f"[Agent] API returned: success={result.success}, text_len={len(result.text) if result.text else 0}, error={result.error}")
+        
         if not result.success:
+            log(f"[Agent] EXTRACTION FAILED: {result.error}")
             self._add_step(
                 AgentState.COMPLETE.value,
                 f"Extraction failed: {result.error}",
@@ -217,13 +231,14 @@ class AgenticOCRAgent:
             )
             return self._build_empty_result(time.time() - start_time, result.error)
         
-        # DEBUG: Log raw response
-        print(f"[Agent] Raw response length: {len(result.text) if result.text else 0}")
-        print(f"[Agent] Raw response preview: {result.text[:1000] if result.text else 'EMPTY'}")
+        # Log raw response
+        log(f"[Agent] RAW RESPONSE START ===")
+        log(result.text[:2000] if result.text else "EMPTY")
+        log(f"[Agent] RAW RESPONSE END ===")
         
         # Step 3: Parse response
         fields, confidence = self._parse_response(result.text)
-        print(f"[Agent] Parsed fields: {list(fields.keys())}")
+        log(f"[Agent] Parsed {len(fields)} fields: {list(fields.keys())}")
         
         self._add_step(
             AgentState.EXTRACTING.value,
@@ -264,7 +279,7 @@ class AgenticOCRAgent:
             f"Complete: {non_empty}/{total} fields extracted, {quality_score}% quality"
         )
         
-        print(f"[Agent] Done! {non_empty}/{total} fields, {quality_score}% quality in {self.trace.total_time:.1f}s")
+        log(f"[Agent] Done! {non_empty}/{total} fields, {quality_score}% quality in {self.trace.total_time:.1f}s")
         
         return self._build_result(fields, confidence, validation)
     
@@ -274,11 +289,11 @@ class AgenticOCRAgent:
         confidence = {}
         
         if not text:
-            print("[Parser] Empty text!")
+            log("[Parser] Empty text!")
             return fields, confidence
         
         lines = text.strip().split("\n")
-        print(f"[Parser] Total lines: {len(lines)}")
+        log(f"[Parser] Total lines: {len(lines)}")
         
         for i, line in enumerate(lines):
             line = line.strip()
@@ -301,10 +316,10 @@ class AgenticOCRAgent:
             
             # Skip if field name looks like instruction
             if len(field_name) > 40 or "مثال" in field_name or "تنسيق" in field_name:
-                print(f"[Parser] Skipping instruction line: {field_name[:30]}...")
+                log(f"[Parser] Skipping instruction: {field_name[:30]}...")
                 continue
             
-            print(f"[Parser] Found field: {field_name} = {value_part[:30] if value_part else 'empty'}...")
+            log(f"[Parser] Found: {field_name} = {value_part[:30] if value_part else 'empty'}")
             
             # Extract confidence marker
             conf = "MEDIUM"
