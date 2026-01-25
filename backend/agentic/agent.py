@@ -76,51 +76,23 @@ class AgentTrace:
         }
 
 
-# Balanced prompt - conservative on names, extract clear fields
-EXTRACTION_PROMPT = """اقرأ هذا النموذج السعودي واستخرج كل القيم المكتوبة.
+# Simple, direct prompt - let post-processing handle validation
+EXTRACTION_PROMPT = """اقرأ هذا النموذج السعودي واستخرج القيم المكتوبة.
 
-## قواعد مهمة:
+اقرأ بدقة. إذا الحقل فارغ اكتب ---
 
-### حقول عالية الخطورة (كن حذراً جداً):
-- اسم_المالك: إذا غير واضح تماماً، اكتب ---
-- اسم_مقدم_الطلب: إذا غير واضح تماماً، اكتب ---
-- نوع_النشاط: إذا غير واضح، اكتب ---
-
-### حقول يجب استخراجها (عادة واضحة):
-- المدينة: اقرأها (عادة مكتوبة بوضوح مثل "جدة")
-- مدينة_مزاولة_النشاط: اقرأها (عادة نفس المدينة)
-- جوال: اقرأ كل الأرقام بدقة
-- التواريخ: اقرأها كما هي
-- المؤهل: اقرأه (أمي/ابتدائي/متوسط/ثانوي/جامعي)
-- الحالة_الاجتماعية: اقرأها
-
-### الأرقام:
-- رقم_الهوية: ١٠ أرقام تبدأ بـ ١
-- جوال: ١٠ أرقام تبدأ بـ ٠٥
-- اقرأ كل رقم بدقة، رقم رقم
-
-### الحقول الفارغة:
-- إذا الحقل فارغ في الصورة: ---
-
-## الحقول:
+الحقول:
 اسم_المالك، رقم_الهوية، مصدرها، تاريخها، تاريخ_الميلاد، الحالة_الاجتماعية، عدد_من_يعولهم، المؤهل، المدينة، الحي، الشارع، رقم_المبنى، جوال، البريد_الإلكتروني، فاكس، نوع_النشاط، مدينة_مزاولة_النشاط، تاريخ_بدء_النشاط، تاريخ_انتهاء_الترخيص، رقم_رخصة_القيادة، تاريخ_إصدار_الرخصة، تاريخ_انتهاء_الرخصة، مصدر_الرخصة، نوع_المركبة، الموديل، اللون، رقم_اللوحة، سنة_الصنع، اسم_مقدم_الطلب، صفته، توقيعه، تاريخ_التوقيع
 
-## التنسيق:
+التنسيق:
 حقل: قيمة [HIGH/MEDIUM/LOW]
 
-## مثال على استخراج صحيح:
-المدينة: جدة [HIGH]
-مدينة_مزاولة_النشاط: جدة [HIGH]
-جوال: ٠٥٠٧٤٧٧٩٩٨ [HIGH]
-رقم_الهوية: ١٠٣٨٣٢٦٦٨٠ [HIGH]
-تاريخ_الميلاد: ١/٧/١٣٨٥ [HIGH]
-المؤهل: أمي [HIGH]
-الحالة_الاجتماعية: متزوج [HIGH]
-اسم_المالك: --- [LOW]
-نوع_النشاط: --- [LOW]
-توقيعه: [توقيع موجود] [HIGH]
+ملاحظات:
+- رقم_الهوية: ١٠ أرقام تبدأ بـ ١
+- جوال: ١٠ أرقام تبدأ بـ ٠٥
+- إذا توجد توقيع: [توقيع موجود]
 
-ابدأ الاستخراج:"""
+ابدأ:"""
 
 
 class AgenticOCRAgent:
@@ -249,25 +221,62 @@ class AgenticOCRAgent:
         
         return self._build_result(fields, confidence, validation)
     
-    def _normalize_value(self, field_name: str, value: str) -> str:
-        """Apply minimal Saudi format rules - only for phone numbers."""
+    def _normalize_and_validate(self, field_name: str, value: str, confidence: str) -> tuple:
+        """Validate values and downgrade confidence if suspicious."""
         if not value or value == "---":
-            return value
+            return value, "LOW"
         
-        # Normalize phone numbers only - must be 10 digits starting with 05
-        # This is the ONE normalization that consistently works
+        # Phone numbers - must be 10 digits starting with 05
         if "جوال" in field_name or "هاتف" in field_name:
             digits = ''.join(c for c in value if c in '٠١٢٣٤٥٦٧٨٩0123456789')
             digits = digits.translate(str.maketrans('0123456789', '٠١٢٣٤٥٦٧٨٩'))
-            if len(digits) == 8 and not digits.startswith('٠٥'):
+            # Add 05 prefix if missing
+            if len(digits) == 8:
                 digits = '٠٥٠' + digits
             elif len(digits) == 9 and digits.startswith('٥'):
                 digits = '٠' + digits
-            return digits if digits else value
+            # Validate: must be exactly 10 digits starting with 05
+            if len(digits) != 10 or not digits.startswith('٠٥'):
+                return digits if digits else value, "LOW"  # Flag suspicious
+            return digits, confidence
         
-        # NO other auto-corrections - let the model's raw output through
-        # Auto-corrections were masking errors and adding noise
-        return value
+        # ID numbers - must be 10 digits starting with 1
+        if "هوية" in field_name or field_name == "رقم_الهوية":
+            digits = ''.join(c for c in value if c in '٠١٢٣٤٥٦٧٨٩0123456789')
+            digits = digits.translate(str.maketrans('0123456789', '٠١٢٣٤٥٦٧٨٩'))
+            # Saudi IDs are 10 digits starting with 1
+            if len(digits) != 10 or not digits.startswith('١'):
+                return value, "LOW"  # Flag as suspicious
+            return digits, confidence
+        
+        # License numbers - similar to ID
+        if "رخصة" in field_name and "رقم" in field_name:
+            digits = ''.join(c for c in value if c in '٠١٢٣٤٥٦٧٨٩0123456789')
+            if len(digits) != 10:
+                return value, "LOW"  # Flag as suspicious
+            return value, confidence
+        
+        # Education - only allow known values
+        if field_name == "المؤهل":
+            known = ['أمي', 'ابتدائي', 'متوسط', 'ثانوي', 'الثانوي', 'جامعي', 'دبلوم']
+            if value not in known:
+                return value, "LOW"  # Unknown education level
+            return value, confidence
+        
+        # Neighborhood - if filled, should be verified
+        if field_name == "الحي":
+            # Common Jeddah neighborhoods for validation
+            known_neighborhoods = ['الروضة', 'الحمراء', 'النعيم', 'الصفا', 'البوادي', 'الفيصلية', 'المحمدية', 'الهدى']
+            if value not in known_neighborhoods and value != "---":
+                return value, "MEDIUM"  # Not in known list, needs review
+            return value, confidence
+        
+        # Activity type - high risk field
+        if field_name == "نوع_النشاط":
+            # If activity is filled, mark as needing review (often hallucinated)
+            return value, "MEDIUM"
+        
+        return value, confidence
     
     def _parse_response(self, text: str) -> tuple:
         """Parse the extraction response into fields and confidence."""
@@ -341,8 +350,8 @@ class AgenticOCRAgent:
             if "؟" in value and conf == "HIGH":
                 conf = "MEDIUM"
             
-            # Apply Saudi format normalization
-            value = self._normalize_value(field_name, value)
+            # Apply validation and potentially downgrade confidence
+            value, conf = self._normalize_and_validate(field_name, value, conf)
             
             # Store
             if field_name:
