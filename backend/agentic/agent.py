@@ -217,8 +217,13 @@ class AgenticOCRAgent:
             )
             return self._build_empty_result(time.time() - start_time, result.error)
         
+        # DEBUG: Log raw response
+        print(f"[Agent] Raw response length: {len(result.text) if result.text else 0}")
+        print(f"[Agent] Raw response preview: {result.text[:1000] if result.text else 'EMPTY'}")
+        
         # Step 3: Parse response
         fields, confidence = self._parse_response(result.text)
+        print(f"[Agent] Parsed fields: {list(fields.keys())}")
         
         self._add_step(
             AgentState.EXTRACTING.value,
@@ -269,9 +274,13 @@ class AgenticOCRAgent:
         confidence = {}
         
         if not text:
+            print("[Parser] Empty text!")
             return fields, confidence
         
-        for line in text.strip().split("\n"):
+        lines = text.strip().split("\n")
+        print(f"[Parser] Total lines: {len(lines)}")
+        
+        for i, line in enumerate(lines):
             line = line.strip()
             
             # Skip empty lines and headers
@@ -292,7 +301,10 @@ class AgenticOCRAgent:
             
             # Skip if field name looks like instruction
             if len(field_name) > 40 or "مثال" in field_name or "تنسيق" in field_name:
+                print(f"[Parser] Skipping instruction line: {field_name[:30]}...")
                 continue
+            
+            print(f"[Parser] Found field: {field_name} = {value_part[:30] if value_part else 'empty'}...")
             
             # Extract confidence marker
             conf = "MEDIUM"
