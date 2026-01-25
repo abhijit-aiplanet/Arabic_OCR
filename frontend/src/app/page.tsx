@@ -889,67 +889,76 @@ export default function Home() {
                     
                     {/* Agentic mode quality banner */}
                     {ocrMode === 'agentic' && agenticResult && (
-                      <div className={`p-4 rounded-xl border ${
-                        agenticResult.quality_status === 'passed' ? 'bg-green-50 border-green-200' :
-                        agenticResult.quality_status === 'warning' ? 'bg-yellow-50 border-yellow-200' :
-                        'bg-red-50 border-red-200'
-                      }`}>
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-2">
-                            <Zap className={`w-5 h-5 ${
-                              agenticResult.quality_status === 'passed' ? 'text-green-600' :
-                              agenticResult.quality_status === 'warning' ? 'text-yellow-600' :
-                              'text-red-600'
-                            }`} />
-                            <span className={`font-medium ${
-                              agenticResult.quality_status === 'passed' ? 'text-green-900' :
-                              agenticResult.quality_status === 'warning' ? 'text-yellow-900' :
-                              'text-red-900'
-                            }`}>
-                              Quality: {agenticResult.quality_score}% ({agenticResult.quality_status})
-                            </span>
-                          </div>
-                          <div className="flex items-center gap-4 text-sm">
-                            <span className="text-gray-600">
-                              🔧 {agenticResult.tool_calls} tools
-                            </span>
-                            <span className="text-gray-600">
-                              ⏱️ {agenticResult.processing_time_seconds.toFixed(1)}s
-                            </span>
+                      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm">
+                        {/* Header */}
+                        <div className="px-5 py-4 border-b border-gray-100">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                              <div className={`w-2 h-2 rounded-full ${
+                                agenticResult.quality_status === 'passed' ? 'bg-emerald-500' :
+                                agenticResult.quality_status === 'warning' ? 'bg-amber-500' :
+                                'bg-red-500'
+                              }`} />
+                              <span className="text-sm font-medium text-gray-900">Extraction Results</span>
+                            </div>
+                            <div className="flex items-center gap-4">
+                              <span className="text-xs text-gray-500">
+                                {agenticResult.processing_time_seconds.toFixed(1)}s
+                              </span>
+                              <span className={`text-xs font-medium ${
+                                agenticResult.quality_score >= 70 ? 'text-emerald-600' :
+                                agenticResult.quality_score >= 40 ? 'text-amber-600' :
+                                'text-red-600'
+                              }`}>
+                                {agenticResult.quality_score}% quality
+                              </span>
+                            </div>
                           </div>
                         </div>
                         
-                        {/* Hallucination warning */}
-                        {agenticResult.hallucination_detected && (
-                          <div className="mt-2 text-sm text-red-700 bg-red-100 p-2 rounded-lg">
-                            ⚠️ <span className="font-medium">Hallucination detected:</span>{' '}
-                            {agenticResult.hallucination_indicators.join(', ')}
+                        {/* Warnings */}
+                        {(agenticResult.hallucination_detected || agenticResult.fields_needing_review.length > 0) && (
+                          <div className="px-5 py-3 bg-gray-50 border-b border-gray-100 space-y-2">
+                            {agenticResult.hallucination_detected && (
+                              <div className="flex items-start gap-2 text-sm text-red-700">
+                                <svg className="w-4 h-4 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                                </svg>
+                                <span>Potential inaccuracies detected. Please verify results.</span>
+                              </div>
+                            )}
+                            {agenticResult.fields_needing_review.length > 0 && (
+                              <div className="flex items-start gap-2 text-sm text-amber-700">
+                                <svg className="w-4 h-4 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                                </svg>
+                                <span>{agenticResult.fields_needing_review.length} fields require manual review</span>
+                              </div>
+                            )}
                           </div>
                         )}
                         
-                        {/* Fields needing review */}
-                        {agenticResult.fields_needing_review.length > 0 && (
-                          <div className="mt-2 text-sm text-amber-700 bg-amber-50 p-2 rounded-lg">
-                            <span className="font-medium">Fields needing review ({agenticResult.fields_needing_review.length}):</span>{' '}
-                            {agenticResult.fields_needing_review.slice(0, 5).join(', ')}
-                            {agenticResult.fields_needing_review.length > 5 && '...'}
+                        {/* Confidence Stats */}
+                        <div className="px-5 py-3">
+                          <div className="flex items-center gap-6 text-xs">
+                            <div className="flex items-center gap-1.5">
+                              <div className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                              <span className="text-gray-600">{agenticResult.confidence_summary.high} high</span>
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                              <div className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                              <span className="text-gray-600">{agenticResult.confidence_summary.medium} medium</span>
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                              <div className="w-1.5 h-1.5 rounded-full bg-red-500" />
+                              <span className="text-gray-600">{agenticResult.confidence_summary.low} low</span>
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                              <div className="w-1.5 h-1.5 rounded-full bg-gray-300" />
+                              <span className="text-gray-600">{agenticResult.confidence_summary.empty} empty</span>
+                            </div>
                           </div>
-                        )}
-                        
-                        {/* Confidence summary */}
-                        <div className="mt-3 flex flex-wrap gap-2 text-xs">
-                          <span className="bg-green-100 text-green-700 px-2 py-1 rounded-full">
-                            ✓ {agenticResult.confidence_summary.high} high
-                          </span>
-                          <span className="bg-yellow-100 text-yellow-700 px-2 py-1 rounded-full">
-                            ~ {agenticResult.confidence_summary.medium} medium
-                          </span>
-                          <span className="bg-red-100 text-red-700 px-2 py-1 rounded-full">
-                            ? {agenticResult.confidence_summary.low} low
-                          </span>
-                          <span className="bg-gray-100 text-gray-600 px-2 py-1 rounded-full">
-                            ∅ {agenticResult.confidence_summary.empty} empty
-                          </span>
                         </div>
                       </div>
                     )}
