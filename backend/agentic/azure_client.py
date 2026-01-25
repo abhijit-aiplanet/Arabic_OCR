@@ -176,8 +176,20 @@ class AzureVisionOCR:
                     max_completion_tokens=max_tokens,
                 )
                 
+                # DEBUG: Log raw response structure
+                print(f"[Azure] Response type: {type(response)}")
+                print(f"[Azure] Choices count: {len(response.choices) if response.choices else 0}")
+                if response.choices:
+                    choice = response.choices[0]
+                    print(f"[Azure] Choice type: {type(choice)}")
+                    print(f"[Azure] Message: {choice.message}")
+                    print(f"[Azure] Message content: {choice.message.content}")
+                    print(f"[Azure] Finish reason: {choice.finish_reason}")
+                
                 text = response.choices[0].message.content or ""
                 tokens = response.usage.total_tokens if response.usage else 0
+                
+                print(f"[Azure] Extracted text length: {len(text)}")
                 
                 return ExtractionResult(
                     text=text,
