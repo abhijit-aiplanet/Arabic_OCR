@@ -374,8 +374,10 @@ class AgenticOCRController:
         Expected format:
         field_name: value [CONFIDENCE]
         
-        CRITICAL RULE: Empty values (---) should NEVER have high confidence.
-        An empty field means we couldn't read it, which is inherently uncertain.
+        RULES:
+        - Empty values (---) = LOW confidence
+        - Values with ؟ = MEDIUM confidence (partial read, still useful)
+        - Clear values = as marked (HIGH/MEDIUM/LOW)
         
         Returns:
             Tuple of (fields_dict, confidence_dict)
@@ -383,12 +385,16 @@ class AgenticOCRController:
         fields = {}
         confidence = {}
         
-        # Empty value markers
-        EMPTY_MARKERS = ["---", "[فارغ]", "[EMPTY]", "غير موجود", "[غير موجود]", "فارغ", ""]
+        # Truly empty markers - only these mean "no data"
+        EMPTY_MARKERS = ["---", "[فارغ]", "[EMPTY]", "القسم فارغ", ""]
         
         for line in text.strip().split("\n"):
             line = line.strip()
             if not line or ":" not in line:
+                continue
+            
+            # Skip header/instruction lines
+            if line.startswith("#") or line.startswith("##"):
                 continue
             
             # Parse field_name: value [CONFIDENCE]
@@ -399,8 +405,12 @@ class AgenticOCRController:
             field_name = parts[0].strip()
             rest = parts[1].strip()
             
+            # Skip if field name looks like instruction
+            if len(field_name) > 50 or "التنسيق" in field_name or "مثال" in field_name:
+                continue
+            
             # Extract confidence level from markers
-            conf = "MEDIUM"  # default
+            conf = "MEDIUM"  # default - assume partial confidence
             if "[HIGH]" in rest.upper():
                 conf = "HIGH"
                 rest = rest.replace("[HIGH]", "").replace("[high]", "").strip()
@@ -411,25 +421,26 @@ class AgenticOCRController:
                 conf = "LOW"
                 rest = rest.replace("[LOW]", "").replace("[low]", "").strip()
             elif "[EMPTY]" in rest.upper():
-                conf = "LOW"  # Empty fields should be LOW confidence
+                conf = "LOW"
                 rest = "---"
             
             value = rest.strip()
             
-            # CRITICAL: Empty/missing values should NEVER have high confidence
-            # If we couldn't find a value, we are NOT confident about it
-            is_empty = any(marker in value or value == marker for marker in EMPTY_MARKERS)
+            # Check if truly empty
+            is_empty = value in EMPTY_MARKERS or value == ""
             if is_empty:
-                conf = "LOW"  # Force LOW confidence for empty values
-                value = "---"  # Normalize empty marker
-            
-            # Also check for unclear markers
-            if "؟" in value or "[غير واضح" in value:
                 conf = "LOW"
+                value = "---"
             
-            # Store
-            fields[field_name] = value
-            confidence[field_name] = conf
+            # Values with ؟ are partial reads - keep as MEDIUM, not LOW
+            # These are valuable! They represent best-effort extraction
+            if "؟" in value and conf == "HIGH":
+                conf = "MEDIUM"  # Downgrade HIGH to MEDIUM, but not to LOW
+            
+            # Store non-empty values
+            if field_name and (value or value == "---"):
+                fields[field_name] = value
+                confidence[field_name] = conf
         
         return fields, confidence
     

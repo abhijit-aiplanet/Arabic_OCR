@@ -352,11 +352,16 @@ class AgenticOCRAgent:
         fields = {}
         confidence = {}
         
-        EMPTY_MARKERS = ["---", "[فارغ]", "[EMPTY]", "غير موجود", ""]
+        # Only these mean truly empty
+        EMPTY_MARKERS = ["---", "[فارغ]", "[EMPTY]", "القسم فارغ", ""]
         
         for line in text.strip().split("\n"):
             line = line.strip()
             if not line or ":" not in line:
+                continue
+            
+            # Skip instruction lines
+            if line.startswith("#"):
                 continue
             
             parts = line.split(":", 1)
@@ -366,8 +371,12 @@ class AgenticOCRAgent:
             field_name = parts[0].strip()
             rest = parts[1].strip()
             
+            # Skip instruction-like field names
+            if len(field_name) > 50 or "التنسيق" in field_name:
+                continue
+            
             # Extract confidence
-            conf = "MEDIUM"
+            conf = "MEDIUM"  # Default to medium, not low
             if "[HIGH]" in rest.upper():
                 conf = "HIGH"
                 rest = rest.replace("[HIGH]", "").replace("[high]", "").strip()
@@ -383,16 +392,19 @@ class AgenticOCRAgent:
             
             value = rest.strip()
             
-            # Empty values get LOW confidence
-            if any(m in value or value == m for m in EMPTY_MARKERS):
+            # Only truly empty values get LOW
+            if value in EMPTY_MARKERS or value == "":
                 conf = "LOW"
                 value = "---"
             
-            if "؟" in value:
-                conf = "LOW"
+            # Values with ؟ are partial reads - MEDIUM not LOW
+            # These are useful! Don't throw them away
+            if "؟" in value and conf == "HIGH":
+                conf = "MEDIUM"
             
-            fields[field_name] = value
-            confidence[field_name] = conf
+            if field_name:
+                fields[field_name] = value
+                confidence[field_name] = conf
         
         return fields, confidence
     
