@@ -76,78 +76,79 @@ class AgentTrace:
         }
 
 
-# The ONE prompt that works - clear, direct, comprehensive
+# The ONE prompt - with strict Saudi format rules
 EXTRACTION_PROMPT = """أنت خبير في قراءة النماذج الحكومية السعودية المكتوبة بخط اليد.
 
-اقرأ هذه الصورة واستخرج كل الحقول المكتوبة.
+اقرأ هذه الصورة واستخرج الحقول المكتوبة فقط.
 
-## الحقول المطلوبة:
+## قواعد صارمة:
 
-### بيانات عامة:
-- اسم المالك
-- رقم الهوية (١٠ أرقام)
-- مصدرها
-- تاريخها
-- تاريخ الميلاد
-- الحالة الاجتماعية
-- عدد من يعولهم
-- المؤهل
+### ١. لا تخترع حقولاً جديدة
+استخرج فقط الحقول المذكورة أدناه. لا تضف حقولاً من عندك.
 
-### العنوان:
-- المدينة
-- الحي
-- الشارع
-- رقم المبنى
-- جوال (١٠ أرقام تبدأ بـ ٠٥)
-- البريد الإلكتروني
-- فاكس
+### ٢. تنسيقات سعودية إلزامية:
+- رقم الهوية: ١٠ أرقام تبدأ بـ ١ أو ٢ (مثال: ١٠٣٨٣٦٧٦٦٨)
+- رقم الجوال: ١٠ أرقام تبدأ بـ ٠٥ (مثال: ٠٥٠٧٤٧٧٩٩٨)
+- التواريخ الهجرية: يوم/شهر/سنة كاملة (مثال: ٨/٧/١٤٠٤ - السنة ٤ أرقام دائماً)
 
-### بيانات النشاط:
-- نوع النشاط
-- مدينة مزاولة النشاط
-- تاريخ بدء النشاط
-- تاريخ انتهاء الترخيص
+### ٣. إذا رأيت جزءاً من الرقم:
+- أكمل التنسيق الصحيح إن أمكن
+- مثال: إذا رأيت "٧٤٧٧٩٩٨" للجوال، اكتب: ٠٥٠٧٤٧٧٩٩٨ [MEDIUM]
+- مثال: إذا رأيت "٨٥" للسنة، اكتب: ١٣٨٥ [MEDIUM]
 
-### رخصة القيادة:
-- رقمها
-- تاريخ الإصدار
-- تاريخ الانتهاء
-- مصدرها
+## الحقول المطلوبة فقط:
 
-### بيانات المركبة:
-- نوع المركبة
-- الموديل
-- اللون
-- رقم اللوحة
-- سنة الصنع
+اسم_المالك
+رقم_الهوية
+مصدرها
+تاريخها
+تاريخ_الميلاد
+الحالة_الاجتماعية
+عدد_من_يعولهم
+المؤهل
+المدينة
+الحي
+الشارع
+رقم_المبنى
+جوال
+البريد_الإلكتروني
+فاكس
+نوع_النشاط
+مدينة_مزاولة_النشاط
+تاريخ_بدء_النشاط
+تاريخ_انتهاء_الترخيص
+رقم_رخصة_القيادة
+تاريخ_إصدار_الرخصة
+تاريخ_انتهاء_الرخصة
+مصدر_الرخصة
+نوع_المركبة
+الموديل
+اللون
+رقم_اللوحة
+سنة_الصنع
+اسم_مقدم_الطلب
+صفته
+توقيعه
+تاريخ_التوقيع
 
-### التوقيع:
-- اسم مقدم الطلب
-- صفته
-- توقيعه
-- التاريخ
+## التعليمات:
+1. اقرأ ما تراه في الصورة فقط
+2. إذا الحقل فارغ: اكتب ---
+3. إذا القراءة غير مؤكدة: أضف ؟ واستخدم [MEDIUM]
+4. إذا رأيت توقيع: اكتب [توقيع موجود]
 
-## تعليمات مهمة:
-1. اقرأ كل كتابة يدوية تراها في الصورة
-2. إذا رأيت قيمة لكنها غير واضحة، اكتبها مع علامة ؟
-3. إذا كان الحقل فارغاً تماماً (لا توجد كتابة): اكتب ---
-4. لا تخترع قيماً - اكتب فقط ما تراه
+## التنسيق:
+اسم_الحقل: القيمة [HIGH/MEDIUM/LOW]
 
-## مستويات الثقة:
-- [HIGH] = قراءة واضحة ومؤكدة
-- [MEDIUM] = قراءة محتملة
-- [LOW] = تخمين أو فارغ
-
-## التنسيق المطلوب:
-اسم_الحقل: القيمة [مستوى_الثقة]
-
-مثال:
-المدينة: جدة [HIGH]
+## مثال:
+اسم_المالك: محمد أحمد العتيبي [HIGH]
+رقم_الهوية: ١٠٣٨٣٦٧٦٦٨ [HIGH]
+تاريخ_الميلاد: ١/٧/١٣٨٥ [MEDIUM]
 جوال: ٠٥٠٧٤٧٧٩٩٨ [HIGH]
-اسم المالك: عبدالله محمد [MEDIUM]
-رقم اللوحة: --- [LOW]
+الحي: --- [LOW]
+توقيعه: [توقيع موجود] [HIGH]
 
-ابدأ الاستخراج الآن:"""
+ابدأ الاستخراج:"""
 
 
 class AgenticOCRAgent:
@@ -212,15 +213,11 @@ class AgenticOCRAgent:
             action="extract_all"
         )
         
-        log("[Agent] Converting image to base64...")
         image_b64 = self._image_to_base64(image)
-        log(f"[Agent] Base64 length: {len(image_b64)}")
         
         log("[Agent] Calling Azure Vision API...")
         result = await self.azure.extract_section(image_b64, EXTRACTION_PROMPT)
         self.trace.tool_calls += 1
-        
-        log(f"[Agent] API returned: success={result.success}, text_len={len(result.text) if result.text else 0}, error={result.error}")
         
         if not result.success:
             log(f"[Agent] EXTRACTION FAILED: {result.error}")
@@ -231,14 +228,11 @@ class AgenticOCRAgent:
             )
             return self._build_empty_result(time.time() - start_time, result.error)
         
-        # Log raw response
-        log(f"[Agent] RAW RESPONSE START ===")
-        log(result.text[:2000] if result.text else "EMPTY")
-        log(f"[Agent] RAW RESPONSE END ===")
+        log(f"[Agent] Got response: {len(result.text)} chars")
         
         # Step 3: Parse response
         fields, confidence = self._parse_response(result.text)
-        log(f"[Agent] Parsed {len(fields)} fields: {list(fields.keys())}")
+        log(f"[Agent] Parsed {len(fields)} fields")
         
         self._add_step(
             AgentState.EXTRACTING.value,
@@ -283,17 +277,67 @@ class AgenticOCRAgent:
         
         return self._build_result(fields, confidence, validation)
     
+    def _normalize_value(self, field_name: str, value: str) -> str:
+        """Apply Saudi format rules to normalize values."""
+        if not value or value == "---":
+            return value
+        
+        # Normalize phone numbers - must be 10 digits starting with 05
+        if "جوال" in field_name or "هاتف" in field_name:
+            # Remove any non-digit characters (keep Arabic numerals)
+            digits = ''.join(c for c in value if c in '٠١٢٣٤٥٦٧٨٩0123456789')
+            # Convert to Arabic numerals
+            digits = digits.translate(str.maketrans('0123456789', '٠١٢٣٤٥٦٧٨٩'))
+            # Add 05 prefix if missing
+            if len(digits) == 8 and not digits.startswith('٠٥'):
+                digits = '٠٥٠' + digits
+            elif len(digits) == 9 and digits.startswith('٥'):
+                digits = '٠' + digits
+            return digits if digits else value
+        
+        # Normalize dates - ensure 4-digit Hijri years
+        if "تاريخ" in field_name:
+            import re
+            # Match patterns like ١/٧/٨٥ or 1/7/85
+            pattern = r'(\d{1,2})[/\-](\d{1,2})[/\-](\d{2})(?!\d)'
+            arabic_pattern = r'([٠-٩]{1,2})[/\-]([٠-٩]{1,2})[/\-]([٠-٩]{2})(?![٠-٩])'
+            
+            # Fix Arabic numerals
+            def fix_arabic_year(m):
+                day, month, year = m.groups()
+                # Add century prefix (13 or 14)
+                if year.startswith('٨') or year.startswith('٩'):
+                    year = '١٣' + year
+                elif year.startswith('٠') or year.startswith('١') or year.startswith('٢') or year.startswith('٣') or year.startswith('٤'):
+                    year = '١٤' + year
+                return f"{day}/{month}/{year}"
+            
+            value = re.sub(arabic_pattern, fix_arabic_year, value)
+            return value
+        
+        return value
+    
     def _parse_response(self, text: str) -> tuple:
         """Parse the extraction response into fields and confidence."""
         fields = {}
         confidence = {}
         
+        # Known valid field names (to filter out invented fields)
+        VALID_FIELDS = {
+            'اسم_المالك', 'رقم_الهوية', 'مصدرها', 'تاريخها', 'تاريخ_الميلاد',
+            'الحالة_الاجتماعية', 'عدد_من_يعولهم', 'المؤهل', 'المدينة', 'الحي',
+            'الشارع', 'رقم_المبنى', 'جوال', 'البريد_الإلكتروني', 'فاكس',
+            'نوع_النشاط', 'مدينة_مزاولة_النشاط', 'تاريخ_بدء_النشاط',
+            'تاريخ_انتهاء_الترخيص', 'رقم_رخصة_القيادة', 'تاريخ_إصدار_الرخصة',
+            'تاريخ_انتهاء_الرخصة', 'مصدر_الرخصة', 'نوع_المركبة', 'الموديل',
+            'اللون', 'رقم_اللوحة', 'سنة_الصنع', 'اسم_مقدم_الطلب', 'صفته',
+            'توقيعه', 'تاريخ_التوقيع'
+        }
+        
         if not text:
-            log("[Parser] Empty text!")
             return fields, confidence
         
         lines = text.strip().split("\n")
-        log(f"[Parser] Total lines: {len(lines)}")
         
         for i, line in enumerate(lines):
             line = line.strip()
@@ -316,10 +360,11 @@ class AgenticOCRAgent:
             
             # Skip if field name looks like instruction
             if len(field_name) > 40 or "مثال" in field_name or "تنسيق" in field_name:
-                log(f"[Parser] Skipping instruction: {field_name[:30]}...")
                 continue
             
-            log(f"[Parser] Found: {field_name} = {value_part[:30] if value_part else 'empty'}")
+            # Filter out invented fields
+            if field_name not in VALID_FIELDS:
+                continue
             
             # Extract confidence marker
             conf = "MEDIUM"
@@ -336,13 +381,16 @@ class AgenticOCRAgent:
             value = value_part.strip()
             
             # Normalize empty markers
-            if value in ["---", "[فارغ]", "[EMPTY]", "فارغ", "غير موجود", ""]:
+            if value in ["---", "[فارغ]", "[EMPTY]", "فارغ", "غير موجود", "", "؟؟؟", "؟؟"]:
                 value = "---"
                 conf = "LOW"
             
             # Values with ? are partial reads - MEDIUM confidence
             if "؟" in value and conf == "HIGH":
                 conf = "MEDIUM"
+            
+            # Apply Saudi format normalization
+            value = self._normalize_value(field_name, value)
             
             # Store
             if field_name:
