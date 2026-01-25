@@ -21,7 +21,6 @@ from .prompts import (
     INITIAL_OCR_PROMPT,
     ANALYSIS_PROMPT,
     REGION_ESTIMATION_PROMPT,
-    FIELD_REEXTRACT_PROMPT,
     MERGE_PROMPT,
     ANALYSIS_SYSTEM_PROMPT,
     REGION_SYSTEM_PROMPT,
@@ -171,13 +170,18 @@ class VLMClient(BaseRunPodClient):
     Used for:
     - Initial full-page OCR extraction
     - Focused field re-extraction from cropped regions
+    
+    Anti-hallucination features:
+    - Conservative max_tokens (1024 default)
+    - Simpler prompts that ask for one thing
+    - Output quality checking
     """
     
     def __init__(
         self,
         endpoint_url: str,
         api_key: str,
-        default_max_tokens: int = 2048,  # Reduced from 8192 to prevent hallucination
+        default_max_tokens: int = 1024,  # Conservative to prevent hallucination
         default_min_pixels: int = 200704,
         default_max_pixels: int = 1317120,  # Optimized for handwriting
         **kwargs
@@ -193,6 +197,39 @@ class VLMClient(BaseRunPodClient):
         # Use PNG for lossless quality
         image.save(buffer, format="PNG")
         return base64.b64encode(buffer.getvalue()).decode("utf-8")
+    
+    def _check_output_quality(self, text: str) -> Tuple[bool, str]:
+        """
+        Quick check if VLM output shows signs of hallucination.
+        
+        Returns:
+            Tuple of (is_ok, issue_description)
+        """
+        if not text or len(text) < 5:
+            return True, ""  # Empty is ok, let higher level handle
+        
+        # Check for value propagation
+        lines = [l.strip() for l in text.split('\n') if ':' in l]
+        if len(lines) >= 3:
+            values = []
+            for line in lines:
+                parts = line.split(':', 1)
+                if len(parts) == 2:
+                    value = parts[1].strip()
+                    # Clean markers
+                    for m in ['[HIGH]', '[MEDIUM]', '[LOW]', '[فارغ]', '---']:
+                        value = value.replace(m, '').strip()
+                    if value:
+                        values.append(value)
+            
+            if values:
+                from collections import Counter
+                counts = Counter(values)
+                top_value, top_count = counts.most_common(1)[0]
+                if top_count >= 3 and top_count / len(values) >= 0.4:
+                    return False, f"Value '{top_value[:20]}' appears {top_count} times"
+        
+        return True, ""
     
     async def extract_initial(
         self,
@@ -211,11 +248,14 @@ class VLMClient(BaseRunPodClient):
         """
         prompt = custom_prompt or INITIAL_OCR_PROMPT
         
+        # Use conservative token limit for initial extraction
+        max_tokens = min(self.default_max_tokens, 1024)
+        
         payload = {
             "input": {
                 "image": self._image_to_base64(image),
                 "prompt": prompt,
-                "max_new_tokens": self.default_max_tokens,
+                "max_new_tokens": max_tokens,
                 "min_pixels": self.default_min_pixels,
                 "max_pixels": self.default_max_pixels,
             }
@@ -224,7 +264,19 @@ class VLMClient(BaseRunPodClient):
         result, success = await self._call_runpod(payload)
         
         if success:
-            return result.get("text", ""), True
+            text = result.get("text", "")
+            
+            # Check output quality
+            output_quality = result.get("output_quality", {})
+            if output_quality.get("hallucination_type"):
+                print(f"[VLM] Warning: Hallucination detected - {output_quality.get('hallucination_type')}")
+            
+            # Quick local quality check
+            is_ok, issue = self._check_output_quality(text)
+            if not is_ok:
+                print(f"[VLM] Warning: Output quality issue - {issue}")
+            
+            return text, True
         else:
             return result.get("error", "VLM extraction failed"), False
     
@@ -238,6 +290,8 @@ class VLMClient(BaseRunPodClient):
         """
         Extract a specific field from a cropped region.
         
+        Uses VERY SIMPLE prompt to minimize hallucination.
+        
         Args:
             cropped_image: Cropped PIL Image of the field region
             field_name: Name of the field being extracted
@@ -247,20 +301,18 @@ class VLMClient(BaseRunPodClient):
         Returns:
             Tuple of (extracted_value, success_bool)
         """
-        hint = content_hint or get_content_hint(field_name)
+        # Use the SIMPLE prompt for field extraction
+        # This reduces hallucination by asking for just one thing
+        from .prompts import FIELD_REEXTRACT_PROMPT
         
-        prompt = FIELD_REEXTRACT_PROMPT.format(
-            field_name=field_name,
-            content_hint=hint,
-            previous_value=previous_value or "[not previously extracted]"
-        )
+        prompt = FIELD_REEXTRACT_PROMPT  # Just "ما المكتوب هنا?"
         
-        # Use higher resolution for cropped regions (they're smaller)
+        # Very short max_tokens for field extraction (values are brief)
         payload = {
             "input": {
                 "image": self._image_to_base64(cropped_image),
                 "prompt": prompt,
-                "max_new_tokens": 512,  # Field values are short
+                "max_new_tokens": 128,  # Field values are very short
                 "min_pixels": self.default_min_pixels,
                 "max_pixels": self.default_max_pixels,
             }
@@ -270,8 +322,16 @@ class VLMClient(BaseRunPodClient):
         
         if success:
             text = result.get("text", "").strip()
+            
             # Clean up common artifacts
             text = text.replace("Your transcription:", "").strip()
+            text = text.replace("القيمة:", "").strip()
+            text = text.replace("الجواب:", "").strip()
+            
+            # If model returned a long explanation, take just the first line
+            if '\n' in text and len(text) > 100:
+                text = text.split('\n')[0].strip()
+            
             return text, True
         else:
             return result.get("error", "Field extraction failed"), False

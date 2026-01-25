@@ -1,6 +1,6 @@
 # RunPod Dockerfile for AIN Vision Language Model OCR
 # Using RunPod's Python base with CUDA support
-# Build trigger: 2026-01-22-v2 (Fix hallucination: reduce max_tokens)
+# Build trigger: 2026-01-08-v3 (Superior anti-hallucination: aggressive params)
 #
 # SETUP: Attach a Network Volume to store the model cache.
 # The model (~30GB) will download on first run and be cached.

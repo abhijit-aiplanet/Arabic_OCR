@@ -88,10 +88,13 @@ RESOLUTION_PRESETS = {
 # Default MAX_PIXELS - increased for better handwriting recognition
 MAX_PIXELS = RESOLUTION_PRESETS["default"]  # 1,317,120 pixels
 
-# Maximum tokens for generation - OPTIMIZED to prevent hallucination loops
+# Maximum tokens for generation - CONSERVATIVE to prevent hallucination
 # Note: 8192 caused EXTREME repetition (171+ repeats) and 5+ min generation time
-# 2048 is sufficient for most Arabic forms and completes in ~1-2 minutes
-DEFAULT_MAX_TOKENS = 2048  # Reduced to prevent hallucination and speed up
+# 1024 is sufficient for transcription and prevents most hallucinations
+DEFAULT_MAX_TOKENS = 1024  # Further reduced for anti-hallucination
+
+# Transcription mode uses even fewer tokens (just raw values)
+TRANSCRIPTION_MAX_TOKENS = 512
 
 def get_resolution_for_document_type(doc_type: str = "default") -> int:
     """Get appropriate MAX_PIXELS for document type."""
@@ -245,17 +248,19 @@ def load_model():
         raise
 
 
-def _clean_repetition_loops(text: str, max_repeats: int = 5) -> str:
+def _clean_repetition_loops(text: str, max_repeats: int = 3) -> str:
     """
-    Conservative cleanup for excessive repetition loops.
-    Only triggers on EXTREME repetition (5+ repeats) to preserve accuracy.
+    AGGRESSIVE cleanup for repetition loops.
+    Triggers on 3+ repeats (reduced from 5) for better hallucination prevention.
     """
-    if not text or len(text) < 200:
+    if not text or len(text) < 100:
         return text
     
+    original_len = len(text)
     lines = text.split('\n')
     
-    for pattern_length in range(2, 4):
+    # Check for line-level repetition
+    for pattern_length in range(1, 5):  # Check 1-4 line patterns
         if len(lines) < pattern_length * (max_repeats + 1):
             continue
         
@@ -263,7 +268,12 @@ def _clean_repetition_loops(text: str, max_repeats: int = 5) -> str:
             pattern = lines[start_idx:start_idx + pattern_length]
             pattern_str = '\n'.join(pattern)
             
-            if len(pattern_str) > 100:
+            # Skip very long patterns
+            if len(pattern_str) > 150:
+                continue
+            
+            # Skip empty patterns
+            if not pattern_str.strip():
                 continue
             
             repeat_count = 1
@@ -279,14 +289,95 @@ def _clean_repetition_loops(text: str, max_repeats: int = 5) -> str:
                 else:
                     break
             
-            if repeat_count > max_repeats:
-                print(f"⚠️ Detected EXTREME repetition: {repeat_count} repeats")
-                truncated_lines = lines[:start_idx + pattern_length * max_repeats]
+            if repeat_count >= max_repeats:
+                print(f"⚠️ Detected repetition: {repeat_count} repeats of pattern")
+                # Keep only first occurrence
+                truncated_lines = lines[:start_idx + pattern_length]
                 result = '\n'.join(truncated_lines).strip()
-                print(f"📉 Reduced from {len(text)} to {len(result)} characters")
+                print(f"📉 Reduced from {original_len} to {len(result)} characters")
                 return result
     
+    # Check for word-level repetition (same word 10+ times)
+    words = text.split()
+    if words:
+        from collections import Counter
+        word_counts = Counter(words)
+        for word, count in word_counts.most_common(3):
+            if count > 10 and len(word) > 2:
+                print(f"⚠️ Word '{word}' repeated {count} times - possible hallucination")
+    
     return text
+
+
+def _detect_value_propagation(text: str) -> dict:
+    """
+    Detect if the same value appears multiple times (hallucination indicator).
+    Returns info about detected issues.
+    """
+    issues = {
+        "has_propagation": False,
+        "propagated_values": [],
+        "year_as_value": False,
+        "year_fields": []
+    }
+    
+    if not text:
+        return issues
+    
+    # Parse field:value pairs
+    lines = [l.strip() for l in text.split('\n') if ':' in l]
+    values = []
+    
+    for line in lines:
+        parts = line.split(':', 1)
+        if len(parts) == 2:
+            field = parts[0].strip()
+            value = parts[1].strip()
+            # Remove confidence markers
+            for marker in ['[HIGH]', '[MEDIUM]', '[LOW]', '[فارغ]', '[غير', '---']:
+                if marker in value:
+                    value = value.split(marker)[0].strip()
+            if value:
+                values.append((field, value))
+    
+    if len(values) < 2:
+        return issues
+    
+    # Check for value propagation
+    from collections import Counter
+    value_counts = Counter(v for _, v in values)
+    
+    for value, count in value_counts.most_common(3):
+        if count >= 3 and len(value) > 2:
+            issues["has_propagation"] = True
+            affected_fields = [f for f, v in values if v == value]
+            issues["propagated_values"].append({
+                "value": value,
+                "count": count,
+                "fields": affected_fields[:5]
+            })
+    
+    # Check for year values (1300-1500) in non-date fields
+    for field, value in values:
+        # Extract digits
+        digits = ''.join(c for c in value if c.isdigit() or c in '٠١٢٣٤٥٦٧٨٩')
+        for ar, en in [('٠','0'),('١','1'),('٢','2'),('٣','3'),('٤','4'),
+                       ('٥','5'),('٦','6'),('٧','7'),('٨','8'),('٩','9')]:
+            digits = digits.replace(ar, en)
+        
+        if len(digits) == 4:
+            try:
+                year = int(digits)
+                if 1300 <= year <= 1500:
+                    # Check if this is a date field
+                    is_date_field = any(d in field.lower() for d in ['تاريخ', 'date', 'ميلاد', 'إصدار', 'انتهاء'])
+                    if not is_date_field:
+                        issues["year_as_value"] = True
+                        issues["year_fields"].append({"field": field, "value": value})
+            except ValueError:
+                pass
+    
+    return issues
 
 
 def preprocess_image(image: Image.Image, optimize_for_handwriting: bool = True) -> Image.Image:
@@ -620,28 +711,43 @@ def extract_text_from_image(
                 # 5. no_repeat_ngram_size=0 - Disable (can hurt Arabic text)
                 # =============================================================
                 
+                # =============================================================
+                # SUPERIOR ANTI-HALLUCINATION GENERATION SETTINGS
+                # =============================================================
+                # The key insight: VLMs hallucinate when they try to "complete"
+                # text they can't read. We prevent this by:
+                # 1. Very low max_tokens (forces brevity)
+                # 2. High repetition penalty (prevents loops)
+                # 3. Strict EOS enforcement
+                # =============================================================
+                
+                # Calculate effective max tokens (cap at reasonable limit)
+                effective_max_tokens = min(max_new_tokens, 1024)
+                print(f"📊 Effective max_tokens: {effective_max_tokens}")
+                
                 generation = model.generate(
                     **inputs,
-                    max_new_tokens=max_new_tokens,
+                    max_new_tokens=effective_max_tokens,
                     
                     # ==========================================
-                    # DETERMINISTIC SETTINGS
+                    # DETERMINISTIC SETTINGS (STRICT)
                     # ==========================================
                     do_sample=False,        # No random sampling
                     temperature=0.0,        # Fully deterministic
-                    num_beams=1,            # Greedy decoding (fastest, most consistent)
+                    num_beams=1,            # Greedy decoding
                     
                     # ==========================================
-                    # ANTI-HALLUCINATION SETTINGS
+                    # ANTI-HALLUCINATION SETTINGS (AGGRESSIVE)
                     # ==========================================
-                    repetition_penalty=1.05,  # Gentle penalty - too high damages Arabic text
-                    no_repeat_ngram_size=0,   # Disabled - can hurt Arabic which has repeated patterns
+                    repetition_penalty=1.15,  # Higher penalty to prevent loops
+                    no_repeat_ngram_size=4,   # Prevent repeating 4-grams
                     
                     # ==========================================
-                    # LENGTH CONTROL
+                    # LENGTH CONTROL (STRICT)
                     # ==========================================
-                    min_new_tokens=1,       # Must generate at least something
-                    early_stopping=True,    # Stop when EOS is generated
+                    min_new_tokens=1,       # Must generate something
+                    max_length=None,        # Use max_new_tokens instead
+                    early_stopping=True,    # Stop at EOS
                     
                     # ==========================================
                     # TOKEN HANDLING
@@ -653,7 +759,7 @@ def extract_text_from_image(
                     # OUTPUT CONFIGURATION
                     # ==========================================
                     return_dict_in_generate=True,
-                    output_scores=True,     # Need for confidence calculation
+                    output_scores=True,
                 )
             generated_ids = generation.sequences
         
@@ -706,114 +812,127 @@ def extract_text_from_image(
 
 def _check_output_sanity(text: str) -> dict:
     """
-    Basic sanity check on VLM output to detect obvious hallucinations.
+    COMPREHENSIVE sanity check on VLM output to detect hallucinations.
     
     Checks for:
-    1. Value propagation (same value appearing too many times)
-    2. Year-only values in most fields
-    3. No Arabic content
-    4. Suspicious sequential numbers
+    1. Value propagation (same value appearing multiple times)
+    2. Year-only values in non-date fields
+    3. No Arabic content where expected
+    4. Suspicious sequential/repeated numbers
+    5. Impossibly short output
+    6. All empty markers (nothing read)
     
     Returns:
-        dict with 'passed', 'warnings', and 'quality_score'
+        dict with 'passed', 'warnings', 'quality_score', and 'should_retry'
     """
+    result = {
+        "passed": True,
+        "warnings": [],
+        "quality_score": 100,
+        "should_retry": False,
+        "hallucination_type": None
+    }
+    
     if not text or len(text) < 10:
-        return {
-            "passed": True,  # Empty is ok, let higher level handle
-            "warnings": [],
-            "quality_score": 50
-        }
+        result["quality_score"] = 50
+        result["warnings"].append("OUTPUT_EMPTY: Very short or empty output")
+        return result
     
-    warnings = []
-    quality_score = 100
+    # Use the detailed detection function
+    propagation_info = _detect_value_propagation(text)
     
-    # Parse lines
-    lines = [l.strip() for l in text.split('\n') if l.strip() and ':' in l]
+    # Check 1: Value propagation (CRITICAL)
+    if propagation_info["has_propagation"]:
+        for pv in propagation_info["propagated_values"]:
+            result["warnings"].append(
+                f"VALUE_PROPAGATION: '{pv['value'][:30]}' appears in {pv['count']} fields: "
+                f"{', '.join(pv['fields'][:3])}"
+            )
+            result["quality_score"] -= 35
+            result["hallucination_type"] = "value_propagation"
     
-    if len(lines) < 2:
-        return {"passed": True, "warnings": [], "quality_score": 70}
+    # Check 2: Year as value (CRITICAL)
+    if propagation_info["year_as_value"]:
+        for yf in propagation_info["year_fields"][:3]:
+            result["warnings"].append(
+                f"YEAR_AS_VALUE: Field '{yf['field']}' has year value '{yf['value']}'"
+            )
+        result["quality_score"] -= 25
+        if not result["hallucination_type"]:
+            result["hallucination_type"] = "year_as_value"
     
-    # Extract values (after the colon)
-    values = []
-    for line in lines:
+    # Parse for additional checks
+    lines = [l.strip() for l in text.split('\n') if l.strip()]
+    field_lines = [l for l in lines if ':' in l]
+    
+    # Check 3: Value diversity
+    if len(field_lines) >= 3:
+        values = []
+        for line in field_lines:
+            parts = line.split(':', 1)
+            if len(parts) == 2:
+                value = parts[1].strip()
+                for marker in ['[HIGH]', '[MEDIUM]', '[LOW]', '[فارغ]', '[غير', '---', '؟']:
+                    value = value.replace(marker, '').strip()
+                if value:
+                    values.append(value)
+        
+        if values:
+            unique_count = len(set(values))
+            diversity = unique_count / len(values)
+            
+            if diversity < 0.3:
+                result["warnings"].append(
+                    f"LOW_DIVERSITY: Only {unique_count}/{len(values)} unique values ({diversity:.0%})"
+                )
+                result["quality_score"] -= 20
+                result["hallucination_type"] = result["hallucination_type"] or "low_diversity"
+    
+    # Check 4: Arabic content
+    has_arabic = any('\u0600' <= c <= '\u06FF' for c in text)
+    if not has_arabic and len(text) > 50:
+        result["warnings"].append("NO_ARABIC: No Arabic text detected in output")
+        result["quality_score"] -= 15
+    
+    # Check 5: Suspicious patterns
+    suspicious = ['1234567890', '0987654321', '1111111111', '0000000000', '9999999999']
+    digits_in_text = ''.join(c for c in text if c.isdigit())
+    for pattern in suspicious:
+        if pattern in digits_in_text:
+            result["warnings"].append(f"SUSPICIOUS_NUMBER: Sequential pattern '{pattern}' detected")
+            result["quality_score"] -= 20
+            break
+    
+    # Check 6: All empty markers
+    empty_markers = ['[فارغ]', '---', '[غير مقروء]', '؟']
+    non_empty_values = 0
+    for line in field_lines:
         parts = line.split(':', 1)
         if len(parts) == 2:
             value = parts[1].strip()
-            # Remove confidence markers
-            for marker in ['[HIGH]', '[MEDIUM]', '[LOW]', '[فارغ]', '[غير واضح', '[غير مقروء]']:
-                value = value.replace(marker, '').strip()
-            if value:
-                values.append(value)
+            if value and not any(m in value for m in empty_markers):
+                non_empty_values += 1
     
-    if not values:
-        return {"passed": True, "warnings": [], "quality_score": 70}
+    if len(field_lines) >= 3 and non_empty_values == 0:
+        result["warnings"].append("ALL_EMPTY: All fields marked as empty/unreadable")
+        result["quality_score"] -= 10
     
-    # Check 1: Value propagation
-    from collections import Counter
-    value_counts = Counter(values)
-    most_common_value, most_common_count = value_counts.most_common(1)[0]
+    # Final determination
+    result["quality_score"] = max(0, result["quality_score"])
+    result["passed"] = result["quality_score"] >= 40 and result["hallucination_type"] is None
+    result["should_retry"] = result["quality_score"] < 30
     
-    propagation_ratio = most_common_count / len(values)
-    if propagation_ratio >= 0.4 and most_common_count >= 3:
-        warnings.append(
-            f"VALUE_PROPAGATION: '{most_common_value[:20]}...' appears in "
-            f"{most_common_count}/{len(values)} fields ({propagation_ratio:.0%})"
-        )
-        quality_score -= 30
-    
-    # Check 2: Year-only values (1300-1500 range)
-    year_count = 0
-    for value in values:
-        # Extract digits
-        digits = ''.join(c for c in value if c.isdigit() or c in '٠١٢٣٤٥٦٧٨٩')
-        # Convert Arabic digits
-        for ar, en in [('٠','0'),('١','1'),('٢','2'),('٣','3'),('٤','4'),
-                       ('٥','5'),('٦','6'),('٧','7'),('٨','8'),('٩','9')]:
-            digits = digits.replace(ar, en)
-        
-        if len(digits) == 4:
-            try:
-                year = int(digits)
-                if 1300 <= year <= 1500:  # Hijri year range
-                    year_count += 1
-            except ValueError:
-                pass
-    
-    if year_count >= 3 and year_count / len(values) >= 0.3:
-        warnings.append(
-            f"YEAR_AS_VALUE: {year_count}/{len(values)} values are year-like numbers"
-        )
-        quality_score -= 20
-    
-    # Check 3: No Arabic content
-    arabic_count = sum(1 for v in values if any('\u0600' <= c <= '\u06FF' for c in v))
-    if arabic_count == 0 and len(values) >= 3:
-        warnings.append("NO_ARABIC: No Arabic text in any value")
-        quality_score -= 15
-    
-    # Check 4: Suspicious sequential numbers
-    suspicious_patterns = ['1234567890', '0987654321', '1111111111', '0000000000']
-    for value in values:
-        digits = ''.join(c for c in value if c.isdigit())
-        if digits in suspicious_patterns:
-            warnings.append(f"SEQUENTIAL: Suspicious pattern '{digits}' detected")
-            quality_score -= 15
-            break
-    
-    quality_score = max(0, quality_score)
-    passed = quality_score >= 40 and propagation_ratio < 0.5
-    
-    if warnings:
-        print(f"⚠️ Output sanity check warnings:")
-        for w in warnings:
+    if result["warnings"]:
+        print(f"⚠️ Output sanity check:")
+        for w in result["warnings"]:
             print(f"   - {w}")
-        print(f"   Quality score: {quality_score}/100")
+        print(f"   Quality score: {result['quality_score']}/100")
+        if result["hallucination_type"]:
+            print(f"   🚨 Hallucination type: {result['hallucination_type']}")
+    else:
+        print(f"✅ Output sanity check passed (score: {result['quality_score']}/100)")
     
-    return {
-        "passed": passed,
-        "warnings": warnings,
-        "quality_score": quality_score
-    }
+    return result
 
 
 def handler(job):
