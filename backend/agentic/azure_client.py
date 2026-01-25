@@ -142,7 +142,6 @@ class AzureVisionOCR:
         image_base64: str,
         prompt: str,
         max_tokens: int = 4096,
-        temperature: float = 0.1,
     ) -> ExtractionResult:
         """
         Extract text from an image using GPT-4o vision.
@@ -151,7 +150,6 @@ class AzureVisionOCR:
             image_base64: Base64 encoded image
             prompt: Extraction prompt
             max_tokens: Maximum tokens to generate
-            temperature: Sampling temperature (lower = more deterministic)
             
         Returns:
             ExtractionResult with extracted text and metadata
@@ -176,7 +174,6 @@ class AzureVisionOCR:
                         }
                     ],
                     max_completion_tokens=max_tokens,
-                    temperature=temperature,
                 )
                 
                 text = response.choices[0].message.content or ""
@@ -229,7 +226,6 @@ class AzureVisionOCR:
             image_base64=image_base64,
             prompt=full_prompt,
             max_tokens=2048,
-            temperature=0.1,
         )
     
     async def extract_field(
@@ -268,7 +264,6 @@ class AzureVisionOCR:
             image_base64=image_base64,
             prompt=prompt,
             max_tokens=256,
-            temperature=0.05,
         )
         
         if not result.success:
@@ -350,30 +345,17 @@ class AzureVisionOCR:
   "overall_confidence": "high/medium/low"
 }}"""
 
-        result = await self.extract(
-            image_base64="",  # No image for critique
-            prompt=prompt,
-            max_tokens=1024,
-            temperature=0.1,
-        )
-        
-        # Since we can't do text-only with vision API, use a workaround
-        # Call the text completion endpoint instead
+        # Call the text completion endpoint for critique (no image needed)
         try:
             response = await self.async_client.chat.completions.create(
                 model=self.deployment,
                 messages=[
-                    {
-                        "role": "system",
-                        "content": "You are an OCR quality analyst. Output valid JSON only."
-                    },
                     {
                         "role": "user", 
                         "content": prompt
                     }
                 ],
                 max_completion_tokens=1024,
-                temperature=0.1,
             )
             
             text = response.choices[0].message.content or "{}"
@@ -438,7 +420,6 @@ Output as JSON:
             image_base64=image_base64,
             prompt=prompt,
             max_tokens=2048,
-            temperature=0.1,
         )
         
         if not result.success:
