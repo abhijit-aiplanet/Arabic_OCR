@@ -1,28 +1,33 @@
 """
-Agentic OCR Package - Anti-Hallucination Edition
+Agentic OCR Package - Surgical Precision Edition
 
-Multi-pass, self-correcting OCR system using dual-model architecture:
-- AIN VLM for vision/OCR tasks
-- LLM for reasoning/orchestration (Mistral API or self-hosted)
+Multi-pass, self-correcting OCR system using Azure OpenAI GPT-4o-mini Vision.
 
 KEY FEATURES:
-- Quality gates at every step to catch hallucinations early
-- Field format validation (Saudi IDs, phones, dates)
-- Duplicate value detection (same value in multiple fields)
-- Automatic rejection of low-quality extractions
+- Surgical section-by-section extraction
+- Iterative zoom-in refinement for unclear fields
+- Format validation for Saudi documents (IDs, phones, dates)
+- Self-critique for hallucination detection
+- Continuous learning from user corrections
 
-Modules:
-- controller: Main AgenticOCRController class with quality gates
-- clients: VLMClient, LLMClient, and MistralLLMClient for model APIs
-- prompts: Anti-hallucination prompt templates
-- validators: Field format validators and sanity checks
-- quality_gate: Quality scoring and acceptance/rejection logic
-- cropper: Region cropping utilities
+Architecture:
+- controller: AgenticOCRController - surgical OCR pipeline
+- azure_client: AzureVisionOCR - GPT-4o-mini vision client
+- image_processor: Image preprocessing and section detection
+- format_validator: Saudi document format validation
+- learning: Correction storage and few-shot learning
+- prompts: Section-specific extraction prompts
 - models: Pydantic models for data structures
 """
 
-from .controller import AgenticOCRController, SinglePassController
-from .clients import VLMClient, LLMClient, MistralLLMClient, create_mistral_client
+# New surgical OCR imports
+from .controller import AgenticOCRController, SinglePassController, create_controller
+from .azure_client import AzureVisionOCR, create_azure_client
+from .image_processor import ImageProcessor, Section, SectionType
+from .format_validator import FormatValidator, validate_extraction as validate_document
+from .learning import LearningModule, create_learning_module
+
+# Legacy imports for backward compatibility
 from .models import (
     AgenticResult,
     FieldResult,
@@ -32,29 +37,49 @@ from .models import (
     QualityReport,
     ValidationIssue,
 )
-from .validators import (
-    validate_extraction,
-    validate_raw_extraction,
-    parse_extraction_to_fields,
-    ValidationResult,
-)
-from .quality_gate import (
-    evaluate_quality,
-    evaluate_raw_extraction as evaluate_raw_quality,
-    QualityGateResult,
-    QualityLevel,
-)
+
+# Keep old validator imports for compatibility
+try:
+    from .validators import (
+        validate_extraction,
+        validate_raw_extraction,
+        parse_extraction_to_fields,
+        ValidationResult,
+    )
+except ImportError:
+    # New system uses format_validator
+    validate_extraction = validate_document
+    validate_raw_extraction = None
+    parse_extraction_to_fields = None
+    ValidationResult = None
+
+try:
+    from .quality_gate import (
+        evaluate_quality,
+        evaluate_raw_extraction as evaluate_raw_quality,
+        QualityGateResult,
+        QualityLevel,
+    )
+except ImportError:
+    evaluate_quality = None
+    evaluate_raw_quality = None
+    QualityGateResult = None
+    QualityLevel = None
 
 __all__ = [
-    # Controllers
+    # New surgical OCR
     "AgenticOCRController",
     "SinglePassController",
-    
-    # Clients
-    "VLMClient",
-    "LLMClient",
-    "MistralLLMClient",
-    "create_mistral_client",
+    "create_controller",
+    "AzureVisionOCR",
+    "create_azure_client",
+    "ImageProcessor",
+    "Section",
+    "SectionType",
+    "FormatValidator",
+    "validate_document",
+    "LearningModule",
+    "create_learning_module",
     
     # Result models
     "AgenticResult",
@@ -65,17 +90,15 @@ __all__ = [
     "QualityReport",
     "ValidationIssue",
     
-    # Validation
+    # Legacy (for backward compatibility)
     "validate_extraction",
     "validate_raw_extraction",
     "parse_extraction_to_fields",
     "ValidationResult",
-    
-    # Quality gate
     "evaluate_quality",
     "evaluate_raw_quality",
     "QualityGateResult",
     "QualityLevel",
 ]
 
-__version__ = "2.0.0"  # Major version bump for anti-hallucination system
+__version__ = "3.0.0"  # Major version: Surgical OCR with Azure OpenAI

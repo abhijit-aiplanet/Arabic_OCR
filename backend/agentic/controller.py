@@ -1,656 +1,386 @@
 """
-Agentic OCR Controller with Quality Gates
+Surgical Agentic OCR Controller
 
-Main orchestration logic for the multi-pass, self-correcting OCR pipeline
-with ANTI-HALLUCINATION quality gates at every step.
+Complete OCR pipeline with:
+1. Image preprocessing
+2. Document structure analysis
+3. Section-by-section extraction
+4. Iterative zoom-in refinement for unclear fields
+5. Format validation
+6. Self-critique and merge
+7. Learning integration
 
-Flow:
-1. Initial full-page OCR (VLM)
-2. QUALITY GATE: Check for hallucination patterns
-3. Analyze output for issues (LLM)
-4. Estimate regions for uncertain fields (LLM)
-5. Crop and re-OCR uncertain regions (VLM)
-6. QUALITY GATE: Verify refinement improved quality
-7. Merge original and refined results (LLM)
-8. FINAL QUALITY GATE: Accept/reject final result
+Inspired by how humans read forms - surgical precision approach.
 """
 
 import asyncio
 import time
 from typing import Optional, Dict, List, Any, Tuple
 from PIL import Image
+from dataclasses import dataclass, field
 
-from .clients import VLMClient, LLMClient
-from .cropper import RegionCropper, enhance_cropped_region
+from .image_processor import ImageProcessor, Section, SectionType
+from .azure_client import AzureVisionOCR, FieldExtraction
+from .format_validator import FormatValidator, DocumentValidation
+from .learning import LearningModule, LearningContext
+from .prompts import (
+    get_section_prompt,
+    get_field_prompt,
+    get_critique_prompt,
+    DOCUMENT_ANALYSIS_PROMPT,
+)
 from .models import (
     AgenticResult,
     FieldResult,
-    AnalysisResult,
-    RegionEstimate,
-    MergeResult,
-    FinalFieldValue,
     QualityReport,
     ValidationIssue,
 )
-from .prompts import get_content_hint, build_field_reextract_prompt
-from .validators import (
-    validate_extraction,
-    parse_extraction_to_fields,
-    ValidationResult,
-)
-from .quality_gate import (
-    evaluate_quality,
-    QualityGateResult,
-    QualityLevel,
-    compare_extraction_quality,
-    should_use_refined,
-)
+
+
+# =============================================================================
+# DATA STRUCTURES
+# =============================================================================
+
+@dataclass
+class SectionResult:
+    """Result from processing a single section."""
+    section_type: str
+    fields: Dict[str, str]
+    confidence: Dict[str, str]  # field -> confidence level
+    unclear_fields: List[str]
+    processing_time: float
+
+
+@dataclass
+class ProcessingTrace:
+    """Trace of processing steps for debugging."""
+    steps: List[Dict[str, Any]] = field(default_factory=list)
+    
+    def add(self, step: str, data: Dict[str, Any] = None):
+        self.steps.append({
+            "step": step,
+            "timestamp": time.time(),
+            "data": data or {},
+        })
 
 
 # =============================================================================
 # QUALITY THRESHOLDS
 # =============================================================================
 
-# Minimum quality score to continue processing
-MIN_QUALITY_TO_CONTINUE = 20
-
-# Minimum quality score for final acceptance
-MIN_QUALITY_TO_ACCEPT = 40
-
-# Quality score below which we should definitely reject
-REJECT_THRESHOLD = 20
+MIN_CONFIDENCE_FOR_ZOOM = "MEDIUM"  # Zoom in on MEDIUM and LOW confidence
+MAX_ZOOM_ATTEMPTS = 3  # Maximum zoom refinement attempts per field
+MIN_QUALITY_SCORE = 40  # Minimum score to accept result
+HALLUCINATION_THRESHOLD = 20  # Below this, reject as hallucination
 
 
 # =============================================================================
-# AGENTIC OCR CONTROLLER
+# SURGICAL OCR CONTROLLER
 # =============================================================================
 
 class AgenticOCRController:
     """
-    Multi-pass, self-correcting OCR controller with quality gates.
+    Surgical precision OCR controller.
     
-    Uses dual-model architecture:
-    - VLM (AIN) for vision/OCR tasks
-    - LLM (Qwen 2.5 or Mistral) for reasoning/orchestration
+    Orchestrates the complete pipeline:
+    1. Preprocess image (grayscale, contrast enhancement)
+    2. Analyze document structure
+    3. Detect and process each section
+    4. Zoom-in refinement for unclear fields
+    5. Format validation
+    6. Self-critique
+    7. Final merge with confidence scoring
     
-    Quality gates at each step ensure hallucinations are caught early.
-    
-    Example usage:
-        controller = AgenticOCRController(vlm_client, llm_client)
-        result = await controller.process(image)
-        
-        if result.quality_status == "rejected":
-            print("Extraction failed quality checks")
-        elif result.quality_status == "warning":
-            print("Extraction needs human review")
-        else:
-            print("Extraction passed quality checks")
+    Uses Azure OpenAI GPT-4o-mini for vision tasks.
+    Integrates learning from user corrections.
     """
     
     def __init__(
         self,
-        vlm_client: VLMClient,
-        llm_client: LLMClient,
-        max_iterations: int = 3,
-        min_fields_to_reexamine: int = 1,
-        use_grid_fallback: bool = True,
-        strict_quality: bool = True
+        azure_client: Optional[AzureVisionOCR] = None,
+        learning_module: Optional[LearningModule] = None,
+        enable_zoom_refinement: bool = True,
+        enable_self_critique: bool = True,
+        strict_validation: bool = True,
     ):
         """
-        Initialize the agentic controller.
+        Initialize the surgical OCR controller.
         
         Args:
-            vlm_client: Client for vision/OCR model
-            llm_client: Client for reasoning model
-            max_iterations: Maximum refinement iterations
-            min_fields_to_reexamine: Minimum fields to warrant re-examination
-            use_grid_fallback: Whether to use grid cropping if region estimation fails
-            strict_quality: Use stricter quality thresholds if True
+            azure_client: Azure OpenAI vision client (created if not provided)
+            learning_module: Learning module for corrections (created if not provided)
+            enable_zoom_refinement: Whether to zoom in on unclear fields
+            enable_self_critique: Whether to run self-critique pass
+            strict_validation: Use strict format validation
         """
-        self.vlm = vlm_client
-        self.llm = llm_client
-        self.max_iterations = max_iterations
-        self.min_fields_to_reexamine = min_fields_to_reexamine
-        self.use_grid_fallback = use_grid_fallback
-        self.strict_quality = strict_quality
-        self.cropper = RegionCropper()
+        self.azure = azure_client or AzureVisionOCR()
+        self.learning = learning_module or LearningModule()
+        self.processor = ImageProcessor()
+        self.validator = FormatValidator()
+        
+        self.enable_zoom_refinement = enable_zoom_refinement
+        self.enable_self_critique = enable_self_critique
+        self.strict_validation = strict_validation
     
     async def process(
         self,
         image: Image.Image,
-        custom_initial_prompt: Optional[str] = None
+        user_id: Optional[str] = None,
     ) -> AgenticResult:
         """
-        Process an image through the full agentic OCR pipeline.
+        Process an image through the full surgical OCR pipeline.
         
         Args:
             image: PIL Image of the document
-            custom_initial_prompt: Optional custom prompt for initial OCR
+            user_id: Optional user ID for learning context
             
         Returns:
             AgenticResult with all extracted fields, quality scores, and metadata
         """
         start_time = time.time()
-        trace = []  # Processing trace for debugging
+        trace = ProcessingTrace()
+        
+        print(f"[Surgical OCR] Starting pipeline...")
+        trace.add("start", {"image_size": image.size})
         
         # =================================================================
-        # STEP 1: Initial Full-Page OCR
+        # STAGE 1: Image Preprocessing
         # =================================================================
-        trace.append({"step": "initial_ocr", "timestamp": time.time()})
+        trace.add("preprocessing")
+        print(f"[Surgical OCR] Stage 1: Preprocessing image...")
         
-        print(f"[Agentic] Step 1: Initial full-page OCR...")
-        initial_text, success = await self.vlm.extract_initial(
-            image, 
-            custom_prompt=custom_initial_prompt
-        )
+        enhanced = self.processor.preprocess(image, contrast=2.0)
         
-        if not success:
-            return self._create_error_result(
-                error=f"Initial OCR failed: {initial_text}",
-                processing_time=time.time() - start_time,
-                trace=trace
-            )
-        
-        trace.append({
-            "step": "initial_ocr_complete",
-            "text_length": len(initial_text),
-            "timestamp": time.time()
+        trace.add("preprocessing_complete", {
+            "original_size": image.size,
+            "enhanced": True,
         })
         
-        print(f"[Agentic] Initial OCR: {len(initial_text)} characters extracted")
-        
         # =================================================================
-        # QUALITY GATE 1: Check initial extraction quality
+        # STAGE 2: Get Learning Context
         # =================================================================
-        trace.append({"step": "quality_gate_1", "timestamp": time.time()})
+        trace.add("learning_context")
+        print(f"[Surgical OCR] Stage 2: Loading learning context...")
         
-        print(f"[Agentic] Quality Gate 1: Checking initial extraction...")
-        initial_fields = parse_extraction_to_fields(initial_text)
-        initial_quality = evaluate_quality(
-            initial_fields, 
-            initial_text, 
-            strict_mode=self.strict_quality
-        )
+        learning_context = await self.learning.get_context()
+        learning_prompt = learning_context.to_prompt() if learning_context else ""
         
-        print(f"[Agentic] Initial quality score: {initial_quality.quality_score}/100")
-        print(f"[Agentic] Quality level: {initial_quality.quality_level.value}")
-        
-        if initial_quality.rejection_reasons:
-            print(f"[Agentic] Rejection reasons: {initial_quality.rejection_reasons}")
-        
-        trace.append({
-            "step": "quality_gate_1_complete",
-            "quality_score": initial_quality.quality_score,
-            "quality_level": initial_quality.quality_level.value,
-            "rejection_reasons": initial_quality.rejection_reasons,
-            "timestamp": time.time()
+        trace.add("learning_context_complete", {
+            "has_examples": bool(learning_prompt),
         })
         
-        # If quality is critically low, reject early
-        if initial_quality.quality_score < REJECT_THRESHOLD:
-            print(f"[Agentic] REJECTED: Quality score {initial_quality.quality_score} below threshold {REJECT_THRESHOLD}")
-            return self._create_rejected_result(
-                raw_text=initial_text,
-                quality_result=initial_quality,
-                processing_time=time.time() - start_time,
-                trace=trace,
-                reason="Initial extraction quality too low (likely hallucination)"
-            )
+        # =================================================================
+        # STAGE 3: Section Detection
+        # =================================================================
+        trace.add("section_detection")
+        print(f"[Surgical OCR] Stage 3: Detecting sections...")
         
-        # Track current best extraction
-        current_extraction = initial_text
-        current_fields = initial_fields
-        current_quality = initial_quality
-        iteration = 0
+        sections = self.processor.detect_sections(enhanced)
+        
+        trace.add("section_detection_complete", {
+            "sections_found": len(sections),
+        })
+        print(f"[Surgical OCR] Found {len(sections)} sections")
         
         # =================================================================
-        # ITERATION LOOP
+        # STAGE 4: Section-by-Section Extraction
         # =================================================================
-        while iteration < self.max_iterations:
-            iteration += 1
-            print(f"\n[Agentic] === Iteration {iteration}/{self.max_iterations} ===")
+        trace.add("section_extraction")
+        print(f"[Surgical OCR] Stage 4: Extracting sections...")
+        
+        all_fields: Dict[str, str] = {}
+        all_confidence: Dict[str, str] = {}
+        unclear_fields: List[str] = []
+        
+        for section in sections:
+            print(f"[Surgical OCR]   Processing: {section.name}")
             
-            # If quality is already good, we can stop
-            if current_quality.quality_score >= 70:
-                print(f"[Agentic] Quality score {current_quality.quality_score} is good, skipping refinement")
-                break
-            
-            # =============================================================
-            # STEP 2: Analyze with LLM
-            # =============================================================
-            trace.append({"step": f"analyze_iter_{iteration}", "timestamp": time.time()})
-            
-            print(f"[Agentic] Step 2: Analyzing extraction for issues...")
-            analysis, success = await self.llm.analyze(current_extraction)
-            
-            if not success or analysis is None:
-                print(f"[Agentic] Analysis failed, using current extraction")
-                break
-            
-            trace.append({
-                "step": f"analysis_complete_iter_{iteration}",
-                "fields_to_reexamine": len(analysis.fields_to_reexamine),
-                "hallucination_detected": analysis.has_hallucination_warning(),
-                "timestamp": time.time()
-            })
-            
-            # Check for LLM-detected hallucination
-            if analysis.has_hallucination_warning():
-                print(f"[Agentic] LLM detected hallucination: {analysis.hallucination_warnings}")
-                # Continue to try to fix, but note it
-                current_quality.warning_reasons.extend(analysis.hallucination_warnings)
-            
-            # Check if we need to re-examine any fields
-            if not analysis.has_fields_to_reexamine():
-                print(f"[Agentic] All fields confident, stopping iteration")
-                break
-            
-            if len(analysis.fields_to_reexamine) < self.min_fields_to_reexamine:
-                print(f"[Agentic] Only {len(analysis.fields_to_reexamine)} uncertain fields, skipping re-examination")
-                break
-            
-            print(f"[Agentic] Found {len(analysis.fields_to_reexamine)} fields to re-examine")
-            for f in analysis.fields_to_reexamine[:5]:  # Show first 5
-                print(f"  - {f.field_name}: {f.issue}")
-            
-            # =============================================================
-            # STEP 3: Estimate Regions
-            # =============================================================
-            trace.append({"step": f"estimate_regions_iter_{iteration}", "timestamp": time.time()})
-            
-            print(f"[Agentic] Step 3: Estimating field regions...")
-            fields_data = [
-                {
-                    "field_name": f.field_name,
-                    "current_value": f.current_value,
-                    "issue": f.issue,
-                    "field_type": f.field_type,
-                }
-                for f in analysis.fields_to_reexamine
-            ]
-            
-            regions, success = await self.llm.estimate_regions(
-                fields_data,
-                image.width,
-                image.height
+            # Crop and upscale section
+            section_image = self.processor.crop_section(
+                enhanced, section, upscale=2
             )
             
-            if not success or not regions:
-                print(f"[Agentic] Region estimation failed")
-                if self.use_grid_fallback:
-                    print(f"[Agentic] Using grid fallback...")
-                    regions = self._create_fallback_regions(
-                        analysis.fields_to_reexamine,
-                        image
-                    )
-                else:
-                    break
+            # Get section-specific prompt with learning context
+            section_prompt = get_section_prompt(
+                section.section_type.value,
+                learning_context=learning_prompt,
+            )
             
-            trace.append({
-                "step": f"regions_estimated_iter_{iteration}",
-                "num_regions": len(regions),
-                "timestamp": time.time()
-            })
+            # Extract using Azure Vision
+            image_b64 = self.processor.image_to_base64(section_image)
+            result = await self.azure.extract_section(
+                image_b64,
+                section_prompt,
+            )
             
-            # =============================================================
-            # STEP 4: Crop and Re-OCR Each Region
-            # =============================================================
-            trace.append({"step": f"reocr_iter_{iteration}", "timestamp": time.time()})
-            
-            print(f"[Agentic] Step 4: Re-OCRing {len(regions)} cropped regions...")
-            refined_values = {}
-            
-            for region in regions:
-                print(f"  - Processing region: {region.field_name}")
+            if result.success:
+                # Parse extraction results
+                fields, confidence = self._parse_extraction(result.text)
                 
-                # Crop the region
-                try:
-                    cropped = self.cropper.crop(
-                        image,
-                        region.bbox_normalized,
-                        normalize=True
-                    )
-                    
-                    # Check if crop is mostly empty (blank region detection)
-                    if self._is_blank_region(cropped):
-                        print(f"    Detected blank/empty region, marking as [فارغ]")
-                        refined_values[region.field_name] = "[فارغ]"
-                        continue
-                    
-                    # Enhance the crop
-                    cropped = enhance_cropped_region(cropped)
-                    
-                    # Find previous value for context
-                    previous_value = ""
-                    for f in analysis.fields_to_reexamine:
-                        if f.field_name == region.field_name:
-                            previous_value = f.current_value
-                            break
-                    
-                    # Re-OCR the cropped region using enhanced prompt
-                    prompt = build_field_reextract_prompt(
-                        field_name=region.field_name,
-                        previous_value=previous_value,
-                        content_hint=get_content_hint(region.field_name)
-                    )
-                    
-                    value, success = await self.vlm.extract_field(
-                        cropped,
-                        region.field_name,
-                        previous_value=previous_value,
-                        content_hint=get_content_hint(region.field_name)
-                    )
-                    
-                    if success:
-                        refined_values[region.field_name] = value
-                        display_value = value[:50] + "..." if len(value) > 50 else value
-                        print(f"    Refined: {display_value}")
-                    else:
-                        print(f"    Failed to re-OCR")
-                        
-                except Exception as e:
-                    print(f"    Error processing region: {e}")
+                all_fields.update(fields)
+                all_confidence.update(confidence)
+                
+                # Track unclear fields for zoom refinement
+                for field_name, conf in confidence.items():
+                    if conf in ["LOW", "MEDIUM"]:
+                        unclear_fields.append(field_name)
+                
+                print(f"[Surgical OCR]   Extracted {len(fields)} fields")
+            else:
+                print(f"[Surgical OCR]   Extraction failed: {result.error}")
+        
+        trace.add("section_extraction_complete", {
+            "total_fields": len(all_fields),
+            "unclear_fields": len(unclear_fields),
+        })
+        
+        # =================================================================
+        # STAGE 5: Zoom-In Refinement for Unclear Fields
+        # =================================================================
+        if self.enable_zoom_refinement and unclear_fields:
+            trace.add("zoom_refinement")
+            print(f"[Surgical OCR] Stage 5: Refining {len(unclear_fields)} unclear fields...")
             
-            trace.append({
-                "step": f"reocr_complete_iter_{iteration}",
-                "refined_count": len(refined_values),
-                "timestamp": time.time()
+            refined_count = 0
+            for field_name in unclear_fields[:10]:  # Limit to top 10
+                print(f"[Surgical OCR]   Zooming: {field_name}")
+                
+                # Get zoom levels for field
+                zoom_levels = self.processor.iterative_zoom(enhanced, field_name)
+                
+                if not zoom_levels:
+                    continue
+                
+                # Try each zoom level until confident
+                best_result: Optional[FieldExtraction] = None
+                
+                for zoomed_image, scale in zoom_levels:
+                    # Check if region is blank
+                    if self.processor.is_blank_region(zoomed_image):
+                        best_result = FieldExtraction(
+                            field_name=field_name,
+                            value="---",
+                            confidence="HIGH",
+                            is_empty=True,
+                        )
+                        break
+                    
+                    # Extract at this zoom level
+                    image_b64 = self.processor.image_to_base64(zoomed_image)
+                    result = await self.azure.extract_field(
+                        image_b64,
+                        field_name,
+                    )
+                    
+                    if result.confidence == "HIGH":
+                        best_result = result
+                        break
+                    elif not best_result or result.confidence == "MEDIUM":
+                        best_result = result
+                
+                # Update with refined result
+                if best_result:
+                    if best_result.value and best_result.value != "---":
+                        all_fields[field_name] = best_result.value
+                    all_confidence[field_name] = best_result.confidence
+                    refined_count += 1
+            
+            trace.add("zoom_refinement_complete", {
+                "refined_count": refined_count,
             })
+            print(f"[Surgical OCR] Refined {refined_count} fields")
+        
+        # =================================================================
+        # STAGE 6: Format Validation
+        # =================================================================
+        trace.add("validation")
+        print(f"[Surgical OCR] Stage 6: Validating formats...")
+        
+        validation = self.validator.validate_document(all_fields)
+        
+        # Update confidence based on validation
+        for field_name, result in validation.field_results.items():
+            if not result.is_valid:
+                all_confidence[field_name] = "LOW"
+        
+        trace.add("validation_complete", {
+            "score": validation.overall_score,
+            "issues": len(validation.critical_issues),
+        })
+        print(f"[Surgical OCR] Validation score: {validation.overall_score}/100")
+        
+        # =================================================================
+        # STAGE 7: Self-Critique
+        # =================================================================
+        if self.enable_self_critique:
+            trace.add("self_critique")
+            print(f"[Surgical OCR] Stage 7: Self-critique...")
             
-            if not refined_values:
-                print(f"[Agentic] No refined values obtained, stopping")
-                break
+            critique = await self.azure.self_critique(all_fields)
             
-            # =============================================================
-            # QUALITY GATE 2: Check if refinement improved quality
-            # =============================================================
-            trace.append({"step": f"quality_gate_2_iter_{iteration}", "timestamp": time.time()})
+            if critique.has_issues:
+                print(f"[Surgical OCR] Found {len(critique.issues)} issues")
+                
+                # Mark problematic fields for review
+                for issue in critique.issues:
+                    field_name = issue.get("field", "")
+                    if field_name in all_confidence:
+                        all_confidence[field_name] = "LOW"
+                
+                # Try to re-extract flagged fields
+                for field_name in critique.fields_to_recheck[:5]:
+                    if field_name in all_fields:
+                        zoom_levels = self.processor.iterative_zoom(enhanced, field_name)
+                        if zoom_levels:
+                            zoomed_image, _ = zoom_levels[-1]  # Use max zoom
+                            image_b64 = self.processor.image_to_base64(zoomed_image)
+                            result = await self.azure.extract_field(image_b64, field_name)
+                            if result.value:
+                                all_fields[field_name] = result.value
+                                all_confidence[field_name] = result.confidence
             
-            print(f"[Agentic] Quality Gate 2: Checking refinement quality...")
-            
-            # Build tentative refined fields
-            refined_fields = current_fields.copy()
-            refined_fields.update(refined_values)
-            
-            # Evaluate refined quality
-            refined_quality = evaluate_quality(
-                refined_fields,
-                "",
-                strict_mode=self.strict_quality
-            )
-            
-            print(f"[Agentic] Refined quality score: {refined_quality.quality_score}/100")
-            
-            # Compare quality
-            use_refined, explanation = should_use_refined(
-                current_fields,
-                refined_fields,
-                min_improvement=5
-            )
-            
-            print(f"[Agentic] Quality comparison: {explanation}")
-            
-            if not use_refined:
-                print(f"[Agentic] Keeping original extraction (refinement didn't improve)")
-                trace.append({
-                    "step": f"quality_gate_2_rejected_iter_{iteration}",
-                    "reason": explanation,
-                    "timestamp": time.time()
-                })
-                # Don't update current, try another iteration or stop
-                continue
-            
-            # =============================================================
-            # STEP 5: Merge Results
-            # =============================================================
-            trace.append({"step": f"merge_iter_{iteration}", "timestamp": time.time()})
-            
-            print(f"[Agentic] Step 5: Merging results...")
-            merge_result, success = await self.llm.merge(
-                current_extraction,
-                refined_values
-            )
-            
-            if not success or merge_result is None:
-                print(f"[Agentic] Merge failed, using previous extraction")
-                break
-            
-            # Check merge quality
-            if merge_result.has_quality_issues():
-                print(f"[Agentic] Merge detected quality issues:")
-                if merge_result.merge_quality_check.duplicate_values_found:
-                    print(f"  - Duplicate values found")
-                if merge_result.merge_quality_check.year_as_value_found:
-                    print(f"  - Year values in non-date fields")
-                if merge_result.merge_quality_check.suspicious_fills:
-                    print(f"  - Suspicious fills: {merge_result.merge_quality_check.suspicious_fills}")
-            
-            trace.append({
-                "step": f"merge_complete_iter_{iteration}",
-                "iteration_complete": merge_result.iteration_complete,
-                "quality_improved": merge_result.merge_quality_check.quality_improved,
-                "timestamp": time.time()
+            trace.add("self_critique_complete", {
+                "issues_found": len(critique.issues) if critique.has_issues else 0,
             })
-            
-            # Update current extraction with merged result
-            current_extraction = self._merge_result_to_text(merge_result)
-            current_fields = {
-                name: fv.value 
-                for name, fv in merge_result.final_fields.items()
-            }
-            current_quality = refined_quality
-            
-            # Check if iteration is complete
-            if merge_result.iteration_complete:
-                print(f"[Agentic] Iteration complete, all fields confident")
-                break
-            
-            if not merge_result.fields_still_uncertain:
-                print(f"[Agentic] No more uncertain fields")
-                break
         
         # =================================================================
-        # FINAL QUALITY GATE: Accept or reject final result
+        # STAGE 8: Build Final Result
         # =================================================================
-        trace.append({"step": "final_quality_gate", "timestamp": time.time()})
+        trace.add("build_result")
+        print(f"[Surgical OCR] Stage 8: Building final result...")
         
-        print(f"\n[Agentic] === Final Quality Gate ===")
-        
-        # Run final quality check
-        final_quality = evaluate_quality(
-            current_fields,
-            current_extraction,
-            strict_mode=self.strict_quality
-        )
-        
-        print(f"[Agentic] Final quality score: {final_quality.quality_score}/100")
-        print(f"[Agentic] Final quality level: {final_quality.quality_level.value}")
-        
-        # Determine final status
-        if final_quality.quality_score < REJECT_THRESHOLD:
-            quality_status = "rejected"
-            print(f"[Agentic] REJECTED: Final quality too low")
-        elif final_quality.quality_score < MIN_QUALITY_TO_ACCEPT:
-            quality_status = "failed"
-            print(f"[Agentic] FAILED: Quality below acceptance threshold")
-        elif final_quality.quality_level in (QualityLevel.WARNING, QualityLevel.POOR):
-            quality_status = "warning"
-            print(f"[Agentic] WARNING: Quality issues detected, needs review")
-        else:
-            quality_status = "passed"
-            print(f"[Agentic] PASSED: Quality acceptable")
-        
-        # =================================================================
-        # BUILD FINAL RESULT
-        # =================================================================
         processing_time = time.time() - start_time
-        print(f"\n[Agentic] Complete! Processed in {processing_time:.1f}s with {iteration} iteration(s)")
         
-        # Build result
-        result = self._build_final_result(
-            raw_text=initial_text,
-            final_extraction=current_extraction,
-            final_fields=current_fields,
-            iterations=iteration,
+        result = self._build_result(
+            fields=all_fields,
+            confidence=all_confidence,
+            validation=validation,
             processing_time=processing_time,
-            quality_result=final_quality,
-            quality_status=quality_status,
-            trace=trace
+            trace=trace,
         )
+        
+        print(f"[Surgical OCR] Complete! {len(result.fields)} fields in {processing_time:.1f}s")
+        print(f"[Surgical OCR] Quality: {result.quality_score}/100 ({result.quality_status})")
         
         return result
     
-    def _is_blank_region(self, image: Image.Image, threshold: float = 0.95) -> bool:
+    def _parse_extraction(
+        self,
+        text: str,
+    ) -> Tuple[Dict[str, str], Dict[str, str]]:
         """
-        Check if a cropped region is mostly blank (empty field).
+        Parse extraction text into fields and confidence levels.
         
-        Args:
-            image: Cropped PIL Image
-            threshold: Ratio of white pixels to consider blank
-            
+        Expected format:
+        field_name: value [CONFIDENCE]
+        
         Returns:
-            True if region appears to be blank/empty
+            Tuple of (fields_dict, confidence_dict)
         """
-        try:
-            import numpy as np
-            
-            # Convert to grayscale
-            gray = image.convert('L')
-            pixels = np.array(gray)
-            
-            # Count "white" pixels (value > 240)
-            white_ratio = np.sum(pixels > 240) / pixels.size
-            
-            return white_ratio > threshold
-        except Exception:
-            return False
-    
-    def _create_fallback_regions(
-        self,
-        fields_to_reexamine: List,
-        image: Image.Image
-    ) -> List[RegionEstimate]:
-        """
-        Create fallback regions when LLM estimation fails.
+        fields = {}
+        confidence = {}
         
-        Uses standard form layout assumptions.
-        """
-        # Define approximate positions for common fields
-        FIELD_POSITIONS = {
-            "اسم المالك": (0.4, 0.08, 0.95, 0.14),
-            "الاسم": (0.4, 0.08, 0.95, 0.14),
-            "رقم الهوية": (0.4, 0.12, 0.95, 0.18),
-            "رقم بطاقة الأحوال": (0.4, 0.12, 0.95, 0.18),
-            "تاريخ الميلاد": (0.4, 0.16, 0.95, 0.22),
-            "تاريخ الإصدار": (0.4, 0.20, 0.95, 0.26),
-            "تاريخ الانتهاء": (0.4, 0.24, 0.95, 0.30),
-            "رقم الجوال": (0.4, 0.28, 0.95, 0.34),
-            "المدينة": (0.4, 0.32, 0.95, 0.38),
-            "الحي": (0.4, 0.36, 0.95, 0.42),
-            "رقم اللوحة": (0.4, 0.50, 0.95, 0.56),
-            "رقم رخصة القيادة": (0.4, 0.45, 0.95, 0.52),
-        }
-        
-        regions = []
-        for field in fields_to_reexamine:
-            # Try to find a predefined position
-            bbox = None
-            for key, pos in FIELD_POSITIONS.items():
-                if key in field.field_name or field.field_name in key:
-                    bbox = pos
-                    break
-            
-            if bbox is None:
-                # Default to middle section
-                bbox = (0.3, 0.3, 0.95, 0.6)
-            
-            regions.append(RegionEstimate(
-                field_name=field.field_name,
-                bbox_normalized=bbox,
-                location_confidence="low",
-                notes="Fallback position"
-            ))
-        
-        return regions
-    
-    def _merge_result_to_text(self, merge_result: MergeResult) -> str:
-        """Convert merge result back to text format for next iteration."""
-        lines = []
-        for field_name, field_value in merge_result.final_fields.items():
-            confidence = field_value.confidence.upper()
-            value = field_value.value
-            lines.append(f"{field_name}: {value} [{confidence}]")
-        return "\n".join(lines)
-    
-    def _create_error_result(
-        self,
-        error: str,
-        processing_time: float,
-        trace: List[Dict]
-    ) -> AgenticResult:
-        """Create an error result."""
-        return AgenticResult(
-            status="error",
-            error=error,
-            processing_time_seconds=processing_time,
-            quality_score=0,
-            quality_status="failed",
-            trace=trace
-        )
-    
-    def _create_rejected_result(
-        self,
-        raw_text: str,
-        quality_result: QualityGateResult,
-        processing_time: float,
-        trace: List[Dict],
-        reason: str
-    ) -> AgenticResult:
-        """Create a rejected result due to quality issues."""
-        # Convert quality result to report
-        quality_report = QualityReport(
-            quality_score=quality_result.quality_score,
-            quality_status="rejected",
-            hallucination_indicators=quality_result.validation_result.hallucination_indicators,
-            rejection_reasons=quality_result.rejection_reasons,
-            warning_reasons=quality_result.warning_reasons,
-            should_retry=quality_result.should_retry,
-            needs_human_review=True,
-            fields_to_review=quality_result.fields_to_review,
-        )
-        
-        return AgenticResult(
-            raw_text=raw_text,
-            status="rejected",
-            error=reason,
-            processing_time_seconds=processing_time,
-            quality_score=quality_result.quality_score,
-            quality_status="rejected",
-            quality_report=quality_report,
-            hallucination_detected=True,
-            hallucination_indicators=quality_result.validation_result.hallucination_indicators,
-            trace=trace
-        )
-    
-    def _build_final_result(
-        self,
-        raw_text: str,
-        final_extraction: str,
-        final_fields: Dict[str, str],
-        iterations: int,
-        processing_time: float,
-        quality_result: QualityGateResult,
-        quality_status: str,
-        trace: List[Dict]
-    ) -> AgenticResult:
-        """Build the final AgenticResult from processed data."""
-        
-        # Parse fields from final extraction
-        fields = []
-        fields_needing_review = []
-        confidence_summary = {"high": 0, "medium": 0, "low": 0, "empty": 0}
-        
-        for line in final_extraction.strip().split("\n"):
+        for line in text.strip().split("\n"):
             line = line.strip()
             if not line or ":" not in line:
                 continue
@@ -664,177 +394,191 @@ class AgenticOCRController:
             rest = parts[1].strip()
             
             # Extract confidence level
-            confidence = "medium"
+            conf = "MEDIUM"  # default
             if "[HIGH]" in rest.upper():
-                confidence = "high"
+                conf = "HIGH"
                 rest = rest.replace("[HIGH]", "").replace("[high]", "").strip()
             elif "[MEDIUM]" in rest.upper():
-                confidence = "medium"
+                conf = "MEDIUM"
                 rest = rest.replace("[MEDIUM]", "").replace("[medium]", "").strip()
             elif "[LOW]" in rest.upper():
-                confidence = "low"
+                conf = "LOW"
                 rest = rest.replace("[LOW]", "").replace("[low]", "").strip()
+            elif "[EMPTY]" in rest.upper():
+                conf = "HIGH"  # Empty is confirmed
+                rest = "---"
             
             value = rest.strip()
             
+            # Store
+            fields[field_name] = value
+            confidence[field_name] = conf
+        
+        return fields, confidence
+    
+    def _build_result(
+        self,
+        fields: Dict[str, str],
+        confidence: Dict[str, str],
+        validation: DocumentValidation,
+        processing_time: float,
+        trace: ProcessingTrace,
+    ) -> AgenticResult:
+        """Build the final AgenticResult from processed data."""
+        
+        # Build field results
+        field_results = []
+        fields_needing_review = []
+        confidence_summary = {"high": 0, "medium": 0, "low": 0, "empty": 0}
+        
+        for field_name, value in fields.items():
+            conf = confidence.get(field_name, "MEDIUM")
+            
             # Check for empty markers
-            is_empty = "[فارغ]" in value or value.lower() == "empty"
-            needs_review = confidence == "low" or "[غير واضح" in value
+            is_empty = value in ["---", "[فارغ]", "[EMPTY]", ""]
+            needs_review = conf == "LOW" or "؟" in value
             
-            # Get per-field validation score
-            validation_score = quality_result.validation_result.field_scores.get(field_name, 50)
+            # Get validation result for this field
+            val_result = validation.field_results.get(field_name)
+            validation_score = 100 if (not val_result or val_result.is_valid) else 50
             
+            # Count confidence levels
             if is_empty:
                 confidence_summary["empty"] += 1
             else:
-                confidence_summary[confidence] += 1
+                confidence_summary[conf.lower()] += 1
             
             if needs_review:
                 fields_needing_review.append(field_name)
             
-            fields.append(FieldResult(
+            field_results.append(FieldResult(
                 field_name=field_name,
                 value=value,
-                confidence=confidence,
+                confidence=conf.lower(),
                 source="agentic",
                 needs_review=needs_review,
                 review_reason="Low confidence or unclear" if needs_review else None,
                 is_empty=is_empty,
-                validation_score=validation_score
+                validation_score=validation_score,
             ))
         
-        # Add fields flagged by quality gate
-        for field_name in quality_result.fields_to_review:
-            if field_name not in fields_needing_review:
-                fields_needing_review.append(field_name)
+        # Determine quality status
+        quality_score = validation.overall_score
         
-        # Build quality report
-        quality_report = QualityReport(
-            quality_score=quality_result.quality_score,
-            quality_status=quality_status,
-            validation_issues=[
-                ValidationIssue(
-                    field_name=i.field_name,
-                    issue_type=i.issue_type,
-                    severity=i.severity.value if hasattr(i.severity, 'value') else str(i.severity),
-                    message=i.message,
-                    expected=i.expected,
-                    actual=i.actual
-                )
-                for i in quality_result.validation_result.issues
-            ],
-            hallucination_indicators=quality_result.validation_result.hallucination_indicators,
-            field_scores=quality_result.validation_result.field_scores,
-            duplicate_values=quality_result.validation_result.duplicate_values,
-            should_retry=quality_result.should_retry,
-            needs_human_review=quality_result.needs_human_review,
-            fields_to_review=quality_result.fields_to_review,
-            rejection_reasons=quality_result.rejection_reasons,
-            warning_reasons=quality_result.warning_reasons,
-        )
-        
-        # Determine if hallucination was detected
-        hallucination_detected = (
-            quality_status == "rejected" or
-            len(quality_result.validation_result.hallucination_indicators) > 0 or
-            any("hallucination" in r.lower() for r in quality_result.rejection_reasons)
-        )
-        
-        return AgenticResult(
-            fields=fields,
-            raw_text=raw_text,
-            iterations_used=iterations,
-            processing_time_seconds=processing_time,
-            confidence_summary=confidence_summary,
-            fields_needing_review=fields_needing_review,
-            status="success" if quality_status in ("passed", "warning") else quality_status,
-            quality_score=quality_result.quality_score,
-            quality_status=quality_status,
-            quality_report=quality_report,
-            hallucination_detected=hallucination_detected,
-            hallucination_indicators=quality_result.validation_result.hallucination_indicators,
-            trace=trace
-        )
-
-
-# =============================================================================
-# FALLBACK SINGLE-PASS CONTROLLER
-# =============================================================================
-
-class SinglePassController:
-    """
-    Fallback single-pass OCR controller.
-    
-    Used when LLM is unavailable or for simpler documents.
-    Still includes basic quality checking.
-    """
-    
-    def __init__(self, vlm_client: VLMClient, strict_quality: bool = True):
-        self.vlm = vlm_client
-        self.strict_quality = strict_quality
-    
-    async def process(
-        self,
-        image: Image.Image,
-        custom_prompt: Optional[str] = None
-    ) -> AgenticResult:
-        """Process image with single-pass OCR and quality check."""
-        start_time = time.time()
-        
-        text, success = await self.vlm.extract_initial(image, custom_prompt)
-        
-        if not success:
-            return AgenticResult(
-                status="error",
-                error=text,
-                processing_time_seconds=time.time() - start_time,
-                quality_score=0,
-                quality_status="failed"
-            )
-        
-        # Run quality check
-        fields = parse_extraction_to_fields(text)
-        quality_result = evaluate_quality(fields, text, self.strict_quality)
-        
-        # Determine status based on quality
-        if quality_result.quality_score < REJECT_THRESHOLD:
+        if quality_score < HALLUCINATION_THRESHOLD:
             quality_status = "rejected"
-        elif quality_result.quality_score < MIN_QUALITY_TO_ACCEPT:
+        elif quality_score < MIN_QUALITY_SCORE:
             quality_status = "failed"
-        elif quality_result.quality_level in (QualityLevel.WARNING, QualityLevel.POOR):
+        elif len(validation.critical_issues) > 0:
+            quality_status = "warning"
+        elif len(fields_needing_review) > len(fields) * 0.3:
             quality_status = "warning"
         else:
             quality_status = "passed"
         
-        # Simple parsing
-        result_fields = []
-        for line in text.strip().split("\n"):
-            if ":" in line:
-                parts = line.split(":", 1)
-                field_name = parts[0].strip()
-                value = parts[1].strip() if len(parts) > 1 else ""
-                
-                # Remove confidence markers
-                for marker in ['[HIGH]', '[MEDIUM]', '[LOW]']:
-                    value = value.replace(marker, '').replace(marker.lower(), '').strip()
-                
-                result_fields.append(FieldResult(
-                    field_name=field_name,
-                    value=value,
-                    confidence="medium",
-                    source="single_pass",
-                    needs_review=quality_status != "passed",
-                    validation_score=quality_result.validation_result.field_scores.get(field_name, 50)
-                ))
+        # Build quality report
+        quality_report = QualityReport(
+            quality_score=quality_score,
+            quality_status=quality_status,
+            validation_issues=[
+                ValidationIssue(
+                    field_name=r.field_name,
+                    issue_type="format",
+                    severity="warning" if r.is_valid else "error",
+                    message="; ".join(r.issues) if r.issues else "",
+                    expected=r.expected_format,
+                    actual=r.value,
+                )
+                for r in validation.field_results.values()
+                if r.issues
+            ],
+            hallucination_indicators=validation.hallucination_indicators,
+            field_scores={
+                name: (100 if r.is_valid else 50)
+                for name, r in validation.field_results.items()
+            },
+            duplicate_values=validation.duplicate_values,
+            should_retry=quality_status in ["failed", "rejected"],
+            needs_human_review=quality_status in ["warning", "failed"],
+            fields_to_review=fields_needing_review,
+            rejection_reasons=validation.critical_issues,
+            warning_reasons=validation.warnings,
+        )
+        
+        # Determine if hallucination detected
+        hallucination_detected = (
+            quality_status == "rejected" or
+            len(validation.hallucination_indicators) > 0 or
+            bool(validation.duplicate_values)
+        )
         
         return AgenticResult(
-            fields=result_fields,
-            raw_text=text,
-            iterations_used=1,
-            processing_time_seconds=time.time() - start_time,
+            fields=field_results,
+            raw_text="\n".join(f"{k}: {v}" for k, v in fields.items()),
+            iterations_used=1,  # Surgical approach uses sections, not iterations
+            processing_time_seconds=processing_time,
+            confidence_summary=confidence_summary,
+            fields_needing_review=fields_needing_review,
             status="success" if quality_status in ("passed", "warning") else quality_status,
-            quality_score=quality_result.quality_score,
+            quality_score=quality_score,
             quality_status=quality_status,
-            hallucination_detected=len(quality_result.validation_result.hallucination_indicators) > 0,
-            hallucination_indicators=quality_result.validation_result.hallucination_indicators,
+            quality_report=quality_report,
+            hallucination_detected=hallucination_detected,
+            hallucination_indicators=validation.hallucination_indicators,
+            trace=trace.steps,
         )
+
+
+# =============================================================================
+# FACTORY FUNCTIONS
+# =============================================================================
+
+def create_controller(
+    azure_client: Optional[AzureVisionOCR] = None,
+    learning_module: Optional[LearningModule] = None,
+    supabase_client=None,
+) -> AgenticOCRController:
+    """
+    Create an agentic OCR controller with default configuration.
+    
+    Args:
+        azure_client: Optional pre-configured Azure client
+        learning_module: Optional pre-configured learning module
+        supabase_client: Optional Supabase client for learning
+        
+    Returns:
+        Configured AgenticOCRController
+    """
+    if not azure_client:
+        from .azure_client import create_azure_client
+        azure_client = create_azure_client()
+    
+    if not learning_module:
+        from .learning import create_learning_module
+        learning_module = create_learning_module(supabase_client)
+    
+    return AgenticOCRController(
+        azure_client=azure_client,
+        learning_module=learning_module,
+    )
+
+
+# =============================================================================
+# LEGACY COMPATIBILITY
+# =============================================================================
+
+class SinglePassController:
+    """
+    Legacy single-pass controller for backward compatibility.
+    Redirects to the surgical controller.
+    """
+    
+    def __init__(self, *args, **kwargs):
+        self.controller = AgenticOCRController()
+    
+    async def process(
+        self,
+        image: Image.Image,
+        custom_prompt: Optional[str] = None,
+    ) -> AgenticResult:
+        return await self.controller.process(image)

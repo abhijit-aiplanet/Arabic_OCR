@@ -76,6 +76,19 @@ print(f"RUNPOD_ENDPOINT configured: {RUNPOD_ENDPOINT[:50] if RUNPOD_ENDPOINT els
 RUNPOD_API_KEY = os.getenv("RUNPOD_API_KEY")
 
 # =============================================================================
+# AZURE OPENAI CONFIGURATION (for Surgical OCR)
+# =============================================================================
+AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY", "").strip() or None
+AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT", "").strip() or None
+AZURE_DEPLOYMENT = os.getenv("AZURE_DEPLOYMENT", "o4-mini")
+AZURE_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2025-01-01-preview")
+
+if AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT:
+    print(f"Azure OpenAI configured: {AZURE_OPENAI_ENDPOINT[:40]}... (deployment: {AZURE_DEPLOYMENT})")
+else:
+    print("Azure OpenAI not configured - agentic OCR will not be available")
+
+# =============================================================================
 # RUNPOD CLIENT CONFIGURATION (OPTIMIZED FOR HIGH TRAFFIC & LONG WAITS)
 # =============================================================================
 
@@ -2796,41 +2809,32 @@ async def agentic_ocr(
     user: dict = Depends(verify_clerk_token)
 ):
     """
-    Multi-pass agentic OCR with self-correction.
+    Surgical Agentic OCR with Azure OpenAI GPT-4o-mini.
     
-    Uses dual-model architecture:
-    - AIN VLM for vision/OCR tasks
-    - Mistral LLM for reasoning/orchestration (or RunPod LLM as fallback)
+    Uses surgical precision approach:
+    1. Preprocess image (grayscale, contrast enhancement)
+    2. Detect document sections (header, general data, address, etc.)
+    3. Extract each section with section-specific prompts
+    4. Zoom-in refinement for unclear fields
+    5. Format validation (Saudi document formats)
+    6. Self-critique for hallucination detection
+    7. Learning integration from past corrections
     
-    Process:
-    1. Initial full-page OCR
-    2. LLM analyzes for issues
-    3. Crops uncertain regions
-    4. Re-OCRs cropped regions
-    5. LLM merges results
-    6. Repeats until confident or max iterations
-    
-    Takes 1-3 minutes for complex images.
+    Typical processing time: 10-30 seconds.
     """
     import time as time_module
     start_time = time_module.time()
     
     try:
-        # Validate VLM endpoint
-        if not RUNPOD_ENDPOINT:
-            raise HTTPException(status_code=500, detail="VLM service not configured")
-        
-        # Check for LLM configuration (Mistral preferred, RunPod as fallback)
-        if not MISTRAL_API_KEY and not RUNPOD_LLM_ENDPOINT:
-            print("[Agentic] No LLM configured (neither Mistral nor RunPod)")
+        # Validate Azure OpenAI configuration
+        if not AZURE_OPENAI_API_KEY or not AZURE_OPENAI_ENDPOINT:
             raise HTTPException(
-                status_code=503, 
-                detail="Agentic OCR requires an LLM. Please configure MISTRAL_API_KEY."
+                status_code=500, 
+                detail="Azure OpenAI not configured. Set AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT."
             )
         
-        print(f"[Agentic] Starting request at {time_module.strftime('%H:%M:%S')}")
-        print(f"[Agentic] MISTRAL_API_KEY configured: {bool(MISTRAL_API_KEY)}")
-        print(f"[Agentic] RUNPOD_ENDPOINT: {RUNPOD_ENDPOINT}")
+        print(f"[Surgical OCR] Starting request at {time_module.strftime('%H:%M:%S')}")
+        print(f"[Surgical OCR] Azure endpoint: {AZURE_OPENAI_ENDPOINT[:40]}...")
         
         # Read and validate image
         contents = await file.read()
@@ -2838,89 +2842,52 @@ async def agentic_ocr(
             image = Image.open(io.BytesIO(contents))
             if image.mode not in ('RGB', 'L', 'RGBA'):
                 image = image.convert('RGB')
-            print(f"[Agentic] Image loaded: {image.size[0]}x{image.size[1]}")
+            print(f"[Surgical OCR] Image loaded: {image.size[0]}x{image.size[1]}")
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Invalid image: {str(e)}")
         
-        # Import agentic module
+        # Import agentic module (new surgical approach)
         try:
-            from agentic import AgenticOCRController
-            from agentic.clients import VLMClient, MistralLLMClient, LLMClient
+            from agentic.controller import AgenticOCRController
+            from agentic.azure_client import AzureVisionOCR
+            from agentic.learning import LearningModule
         except ImportError as e:
-            print(f"[Agentic] Import error: {e}")
+            print(f"[Surgical OCR] Import error: {e}")
+            traceback.print_exc()
             raise HTTPException(
                 status_code=500, 
                 detail=f"Agentic module not available: {str(e)}"
             )
         
-        # Create VLM client with reduced timeout (Vercel max is 300s)
-        # Leave room for LLM calls after VLM completes
-        vlm_client = VLMClient(
-            endpoint_url=RUNPOD_ENDPOINT,
-            api_key=RUNPOD_API_KEY,
-            timeout=240.0  # Reduced from 300 to leave room for LLM
+        # Create Azure Vision client
+        azure_client = AzureVisionOCR(
+            api_key=AZURE_OPENAI_API_KEY,
+            endpoint=AZURE_OPENAI_ENDPOINT,
+            deployment=AZURE_DEPLOYMENT,
+            api_version=AZURE_API_VERSION,
         )
+        print("[Surgical OCR] Azure client initialized")
         
-        # Create LLM client (Mistral preferred, RunPod as fallback)
-        llm_client = None
-        if MISTRAL_API_KEY:
-            print(f"[Agentic] Initializing Mistral API with model: {MISTRAL_MODEL}")
-            try:
-                llm_client = MistralLLMClient(
-                    api_key=MISTRAL_API_KEY,
-                    model=MISTRAL_MODEL
-                )
-                print("[Agentic] Mistral client created successfully")
-            except ImportError as e:
-                print(f"[Agentic] Mistral SDK not available: {e}")
-                if RUNPOD_LLM_ENDPOINT:
-                    print("[Agentic] Falling back to RunPod LLM")
-                else:
-                    raise HTTPException(
-                        status_code=500,
-                        detail="Mistral SDK not installed. Run: pip install mistralai"
-                    )
-            except Exception as e:
-                print(f"[Agentic] Mistral client creation failed: {e}")
-                traceback.print_exc()
-                if RUNPOD_LLM_ENDPOINT:
-                    print("[Agentic] Falling back to RunPod LLM")
-                else:
-                    raise HTTPException(
-                        status_code=500,
-                        detail=f"Mistral API initialization failed: {str(e)}"
-                    )
+        # Create learning module with Supabase
+        learning_module = LearningModule(supabase_client=supabase)
         
-        if llm_client is None and RUNPOD_LLM_ENDPOINT:
-            print("[Agentic] Using RunPod LLM endpoint")
-            llm_client = LLMClient(
-                endpoint_url=RUNPOD_LLM_ENDPOINT,
-                api_key=RUNPOD_LLM_API_KEY,
-                timeout=60.0  # LLM calls should be fast
-            )
-        
-        if llm_client is None:
-            raise HTTPException(
-                status_code=503,
-                detail="No LLM client could be initialized. Check MISTRAL_API_KEY."
-            )
-        
-        # Create controller and process
-        # Limit to 2 iterations max for Vercel timeout constraints
-        effective_iterations = min(max_iterations, 2)
-        print(f"[Agentic] Starting processing with max_iterations={effective_iterations}")
-        
+        # Create surgical OCR controller
         controller = AgenticOCRController(
-            vlm_client=vlm_client,
-            llm_client=llm_client,
-            max_iterations=effective_iterations
+            azure_client=azure_client,
+            learning_module=learning_module,
+            enable_zoom_refinement=True,
+            enable_self_critique=True,
         )
         
-        result = await controller.process(image)
+        # Get user ID for learning context
+        user_id = user.get("sub", "anonymous") if user else "anonymous"
         
-        # Clean up clients
-        await vlm_client.close()
-        await llm_client.close()
+        # Process image with surgical precision
+        print(f"[Surgical OCR] Starting surgical processing...")
+        result = await controller.process(image, user_id=user_id)
+        
+        # Clean up
+        await azure_client.close()
         
         elapsed = time_module.time() - start_time
         print(f"[Agentic] Completed in {elapsed:.1f}s with {result.iterations_used} iterations")
@@ -2988,6 +2955,120 @@ async def agentic_ocr(
         print(f"[Agentic] Error after {elapsed:.1f}s: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Agentic OCR failed: {str(e)}")
+
+
+# =============================================================================
+# OCR CORRECTION ENDPOINT - Learning from User Feedback
+# =============================================================================
+
+class CorrectionRequest(BaseModel):
+    """Request to record a user correction."""
+    field_name: str
+    original_value: str
+    corrected_value: str
+    field_type: Optional[str] = None
+    ocr_history_id: Optional[str] = None
+
+
+class CorrectionResponse(BaseModel):
+    """Response for correction recording."""
+    status: str
+    message: str
+
+
+@app.post("/api/ocr/correct", response_model=CorrectionResponse)
+async def record_ocr_correction(
+    correction: CorrectionRequest,
+    user: dict = Depends(verify_clerk_token)
+):
+    """
+    Record a user correction to improve future OCR extractions.
+    
+    These corrections are stored and used as few-shot examples
+    to improve accuracy for similar fields in the future.
+    
+    Args:
+        correction: The correction details (field, original, corrected values)
+        
+    Returns:
+        Confirmation of recording
+    """
+    try:
+        user_id = user.get("sub", "anonymous") if user else "anonymous"
+        
+        # Import learning module
+        try:
+            from agentic.learning import LearningModule
+        except ImportError as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Learning module not available: {str(e)}"
+            )
+        
+        # Create learning module with Supabase
+        learning_module = LearningModule(supabase_client=supabase)
+        
+        # Record the correction
+        success = await learning_module.record_correction(
+            user_id=user_id,
+            field_name=correction.field_name,
+            original_value=correction.original_value,
+            corrected_value=correction.corrected_value,
+            field_type=correction.field_type,
+            ocr_history_id=correction.ocr_history_id,
+        )
+        
+        if success:
+            print(f"[Learning] Recorded correction: {correction.field_name} '{correction.original_value[:20]}...' -> '{correction.corrected_value[:20]}...'")
+            return CorrectionResponse(
+                status="recorded",
+                message="Correction recorded successfully. Thank you for improving the system!"
+            )
+        else:
+            return CorrectionResponse(
+                status="warning",
+                message="Correction may not have been fully saved, but processing continues."
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[Learning] Error recording correction: {e}")
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to record correction: {str(e)}"
+        )
+
+
+@app.get("/api/ocr/learning-stats")
+async def get_learning_stats(
+    user: dict = Depends(verify_clerk_token)
+):
+    """
+    Get statistics about OCR learning from corrections.
+    
+    Shows how many corrections have been recorded and
+    which fields are most frequently corrected.
+    """
+    try:
+        from agentic.learning import LearningModule
+        
+        learning_module = LearningModule(supabase_client=supabase)
+        stats = await learning_module.get_correction_stats()
+        
+        return {
+            "status": "success",
+            "stats": stats,
+        }
+        
+    except Exception as e:
+        print(f"[Learning] Error getting stats: {e}")
+        return {
+            "status": "error",
+            "message": str(e),
+            "stats": {"total": 0},
+        }
 
 
 # =============================================================================

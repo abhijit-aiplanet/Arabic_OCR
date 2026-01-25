@@ -1,258 +1,422 @@
 """
-Prompt Templates for Agentic OCR System - Superior Anti-Hallucination Edition
+Surgical OCR Prompts for Arabic Government Forms
 
-FUNDAMENTAL PRINCIPLE: Simple prompts that ask for ONE thing produce better results
-than complex prompts that ask for many things.
+Section-specific prompts designed for maximum accuracy.
+Each section gets a tailored prompt with:
+- Expected fields for that section
+- Format hints for each field type
+- Clear instructions for empty/unclear handling
 
-The key insight is that hallucination happens when the model:
-1. Tries to fill in gaps with "reasonable" data
-2. Gets confused by complex instructions
-3. Copies values it saw once to fill other fields
-
-SOLUTION: Two-stage approach
-1. Stage 1: RAW TRANSCRIPTION - Just read what's handwritten, nothing more
-2. Stage 2: STRUCTURE - Parse the raw text into fields (done by LLM, not VLM)
+Key principles:
+1. Simple prompts that ask for ONE thing
+2. Section-specific context for better accuracy
+3. Clear markers for empty/unclear fields
+4. Learning context integration
 """
 
-# =============================================================================
-# STAGE 1: RAW TRANSCRIPTION PROMPT (VLM)
-# =============================================================================
-# This is the ONLY prompt the VLM sees for initial extraction.
-# It's deliberately simple to reduce hallucination.
-
-INITIAL_OCR_PROMPT = """انظر إلى هذه الصورة. اكتب فقط النص المكتوب بخط اليد الذي تراه.
-
-قواعد بسيطة:
-١. اكتب فقط ما هو مكتوب بخط اليد (بالحبر)
-٢. تجاهل النص المطبوع (العناوين والتسميات)
-٣. إذا كان الحقل فارغاً (نقاط أو خطوط فقط) اكتب: ---
-٤. اكتب كل قيمة في سطر منفصل
-
-مثال للمخرجات:
-محمد أحمد العتيبي
-١٠٥٨٣٧٦٢٨٠
-٠٥٥١٢٣٤٥٦٧
-١٥/٠٧/١٤٠٥
-جدة
----
----
-
-ابدأ الآن. اكتب فقط القيم المكتوبة بخط اليد:"""
-
-# Alternative English prompt for debugging
-INITIAL_OCR_PROMPT_EN = """Look at this image. Write ONLY the handwritten text you can see.
-
-Simple rules:
-1. Write ONLY handwritten text (ink marks)
-2. IGNORE printed text (headers, labels)
-3. If a field is empty (dots or lines only), write: ---
-4. Write each value on a separate line
-
-Example output:
-محمد أحمد العتيبي
-١٠٥٨٣٧٦٢٨٠
-٠٥٥١٢٣٤٥٦٧
-١٥/٠٧/١٤٠٥
-جدة
----
----
-
-Start now. Write ONLY the handwritten values:"""
+from typing import Dict, Optional
 
 
 # =============================================================================
-# STAGE 1B: VISUAL DESCRIPTION PROMPT (VLM)
+# DOCUMENT ANALYSIS PROMPT
 # =============================================================================
-# Alternative approach: Have the model describe what it sees first,
-# which grounds it in the actual image content.
 
-VISUAL_DESCRIPTION_PROMPT = """صف ما تراه في هذه الصورة.
+DOCUMENT_ANALYSIS_PROMPT = """Analyze this Arabic government form image.
 
-١. ما نوع هذه الوثيقة؟
-٢. كم عدد الحقول المملوءة بخط اليد؟
-٣. كم عدد الحقول الفارغة؟
-٤. ما اللغة المستخدمة في الكتابة اليدوية؟
-٥. هل الكتابة واضحة أم غير واضحة؟
+Describe:
+1. What type of document is this?
+2. How many sections do you see?
+3. Which sections have handwritten content?
+4. Which sections appear mostly empty?
+5. Rate the handwriting clarity: واضح (clear) / متوسط (moderate) / غير واضح (poor)
 
-أجب بإيجاز:"""
-
-
-# =============================================================================
-# STAGE 1C: LINE-BY-LINE TRANSCRIPTION (VLM)
-# =============================================================================
-# Most focused prompt - asks model to read one line at a time
-
-LINE_BY_LINE_PROMPT = """اقرأ النص المكتوب بخط اليد في هذه الصورة سطراً بسطر.
-
-لكل سطر يحتوي على كتابة يدوية، اكتب:
-- رقم السطر
-- القيمة المكتوبة
-
-إذا كان السطر فارغاً، اكتب: [فارغ]
-إذا لم تستطع القراءة، اكتب: [؟]
-
-مثال:
-١: محمد أحمد
-٢: ١٠٥٨٣٧٦٢٨٠
-٣: [فارغ]
-٤: ٠٥٥١٢٣٤٥٦٧
-
-اقرأ الصورة الآن:"""
+Output as JSON:
+{
+  "document_type": "string",
+  "sections_count": number,
+  "sections_with_content": ["section names"],
+  "sections_empty": ["section names"],
+  "handwriting_quality": "واضح/متوسط/غير واضح",
+  "notes": "any important observations"
+}"""
 
 
 # =============================================================================
-# STAGE 2: FIELD MAPPING PROMPT (LLM - NOT VLM)
+# SECTION-SPECIFIC PROMPTS
 # =============================================================================
-# The LLM takes the raw transcription and maps it to fields.
-# This separates "reading" from "understanding".
 
-FIELD_MAPPING_PROMPT = """أنت محلل نماذج. لديك:
-١. قائمة القيم المستخرجة من الصورة
-٢. قائمة الحقول المتوقعة في النموذج
+SECTION_PROMPTS = {
+    "header": """هذا هو قسم الرأس (HEADER) من نموذج حكومي سعودي.
 
-## القيم المستخرجة:
-{raw_transcription}
+الحقول المتوقعة:
+- نوع النشاط (Activity Type) - نص عربي
+- مدينة مزاولة النشاط (City of Activity) - اسم مدينة
+- تاريخ بدء النشاط (Start Date) - يوم/شهر/سنة هجري
+- تاريخ انتهاء الترخيص (License End Date) - يوم/شهر/سنة هجري
 
-## الحقول المتوقعة في النموذج السعودي:
-- اسم المالك / الاسم (نص عربي)
-- رقم الهوية / رقم بطاقة الأحوال (١٠ أرقام تبدأ بـ ١ أو ٢)
-- رقم الجوال (١٠ أرقام تبدأ بـ ٠٥)
-- تاريخ الميلاد (يوم/شهر/سنة)
-- تاريخ الإصدار (يوم/شهر/سنة)
-- تاريخ الانتهاء (يوم/شهر/سنة)
-- المدينة (اسم مدينة)
-- رقم اللوحة (حروف وأرقام)
+## التعليمات:
+اقرأ القيم المكتوبة بخط اليد فقط (تجاهل النص المطبوع).
 
-## مهمتك:
-طابق كل قيمة مستخرجة مع الحقل المناسب بناءً على الصيغة.
+## التنسيق:
+اسم_الحقل: القيمة [الثقة]
 
-## قواعد صارمة:
-- لا تخترع قيماً جديدة
-- إذا لم تجد قيمة مناسبة للحقل، اكتب: [غير موجود]
-- إذا كانت القيمة "---" أو "[فارغ]"، الحقل فارغ
+## قواعد الثقة:
+- [HIGH] = واضح ومقروء
+- [MEDIUM] = مقروء لكن غير مؤكد
+- [LOW] = غير واضح، أفضل تخمين
 
-## المخرجات (JSON):
+## للحقول الفارغة:
+اسم_الحقل: --- [EMPTY]
+
+## للحقول غير الواضحة:
+اسم_الحقل: ؟[أفضل تخمين] [LOW]
+
+{learning_context}
+
+ابدأ الاستخراج:""",
+
+    "general_data": """هذا هو قسم البيانات العامة (بيانات عامة) من النموذج.
+
+الحقول المتوقعة:
+- اسم المالك (Owner Name) - اسم عربي كامل
+- رقم الهوية (ID Number) - ١٠ أرقام تبدأ بـ ١ أو ٢
+- مصدرها (ID Source) - اسم مدينة
+- تاريخها (ID Date) - يوم/شهر/سنة هجري
+- الحالة الاجتماعية (Marital Status) - متزوج/أعزب/مطلق/أرمل
+- عدد من يعولهم (Dependents Count) - رقم
+- المؤهل (Qualification) - مستوى تعليمي
+- تاريخ الميلاد (Birth Date) - يوم/شهر/سنة هجري
+
+## تنسيقات مهمة:
+- رقم الهوية: ١٠ أرقام مثل ١٠٣٨٣٦٧٦٨٠
+- التواريخ: مثل ٨/٧/١٤٠٤ أو 8/7/1404
+
+## التعليمات:
+اقرأ كل قيمة مكتوبة بخط اليد بعناية.
+لا تخترع قيماً - إذا لم تستطع القراءة، اكتب ؟[تخمين]
+
+{learning_context}
+
+## التنسيق:
+اسم_الحقل: القيمة [الثقة]
+
+ابدأ الاستخراج:""",
+
+    "address": """هذا هو قسم العنوان (العنوان) من النموذج.
+
+الحقول المتوقعة:
+- المدينة (City) - اسم مدينة سعودية
+- الحي (District) - اسم حي
+- الشارع (Street) - اسم شارع
+- رقم المبنى (Building Number) - رقم
+- جوال (Mobile) - ١٠ أرقام تبدأ بـ ٠٥
+- البريد الإلكتروني (Email) - قد يكون فارغاً
+- فاكس (Fax) - قد يكون فارغاً
+
+## تنسيقات مهمة:
+- رقم الجوال: ١٠ أرقام مثل ٠٥٠٧٤٧٧٩٩٨
+
+## ملاحظة:
+كثير من حقول العنوان قد تكون فارغة (---).
+هذا طبيعي في النماذج السعودية.
+
+{learning_context}
+
+## التنسيق:
+اسم_الحقل: القيمة [الثقة]
+
+ابدأ الاستخراج:""",
+
+    "driving_license": """هذا هو قسم رخصة القيادة (بيانات رخصة القيادة) من النموذج.
+
+الحقول المتوقعة:
+- رقمها (License Number) - ١٠ أرقام
+- تاريخ الإصدار (Issue Date) - يوم/شهر/سنة هجري
+- تاريخ الانتهاء (Expiry Date) - يوم/شهر/سنة هجري
+- مصدرها (Source) - اسم مدينة
+
+## تنسيقات مهمة:
+- رقم الرخصة: ١٠ أرقام مثل ١٠٣٨٣٢٦٦٨٠
+- التواريخ: مثل ٢٥/٧/١٤٣٧
+
+{learning_context}
+
+## التنسيق:
+اسم_الحقل: القيمة [الثقة]
+
+ابدأ الاستخراج:""",
+
+    "vehicle": """هذا هو قسم المركبة (بيانات المركبة) من النموذج.
+
+الحقول المتوقعة:
+- نوع المركبة (Vehicle Type) - نص
+- الموديل (Model) - سنة أو اسم
+- اللون (Color) - لون بالعربي
+- رقم اللوحة (Plate Number) - حروف وأرقام
+- رقم الهيكل (Chassis Number) - أرقام وحروف
+- سنة الصنع (Year) - ٤ أرقام
+- عدد الأسطوانات (Cylinders) - رقم
+
+## ملاحظة مهمة:
+قسم المركبة غالباً يكون فارغاً بالكامل أو جزئياً.
+لا تخترع قيماً - إذا كان الحقل فارغاً، اكتب ---
+
+{learning_context}
+
+## التنسيق:
+اسم_الحقل: القيمة [الثقة]
+
+ابدأ الاستخراج:""",
+
+    "footer": """هذا هو قسم التذييل (Footer) من النموذج.
+
+الحقول المتوقعة:
+- اسم مقدم الطلب (Applicant Name) - اسم عربي
+- صفته (Capacity) - مثل: مالك، وكيل
+- توقيعه (Signature) - اكتب [توقيع] إذا موجود
+- التاريخ (Date) - يوم/شهر/سنة
+- الختم (Stamp) - اكتب [ختم] إذا موجود
+
+## ملاحظة:
+- التوقيع: إذا رأيت خط توقيع، اكتب [توقيع]
+- الختم: إذا رأيت ختماً، اكتب [ختم]
+
+{learning_context}
+
+## التنسيق:
+اسم_الحقل: القيمة [الثقة]
+
+ابدأ الاستخراج:""",
+}
+
+
+# =============================================================================
+# FIELD-LEVEL EXTRACTION PROMPTS
+# =============================================================================
+
+FIELD_ZOOM_PROMPT = """هذه صورة مقصوصة ومكبرة لحقل "{field_name}".
+
+اقرأ القيمة المكتوبة بخط اليد فقط.
+
+## القواعد:
+- إذا فارغ (نقاط/خطوط فقط): اكتب "---"
+- إذا غير واضح: اكتب "؟[أفضل تخمين]"
+- خلاف ذلك: اكتب القيمة فقط
+
+{format_hint}
+
+## القيمة:"""
+
+
+# Format hints for different field types
+FIELD_FORMAT_HINTS = {
+    "national_id": "التنسيق المتوقع: ١٠ أرقام تبدأ بـ ١ أو ٢",
+    "phone": "التنسيق المتوقع: ١٠ أرقام تبدأ بـ ٠٥",
+    "date": "التنسيق المتوقع: يوم/شهر/سنة (هجري)",
+    "arabic_name": "التنسيق المتوقع: اسم عربي كامل",
+    "city": "التنسيق المتوقع: اسم مدينة سعودية",
+    "number": "التنسيق المتوقع: رقم أو أرقام",
+    "plate": "التنسيق المتوقع: حروف عربية وأرقام",
+}
+
+# Field name to type mapping
+FIELD_TYPE_MAP = {
+    "رقم الهوية": "national_id",
+    "رقم بطاقة الأحوال": "national_id",
+    "جوال": "phone",
+    "رقم الجوال": "phone",
+    "تاريخ الميلاد": "date",
+    "تاريخها": "date",
+    "تاريخ الإصدار": "date",
+    "تاريخ الانتهاء": "date",
+    "التاريخ": "date",
+    "اسم المالك": "arabic_name",
+    "اسم مقدم الطلب": "arabic_name",
+    "المدينة": "city",
+    "مدينة مزاولة النشاط": "city",
+    "مصدرها": "city",
+    "عدد من يعولهم": "number",
+    "رقم اللوحة": "plate",
+    "رقمها": "national_id",  # License number same format as ID
+}
+
+
+# =============================================================================
+# SELF-CRITIQUE PROMPT
+# =============================================================================
+
+SELF_CRITIQUE_PROMPT = """راجع هذا الاستخراج للبحث عن أخطاء:
+
+## البيانات المستخرجة:
+{extraction}
+
+## تحقق من:
+1. نفس القيمة تظهر في حقول متعددة غير مرتبطة (علامة على الهلوسة)
+2. القيم لا تطابق تنسيق الحقل:
+   - رقم الهوية يجب أن يكون ١٠ أرقام تبدأ بـ ١ أو ٢
+   - رقم الجوال يجب أن يكون ١٠ أرقام تبدأ بـ ٠٥
+   - التواريخ يجب أن تكون بتنسيق يوم/شهر/سنة
+3. حقول الأسماء العربية تحتوي على أرقام فقط
+4. نموذج مكتمل بشكل مشبوه (النماذج الحقيقية لها حقول فارغة)
+5. قيمة سنة (١٤٠٠-١٤٥٠) في حقول غير التاريخ
+
+## المخرجات (JSON فقط):
 {{
-  "field_mapping": {{
-    "اسم المالك": "القيمة أو [غير موجود] أو [فارغ]",
-    "رقم الهوية": "القيمة أو [غير موجود] أو [فارغ]",
-    ...
+  "has_issues": true/false,
+  "issues": [
+    {{"field": "اسم_الحقل", "issue": "وصف المشكلة", "severity": "high/medium/low"}}
+  ],
+  "fields_to_recheck": ["حقل١", "حقل٢"],
+  "overall_confidence": "high/medium/low"
+}}"""
+
+
+# =============================================================================
+# MERGE PROMPT
+# =============================================================================
+
+MERGE_PROMPT = """ادمج نتائج الاستخراج من مرورين مختلفين.
+
+## الاستخراج الأصلي:
+{original_extraction}
+
+## القيم المُحسّنة:
+{refined_values}
+
+## القواعد:
+1. إذا كانت القيمة المُحسّنة أكثر تحديداً → استخدم المُحسّنة
+2. إذا تطابقت القيم → استخدم الأصلية مع ثقة HIGH
+3. إذا كانت المُحسّنة "---" والأصلية لها قيمة → أبقِ الأصلية
+4. إذا كلاهما غير واضح → علّم للمراجعة البشرية
+5. لا تخترع قيماً أبداً
+
+## المخرجات (JSON فقط):
+{{
+  "final_fields": {{
+    "اسم_الحقل": {{
+      "value": "القيمة النهائية",
+      "source": "original|refined|merged",
+      "confidence": "HIGH|MEDIUM|LOW",
+      "needs_review": false
+    }}
   }},
-  "unmatched_values": ["قيم لم يتم مطابقتها"],
-  "confidence": "high/medium/low"
-}}"""
-
-
-# =============================================================================
-# STEP 2: ANALYSIS PROMPT (LLM)
-# =============================================================================
-
-ANALYSIS_PROMPT = """You are an OCR quality analyst. Analyze this extraction for issues.
-
-## EXTRACTED DATA:
-{initial_extraction}
-
-## CHECK FOR THESE PROBLEMS:
-
-1. **DUPLICATE VALUES** - Same value appearing multiple times
-   - If value X appears in 2+ fields → flag ALL those fields
-   
-2. **FORMAT MISMATCHES**
-   - ID not 10 digits starting with 1/2 → flag
-   - Phone not 10 digits starting with 05 → flag
-   - Date not in day/month/year format → flag
-
-3. **SUSPICIOUS PATTERNS**
-   - All fields have values (real forms have empty fields)
-   - Year (1400-1450) in non-date fields
-   - No Arabic names found
-
-## OUTPUT (JSON only):
-{{
-  "analysis": {{
-    "total_fields": <number>,
-    "high_confidence": <number>,
-    "medium_confidence": <number>,
-    "low_confidence": <number>,
-    "empty_fields": <number>,
-    "needs_reexamination": <number>,
-    "hallucination_detected": <boolean>,
-    "hallucination_type": "<string or null>"
+  "quality_check": {{
+    "duplicates_found": false,
+    "suspicious_values": [],
+    "quality_improved": true
   }},
-  "fields_to_reexamine": [
-    {{
-      "field_name": "رقم الهوية",
-      "current_value": "١٤٠٠",
-      "confidence": "LOW",
-      "issue": "4-digit year used as ID (hallucination)",
-      "priority": "critical",
-      "field_type": "national_id",
-      "expected_format": "10 digits starting with 1 or 2"
-    }}
-  ],
-  "confident_fields": [
-    {{
-      "field_name": "اسم المالك",
-      "value": "عياض محمد العتيبي",
-      "confidence": "HIGH"
-    }}
-  ],
-  "empty_fields": [
-    {{
-      "field_name": "رقم الجوال",
-      "status": "confirmed_empty"
-    }}
-  ],
-  "hallucination_warnings": []
+  "fields_still_uncertain": []
 }}"""
 
 
 # =============================================================================
-# STEP 3: REGION ESTIMATION (LLM)
+# HELPER FUNCTIONS
 # =============================================================================
 
-REGION_ESTIMATION_PROMPT = """Estimate bounding boxes for these fields on an Arabic form.
+def get_section_prompt(
+    section_type: str,
+    learning_context: str = "",
+) -> str:
+    """
+    Get the prompt for a specific section.
+    
+    Args:
+        section_type: Type of section (header, general_data, etc.)
+        learning_context: Optional few-shot examples from past corrections
+        
+    Returns:
+        Formatted section prompt
+    """
+    prompt_template = SECTION_PROMPTS.get(section_type, SECTION_PROMPTS["general_data"])
+    return prompt_template.format(learning_context=learning_context)
 
-## FIELDS TO LOCATE:
-{fields_to_reexamine}
 
-## IMAGE DIMENSIONS:
-Width: {width}px, Height: {height}px
+def get_field_prompt(
+    field_name: str,
+    field_type: Optional[str] = None,
+) -> str:
+    """
+    Get the prompt for field-level extraction (zoom-in).
+    
+    Args:
+        field_name: Name of the field
+        field_type: Optional field type override
+        
+    Returns:
+        Formatted field extraction prompt
+    """
+    # Determine field type
+    if not field_type:
+        field_type = FIELD_TYPE_MAP.get(field_name)
+        
+        # Try partial match
+        if not field_type:
+            for key, ftype in FIELD_TYPE_MAP.items():
+                if key in field_name or field_name in key:
+                    field_type = ftype
+                    break
+    
+    # Get format hint
+    format_hint = ""
+    if field_type and field_type in FIELD_FORMAT_HINTS:
+        format_hint = FIELD_FORMAT_HINTS[field_type]
+    
+    return FIELD_ZOOM_PROMPT.format(
+        field_name=field_name,
+        format_hint=format_hint,
+    )
 
-## ARABIC FORM LAYOUT:
-- Right-to-left reading
-- Labels on RIGHT, values on LEFT
-- Personal info at TOP
-- Vehicle info in MIDDLE
-- Signatures at BOTTOM
 
-## COMMON POSITIONS (normalized 0-1):
-- Name: [0.4, 0.08, 0.95, 0.14]
-- ID: [0.4, 0.12, 0.95, 0.18]
-- Birth date: [0.4, 0.16, 0.95, 0.22]
-- Phone: [0.4, 0.28, 0.95, 0.34]
-- City: [0.4, 0.32, 0.95, 0.38]
-- Plate: [0.4, 0.50, 0.95, 0.56]
+def get_format_hint(field_name: str) -> str:
+    """Get format hint for a field."""
+    field_type = FIELD_TYPE_MAP.get(field_name)
+    
+    if not field_type:
+        for key, ftype in FIELD_TYPE_MAP.items():
+            if key in field_name or field_name in key:
+                field_type = ftype
+                break
+    
+    return FIELD_FORMAT_HINTS.get(field_type, "")
 
-## OUTPUT (JSON only):
-{{
-  "regions": [
-    {{
-      "field_name": "رقم الهوية",
-      "bbox_normalized": [0.4, 0.12, 0.95, 0.18],
-      "bbox_pixels": [432, 97, 1026, 146],
-      "location_confidence": "high",
-      "notes": "Standard ID position"
-    }}
-  ]
-}}"""
+
+def get_critique_prompt(extraction: str) -> str:
+    """Get self-critique prompt with extraction data."""
+    return SELF_CRITIQUE_PROMPT.format(extraction=extraction)
+
+
+def get_merge_prompt(
+    original_extraction: str,
+    refined_values: str,
+) -> str:
+    """Get merge prompt with both extraction passes."""
+    return MERGE_PROMPT.format(
+        original_extraction=original_extraction,
+        refined_values=refined_values,
+    )
 
 
 # =============================================================================
-# STEP 4: FOCUSED FIELD EXTRACTION (VLM)
+# LEGACY COMPATIBILITY
 # =============================================================================
-# Extremely simple prompt for cropped region
 
+# Keep old function names for backward compatibility
+def get_content_hint(field_name: str) -> str:
+    """Legacy function - returns format hint for field."""
+    return get_format_hint(field_name)
+
+
+def build_field_reextract_prompt(
+    field_name: str,
+    previous_value: str = "",
+    content_hint: str = None,
+) -> str:
+    """Legacy function - returns field extraction prompt."""
+    return get_field_prompt(field_name)
+
+
+# Legacy prompts for backward compatibility
+INITIAL_OCR_PROMPT = SECTION_PROMPTS["general_data"]
 FIELD_REEXTRACT_PROMPT = """ما المكتوب هنا؟
 
 إذا فارغ: ---
@@ -260,170 +424,8 @@ FIELD_REEXTRACT_PROMPT = """ما المكتوب هنا؟
 
 اكتب القيمة فقط:"""
 
-# Slightly more detailed version
-FIELD_REEXTRACT_PROMPT_DETAILED = """هذه صورة مقصوصة لحقل "{field_name}".
-
-اقرأ القيمة المكتوبة بخط اليد.
-
-قواعد:
-- إذا فارغ (نقاط/خطوط فقط): اكتب ---
-- إذا غير واضح: اكتب ؟
-- خلاف ذلك: اكتب القيمة فقط
-
-المتوقع: {content_hint}
-
-القيمة:"""
-
-
-# Content hints for different field types
-FIELD_CONTENT_HINTS = {
-    "رقم الهوية": "١٠ أرقام",
-    "رقم بطاقة الأحوال": "١٠ أرقام",
-    "رقم الجوال": "١٠ أرقام تبدأ ٠٥",
-    "الجوال": "١٠ أرقام تبدأ ٠٥",
-    "تاريخ الميلاد": "يوم/شهر/سنة",
-    "تاريخ الإصدار": "يوم/شهر/سنة",
-    "تاريخ الانتهاء": "يوم/شهر/سنة",
-    "اسم المالك": "اسم عربي",
-    "الاسم": "اسم عربي",
-    "المدينة": "مدينة",
-    "رقم اللوحة": "حروف وأرقام",
-    "default": "نص"
-}
-
-FORMAT_VALIDATION_HINTS = {
-    "رقم الهوية": "١٠ أرقام تبدأ بـ ١ أو ٢",
-    "رقم بطاقة الأحوال": "١٠ أرقام",
-    "رقم الجوال": "١٠ أرقام تبدأ بـ ٠٥",
-    "تاريخ": "يوم/شهر/سنة",
-    "الاسم": "كلمات عربية",
-    "default": ""
-}
-
-
-def get_content_hint(field_name: str) -> str:
-    """Get content hint for a field name."""
-    if field_name in FIELD_CONTENT_HINTS:
-        return FIELD_CONTENT_HINTS[field_name]
-    
-    for key, hint in FIELD_CONTENT_HINTS.items():
-        if key in field_name or field_name in key:
-            return hint
-    
-    return FIELD_CONTENT_HINTS["default"]
-
-
-def get_format_hint(field_name: str) -> str:
-    """Get format validation hint for a field name."""
-    if field_name in FORMAT_VALIDATION_HINTS:
-        return FORMAT_VALIDATION_HINTS[field_name]
-    
-    for key, hint in FORMAT_VALIDATION_HINTS.items():
-        if key in field_name or field_name in key:
-            return hint
-    
-    return FORMAT_VALIDATION_HINTS["default"]
-
-
-def build_field_reextract_prompt(
-    field_name: str,
-    previous_value: str = "",
-    content_hint: str = None
-) -> str:
-    """Build field re-extraction prompt."""
-    hint = content_hint or get_content_hint(field_name)
-    
-    return FIELD_REEXTRACT_PROMPT_DETAILED.format(
-        field_name=field_name,
-        content_hint=hint
-    )
-
-
-# =============================================================================
-# STEP 5: MERGE PROMPT (LLM)
-# =============================================================================
-
-MERGE_PROMPT = """Merge OCR results from two passes.
-
-## ORIGINAL EXTRACTION:
-{original_extraction}
-
-## REFINED VALUES:
-{refined_values}
-
-## RULES:
-1. If REFINED is more specific → use REFINED
-2. If REFINED confirms ORIGINAL → use ORIGINAL with HIGH confidence
-3. If REFINED is "---" but ORIGINAL had value → keep ORIGINAL (crop may have missed it)
-4. If both unclear → mark for human review
-5. NEVER invent values
-
-## OUTPUT (JSON only):
-{{
-  "final_fields": {{
-    "field_name": {{
-      "value": "final_value",
-      "source": "original|refined|merged",
-      "confidence": "high|medium|low",
-      "needs_human_review": false,
-      "review_reason": null
-    }}
-  }},
-  "merge_quality_check": {{
-    "duplicate_values_found": false,
-    "year_as_value_found": false,
-    "suspicious_fills": [],
-    "quality_improved": true
-  }},
-  "summary": {{
-    "total_fields": 0,
-    "from_original": 0,
-    "from_refined": 0,
-    "flagged_for_review": 0
-  }},
-  "iteration_complete": true,
-  "fields_still_uncertain": []
-}}"""
-
-
-# =============================================================================
-# SYSTEM PROMPTS
-# =============================================================================
-
-ANALYSIS_SYSTEM_PROMPT = """You are an OCR quality analyst. Your job is to:
-1. Detect hallucinations (same value in multiple fields)
-2. Identify format violations
-3. Flag suspicious patterns
-
-Output valid JSON only."""
-
-REGION_SYSTEM_PROMPT = """You estimate field locations on Arabic forms.
-Arabic forms are right-to-left.
-Output valid JSON with bounding boxes."""
-
-MERGE_SYSTEM_PROMPT = """You merge OCR results intelligently.
-Never invent values. When uncertain, flag for review.
-Output valid JSON."""
-
-
-# =============================================================================
-# FINAL VALIDATION PROMPT
-# =============================================================================
-
-FINAL_VALIDATION_PROMPT = """Validate this OCR extraction.
-
-## DATA:
-{extraction}
-
-## CHECK:
-1. All values unique? (duplicates = hallucination)
-2. Formats correct? (ID=10 digits, phone=05..., date=dd/mm/yyyy)
-3. Arabic names present?
-
-## OUTPUT (JSON):
-{{
-  "quality_score": 0-100,
-  "passed": true/false,
-  "issues": [],
-  "recommendation": "pass|review|reject"
-}}"""
+ANALYSIS_PROMPT = SELF_CRITIQUE_PROMPT
+ANALYSIS_SYSTEM_PROMPT = "You are an OCR quality analyst. Output valid JSON only."
+REGION_SYSTEM_PROMPT = "You estimate field locations on Arabic forms. Output valid JSON."
+MERGE_SYSTEM_PROMPT = "You merge OCR results intelligently. Never invent values. Output valid JSON."
+REGION_ESTIMATION_PROMPT = ""  # No longer used - handled by image_processor
