@@ -76,53 +76,76 @@ class AgentTrace:
         }
 
 
-# Flexible extraction prompt that adapts to document type
-EXTRACTION_PROMPT = """You are an expert Arabic OCR system. Carefully analyze this image and extract ALL text and data.
+# Comprehensive Arabic OCR extraction prompt
+# Works for forms, handwritten text, documents, and mixed content
+EXTRACTION_PROMPT = """أنت نظام OCR متخصص في قراءة المستندات العربية. اقرأ الصورة بعناية فائقة واستخرج كل النص والبيانات.
 
-STEP 1: IDENTIFY DOCUMENT TYPE
-First, determine what type of document this is:
-- Form (نموذج): Has labeled fields with values to fill
-- Certificate (شهادة): Official document with stamps/seals
-- Letter (خطاب): Written correspondence
-- Table (جدول): Structured tabular data  
-- ID Card (بطاقة): Identity/membership card
-- Receipt (إيصال): Payment/transaction record
-- Handwritten Notes (ملاحظات): Freeform handwritten text
-- Mixed: Combination of types
+## التعليمات:
 
-STEP 2: EXTRACT BASED ON TYPE
+1. اقرأ الصورة من اليمين إلى اليسار
+2. استخرج كل حقل تراه مع قيمته
+3. إذا كان النص مكتوب بخط اليد، اقرأه بدقة حرف بحرف
+4. لا تتجاهل أي نص مرئي
 
-For FORMS - Extract each field:
-field_name: value [HIGH/MEDIUM/LOW confidence]
+## الحقول الشائعة في النماذج السعودية (استخرجها إن وجدت):
 
-For DOCUMENTS/LETTERS - Extract:
-document_title: [title if present]
-date: [date if present]
-content: [full text content]
-signatures: [signature descriptions]
+### بيانات شخصية:
+اسم_المالك، الاسم_الكامل، اسم_الأب، اسم_الجد، اللقب، الجنسية، الديانة، المهنة
 
-For TABLES - Extract:
-table_title: [title if present]
-headers: [column headers]
-rows: [row data]
+### بيانات الهوية:
+رقم_الهوية، رقم_السجل_المدني، رقم_الإقامة، رقم_الجواز، مصدر_الهوية، تاريخ_الإصدار، تاريخ_الانتهاء
 
-For HANDWRITTEN - Extract:
-raw_text: [all readable text, preserve line breaks]
-uncertain_words: [words that are unclear]
+### بيانات الميلاد:
+تاريخ_الميلاد، مكان_الميلاد، العمر
 
-STEP 3: OUTPUT FORMAT
-Start with document_type: [type]
-Then list all extracted information in this format:
-field_or_section: value [HIGH/MEDIUM/LOW]
+### الحالة الاجتماعية:
+الحالة_الاجتماعية، عدد_الأبناء، عدد_من_يعولهم
 
-RULES:
-- Read Arabic RIGHT-TO-LEFT carefully
-- Preserve original Arabic numerals (١٢٣) or convert to Western (123)
-- If text is unclear, mark confidence as LOW
-- If field is empty, write: ---
-- Include ALL visible text, don't skip anything
+### العنوان:
+المنطقة، المدينة، الحي، الشارع، رقم_المبنى، الرمز_البريدي، صندوق_البريد
 
-Begin extraction:"""
+### الاتصال:
+جوال، هاتف، فاكس، البريد_الإلكتروني
+
+### العمل والتعليم:
+المؤهل، التخصص، جهة_العمل، المسمى_الوظيفي، سنوات_الخبرة
+
+### رخصة القيادة:
+رقم_رخصة_القيادة، نوع_الرخصة، تاريخ_إصدار_الرخصة، تاريخ_انتهاء_الرخصة، مصدر_الرخصة
+
+### بيانات المركبة:
+نوع_المركبة، الماركة، الموديل، اللون، رقم_اللوحة، سنة_الصنع، رقم_الشاسيه
+
+### بيانات مالية:
+رقم_الحساب، اسم_البنك، رقم_الآيبان، المبلغ
+
+### التوقيع:
+اسم_مقدم_الطلب، صفة_مقدم_الطلب، التوقيع، تاريخ_التوقيع، الختم
+
+## للنصوص المكتوبة بخط اليد:
+- اقرأ كل سطر على حدة
+- إذا كان النص غير واضح، حاول قراءته واكتب [غير واضح] بجانبه
+- استخرج كل كلمة تستطيع قراءتها
+
+## صيغة الإخراج:
+اسم_الحقل: القيمة [HIGH/MEDIUM/LOW]
+
+مثال:
+الاسم_الكامل: محمد أحمد العلي [HIGH]
+رقم_الهوية: ١٠٥٠٢٣٤٥٦٧ [HIGH]
+جوال: ٠٥٠١٢٣٤٥٦٧ [MEDIUM]
+التوقيع: [توقيع موجود] [HIGH]
+الحقل_الفارغ: --- [HIGH]
+
+## ملاحظات هامة:
+- إذا الحقل فارغ اكتب: ---
+- إذا يوجد توقيع اكتب: [توقيع موجود]
+- إذا يوجد ختم اكتب: [ختم موجود]
+- إذا يوجد صورة شخصية اكتب: [صورة شخصية موجودة]
+- اكتب الأرقام كما هي (عربية أو إنجليزية)
+- استخرج حتى الحقول التي ليست في القائمة أعلاه
+
+## ابدأ الاستخراج الآن - اقرأ كل شيء في الصورة:"""
 
 
 class AgenticOCRAgent:
@@ -313,16 +336,12 @@ class AgenticOCRAgent:
         fields = {}
         confidence = {}
         
-        # Known valid field names (to filter out invented fields)
-        VALID_FIELDS = {
-            'اسم_المالك', 'رقم_الهوية', 'مصدرها', 'تاريخها', 'تاريخ_الميلاد',
-            'الحالة_الاجتماعية', 'عدد_من_يعولهم', 'المؤهل', 'المدينة', 'الحي',
-            'الشارع', 'رقم_المبنى', 'جوال', 'البريد_الإلكتروني', 'فاكس',
-            'نوع_النشاط', 'مدينة_مزاولة_النشاط', 'تاريخ_بدء_النشاط',
-            'تاريخ_انتهاء_الترخيص', 'رقم_رخصة_القيادة', 'تاريخ_إصدار_الرخصة',
-            'تاريخ_انتهاء_الرخصة', 'مصدر_الرخصة', 'نوع_المركبة', 'الموديل',
-            'اللون', 'رقم_اللوحة', 'سنة_الصنع', 'اسم_مقدم_الطلب', 'صفته',
-            'توقيعه', 'تاريخ_التوقيع'
+        # Words that indicate the line is an instruction, not a field
+        SKIP_WORDS = {
+            'مثال', 'تنسيق', 'التعليمات', 'الخطوة', 'ملاحظة', 'ملاحظات',
+            'القاعدة', 'هام', 'تحذير', 'STEP', 'NOTE', 'EXAMPLE', 'FORMAT',
+            'BEGIN', 'START', 'ابدأ', 'استخرج', 'اقرأ', 'نوع_المستند',
+            'document_type', 'للنصوص', 'للنماذج', 'للجداول'
         }
         
         if not text:
@@ -334,7 +353,11 @@ class AgenticOCRAgent:
             line = line.strip()
             
             # Skip empty lines and headers
-            if not line or line.startswith("#") or line.startswith("##"):
+            if not line or line.startswith("#") or line.startswith("##") or line.startswith("*"):
+                continue
+            
+            # Skip numbered lists that look like instructions
+            if line.startswith("1.") or line.startswith("2.") or line.startswith("3."):
                 continue
             
             # Must have a colon
@@ -349,30 +372,43 @@ class AgenticOCRAgent:
             field_name = parts[0].strip()
             value_part = parts[1].strip()
             
-            # Skip if field name looks like instruction
-            if len(field_name) > 40 or "مثال" in field_name or "تنسيق" in field_name:
+            # Skip if field name is too long (likely instruction text)
+            if len(field_name) > 50:
                 continue
             
-            # Filter out invented fields
-            if field_name not in VALID_FIELDS:
+            # Skip if field name contains instruction words
+            if any(skip_word in field_name for skip_word in SKIP_WORDS):
+                continue
+            
+            # Skip common non-field patterns
+            if field_name.startswith('-') or field_name.startswith('•'):
+                continue
+            
+            # Clean up field name - remove bullets, numbers, spaces
+            field_name = field_name.lstrip('-•·').strip()
+            field_name = field_name.replace(' ', '_').replace('\t', '_')
+            
+            # Skip if field name is empty after cleanup
+            if not field_name or len(field_name) < 2:
                 continue
             
             # Extract confidence marker
             conf = "MEDIUM"
-            if "[HIGH]" in value_part.upper():
+            value_upper = value_part.upper()
+            if "[HIGH]" in value_upper:
                 conf = "HIGH"
-                value_part = value_part.replace("[HIGH]", "").replace("[high]", "").strip()
-            elif "[MEDIUM]" in value_part.upper():
+                value_part = value_part.replace("[HIGH]", "").replace("[high]", "").replace("[High]", "").strip()
+            elif "[MEDIUM]" in value_upper:
                 conf = "MEDIUM"
-                value_part = value_part.replace("[MEDIUM]", "").replace("[medium]", "").strip()
-            elif "[LOW]" in value_part.upper():
+                value_part = value_part.replace("[MEDIUM]", "").replace("[medium]", "").replace("[Medium]", "").strip()
+            elif "[LOW]" in value_upper:
                 conf = "LOW"
-                value_part = value_part.replace("[LOW]", "").replace("[low]", "").strip()
+                value_part = value_part.replace("[LOW]", "").replace("[low]", "").replace("[Low]", "").strip()
             
             value = value_part.strip()
             
             # Normalize empty markers
-            if value in ["---", "[فارغ]", "[EMPTY]", "فارغ", "غير موجود", "", "؟؟؟", "؟؟"]:
+            if value.lower() in ["---", "[فارغ]", "[empty]", "فارغ", "غير موجود", "", "؟؟؟", "؟؟", "n/a", "na", "-", "--"]:
                 value = "---"
                 conf = "LOW"
             
@@ -384,7 +420,7 @@ class AgenticOCRAgent:
             value, conf = self._normalize_and_validate(field_name, value, conf)
             
             # Store
-            if field_name:
+            if field_name and value:
                 fields[field_name] = value
                 confidence[field_name] = conf
         
