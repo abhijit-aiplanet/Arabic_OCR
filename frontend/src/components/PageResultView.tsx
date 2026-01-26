@@ -84,6 +84,11 @@ export default function PageResultView({
           )}
           {result && (
             <div className="flex items-center gap-2">
+              {result.document_type && (
+                <span className="text-xs px-2 py-0.5 rounded-full bg-purple-100 text-purple-700">
+                  {result.document_type}
+                </span>
+              )}
               <span className={`text-xs px-2 py-0.5 rounded-full ${
                 result.quality_status === 'passed' ? 'bg-emerald-100 text-emerald-700' :
                 result.quality_status === 'warning' ? 'bg-amber-100 text-amber-700' :
@@ -94,6 +99,11 @@ export default function PageResultView({
               <span className="text-xs text-gray-500">
                 {result.processing_time_seconds.toFixed(1)}s
               </span>
+              {result.iterations_used && result.iterations_used > 1 && (
+                <span className="text-xs text-gray-400">
+                  {result.iterations_used} passes
+                </span>
+              )}
             </div>
           )}
         </div>

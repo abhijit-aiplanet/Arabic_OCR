@@ -248,6 +248,7 @@ export interface QualityReport {
 export interface AgenticOCRResponse {
   fields: AgenticFieldResult[]
   raw_text: string
+  document_type?: string  // form, handwritten, table, mixed
   iterations_used: number
   processing_time_seconds: number
   confidence_summary: {
