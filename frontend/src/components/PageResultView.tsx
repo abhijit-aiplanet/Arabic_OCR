@@ -58,20 +58,32 @@ export default function PageResultView({
   }
 
   // Get confidence color for a line based on field data
-  const getLineConfidenceStyle = (line: string) => {
-    if (!showConfidence || !result?.fields) return {}
+  const getLineConfidenceStyle = (line: string, lineIdx: number) => {
+    if (!showConfidence || !result?.fields || !line.trim()) return {}
     
-    // Find matching field
-    const field = result.fields.find(f => line.includes(f.field_name))
-    if (!field) return {}
+    // Try to match by value content (field values appear in raw text)
+    const field = result.fields.find(f => {
+      if (!f.value || f.value === '---') return false
+      // Check if the line contains the field value
+      return line.includes(f.value) || f.value.includes(line.trim())
+    })
     
-    if (field.confidence === 'high') {
-      return { backgroundColor: 'rgba(16, 185, 129, 0.15)', borderLeft: '3px solid rgb(16, 185, 129)' }
-    } else if (field.confidence === 'medium') {
-      return { backgroundColor: 'rgba(245, 158, 11, 0.15)', borderLeft: '3px solid rgb(245, 158, 11)' }
-    } else {
-      return { backgroundColor: 'rgba(239, 68, 68, 0.15)', borderLeft: '3px solid rgb(239, 68, 68)' }
+    // Also try matching by line index for handwritten text
+    const lineField = result.fields.find(f => 
+      f.field_name === `سطر_${lineIdx + 1}` || f.field_name === `نص_${lineIdx + 1}`
+    )
+    
+    const matchedField = field || lineField
+    if (!matchedField) return {}
+    
+    if (matchedField.confidence === 'high') {
+      return { backgroundColor: 'rgba(16, 185, 129, 0.2)', borderLeft: '4px solid rgb(16, 185, 129)' }
+    } else if (matchedField.confidence === 'medium') {
+      return { backgroundColor: 'rgba(245, 158, 11, 0.2)', borderLeft: '4px solid rgb(245, 158, 11)' }
+    } else if (matchedField.confidence === 'low') {
+      return { backgroundColor: 'rgba(239, 68, 68, 0.2)', borderLeft: '4px solid rgb(239, 68, 68)' }
     }
+    return {}
   }
 
   return (
@@ -249,7 +261,7 @@ export default function PageResultView({
                       <div 
                         key={idx} 
                         className={`py-1 px-2 -mx-2 rounded ${showConfidence ? 'my-0.5' : ''}`}
-                        style={getLineConfidenceStyle(line)}
+                        style={getLineConfidenceStyle(line, idx)}
                       >
                         {line || '\u00A0'}
                       </div>

@@ -252,29 +252,20 @@ export default function Home() {
       // Set initial results
       setPageResults(allPages)
 
-      // Process each page sequentially
-      for (let i = 0; i < allPages.length; i++) {
-        const page = allPages[i]
-        
-        // Refresh token BEFORE each page to prevent expiry during long sessions
-        token = await getFreshToken()
-        if (!token) {
-          toast.error('Session expired. Please sign in again.')
-          setPageResults(prev => prev.map(p => 
-            p.status === 'pending' ? { ...p, status: 'error', error: 'Session expired' } : p
-          ))
-          break
+      // Parallel processing with configurable concurrency
+      const PARALLEL_WORKERS = 3  // Process 3 pages simultaneously
+      
+      // Process a single page
+      const processPage = async (page: PageResult, pageIndex: number) => {
+        // Get fresh token for this worker
+        const workerToken = await getFreshToken()
+        if (!workerToken) {
+          throw new Error('Session expired')
         }
-        
-        setCurrentProcessingId(page.id)
-        setSelectedResultIndex(i)
         
         // Update status to processing
         setPageResults(prev => prev.map(p => 
           p.id === page.id ? { ...p, status: 'processing' } : p
-        ))
-        setFiles(prev => prev.map(f => 
-          f.id === page.fileId ? { ...f, status: 'processing' } : f
         ))
 
         try {
@@ -285,15 +276,15 @@ export default function Home() {
             result = await processAgenticOCRBase64(
               page.imageBase64,
               `${page.fileName}-page-${page.pageNumber}.png`,
-              { maxIterations: 3 },
-              token
+              { maxIterations: 2 },
+              workerToken
             )
           } else {
             // Regular image file
             const file = files.find(f => f.id === page.fileId)?.file
             if (!file) throw new Error('File not found')
             
-            result = await processAgenticOCR(file, { maxIterations: 3 }, token)
+            result = await processAgenticOCR(file, { maxIterations: 2 }, workerToken)
           }
 
           // Update with result
@@ -304,71 +295,75 @@ export default function Home() {
           ))
           
           toast.success(
-            `${page.fileName}${page.totalPages > 1 ? ` (Page ${page.pageNumber})` : ''}: ${result.fields.length} fields extracted`,
-            { duration: 3000 }
+            `Page ${pageIndex + 1}: ${result.fields.length} items extracted`,
+            { duration: 2000 }
           )
+          
+          return { success: true, page }
 
         } catch (err: any) {
-          // Check if it's a session error and try to refresh
-          if (err.message?.includes('Session') || err.message?.includes('401') || err.message?.includes('expired')) {
-            token = await getFreshToken()
-            if (token) {
-              // Retry once with fresh token
-              try {
-                let result: AgenticOCRResponse
-                if (page.imageBase64) {
-                  result = await processAgenticOCRBase64(
-                    page.imageBase64,
-                    `${page.fileName}-page-${page.pageNumber}.png`,
-                    { maxIterations: 3 },
-                    token
-                  )
-                } else {
-                  const file = files.find(f => f.id === page.fileId)?.file
-                  if (!file) throw new Error('File not found')
-                  result = await processAgenticOCR(file, { maxIterations: 3 }, token)
-                }
-                
-                setPageResults(prev => prev.map(p => 
-                  p.id === page.id ? { ...p, status: 'complete', result } : p
-                ))
-                toast.success(`${page.fileName}: Retry successful!`, { duration: 3000 })
-                continue // Move to next page
-              } catch (retryErr: any) {
-                // Retry failed too
-                setPageResults(prev => prev.map(p => 
-                  p.id === page.id 
-                    ? { ...p, status: 'error', error: retryErr.message }
-                    : p
-                ))
-                toast.error(`Failed: ${page.fileName} - ${retryErr.message}`)
-              }
+          // Retry once with fresh token
+          try {
+            const retryToken = await getFreshToken()
+            if (!retryToken) throw err
+            
+            let result: AgenticOCRResponse
+            if (page.imageBase64) {
+              result = await processAgenticOCRBase64(
+                page.imageBase64,
+                `${page.fileName}-page-${page.pageNumber}.png`,
+                { maxIterations: 2 },
+                retryToken
+              )
+            } else {
+              const file = files.find(f => f.id === page.fileId)?.file
+              if (!file) throw new Error('File not found')
+              result = await processAgenticOCR(file, { maxIterations: 2 }, retryToken)
             }
-          } else {
+            
+            setPageResults(prev => prev.map(p => 
+              p.id === page.id ? { ...p, status: 'complete', result } : p
+            ))
+            return { success: true, page }
+          } catch (retryErr: any) {
             setPageResults(prev => prev.map(p => 
               p.id === page.id 
-                ? { ...p, status: 'error', error: err.message }
+                ? { ...p, status: 'error', error: retryErr.message }
                 : p
             ))
-            toast.error(`Failed: ${page.fileName} - ${err.message}`)
+            toast.error(`Page ${pageIndex + 1} failed: ${retryErr.message}`)
+            return { success: false, page, error: retryErr.message }
           }
-        }
-
-        // Update file status if all pages complete
-        const filePages = allPages.filter(p => p.fileId === page.fileId)
-        const filePageResults = pageResults.filter(p => p.fileId === page.fileId)
-        const allFilePagesDone = filePages.length === filePageResults.filter(p => 
-          p.status === 'complete' || p.status === 'error'
-        ).length + 1 // +1 for current page
-
-        if (allFilePagesDone || page.pageNumber === page.totalPages) {
-          setFiles(prev => prev.map(f => 
-            f.id === page.fileId ? { ...f, status: 'complete' } : f
-          ))
         }
       }
 
-      toast.success('All files processed!')
+      // Process pages in parallel batches
+      const processBatch = async (batch: PageResult[], startIndex: number) => {
+        setCurrentProcessingId(batch[0]?.id || null)
+        setSelectedResultIndex(startIndex)
+        
+        const results = await Promise.allSettled(
+          batch.map((page, i) => processPage(page, startIndex + i))
+        )
+        return results
+      }
+
+      // Split into batches and process
+      for (let i = 0; i < allPages.length; i += PARALLEL_WORKERS) {
+        const batch = allPages.slice(i, i + PARALLEL_WORKERS)
+        await processBatch(batch, i)
+      }
+
+      // Update all file statuses to complete
+      setFiles(prev => prev.map(f => ({ ...f, status: 'complete' as const })))
+
+      // Count results
+      const completed = allPages.filter(p => {
+        const result = pageResults.find(r => r.id === p.id)
+        return result?.status === 'complete'
+      }).length
+
+      toast.success(`Processing complete! ${completed}/${allPages.length} pages extracted`)
 
     } catch (err: any) {
       toast.error(err.message || 'Processing failed')
