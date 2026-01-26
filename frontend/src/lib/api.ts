@@ -820,3 +820,90 @@ export async function processStructuredPDFOCR(
   }
 }
 
+// =============================================================================
+// PDF SPLIT API (for multi-file workflow)
+// =============================================================================
+
+export interface PdfPageImage {
+  page_number: number
+  image_base64: string
+  width: number
+  height: number
+}
+
+export interface PdfSplitResponse {
+  total_pages: number
+  pages: PdfPageImage[]
+  filename: string
+}
+
+/**
+ * Split a PDF into individual page images without OCR processing.
+ * Used for the multi-file workflow where each page is processed separately.
+ */
+export async function splitPdfToImages(
+  pdfFile: File,
+  maxPages: number = 30,
+  authToken?: string | null
+): Promise<PdfSplitResponse> {
+  try {
+    const formData = new FormData()
+    formData.append('file', pdfFile)
+    formData.append('max_pages', maxPages.toString())
+
+    const headers: Record<string, string> = {}
+    if (authToken) {
+      headers['Authorization'] = `Bearer ${authToken}`
+    }
+
+    const response = await axios.post<PdfSplitResponse>(
+      `${API_URL}/api/pdf/split`,
+      formData,
+      {
+        headers,
+        timeout: 120000, // 2 minutes for large PDFs
+      }
+    )
+
+    return response.data
+  } catch (error) {
+    if (axios.isAxiosError(error)) {
+      const message = error.response?.data?.detail || error.message
+      throw new Error(message)
+    }
+    throw error
+  }
+}
+
+/**
+ * Process a base64 image through agentic OCR.
+ * Used for PDF pages that have been split into images.
+ */
+export async function processAgenticOCRBase64(
+  imageBase64: string,
+  filename: string = 'page.png',
+  settings: AgenticOCRSettings = {},
+  authToken?: string | null
+): Promise<AgenticOCRResponse> {
+  try {
+    // Convert base64 to blob
+    const byteCharacters = atob(imageBase64)
+    const byteNumbers = new Array(byteCharacters.length)
+    for (let i = 0; i < byteCharacters.length; i++) {
+      byteNumbers[i] = byteCharacters.charCodeAt(i)
+    }
+    const byteArray = new Uint8Array(byteNumbers)
+    const blob = new Blob([byteArray], { type: 'image/png' })
+    const file = new File([blob], filename, { type: 'image/png' })
+
+    // Use the regular agentic OCR function
+    return await processAgenticOCR(file, settings, authToken)
+  } catch (error) {
+    if (axios.isAxiosError(error)) {
+      const message = error.response?.data?.detail || error.message
+      throw new Error(message)
+    }
+    throw error
+  }
+}
+

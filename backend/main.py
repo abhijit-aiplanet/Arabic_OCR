@@ -1576,6 +1576,113 @@ async def process_ocr(
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
+# =============================================================================
+# PDF SPLIT ENDPOINT (for multi-file workflow)
+# =============================================================================
+
+class PdfPageImage(BaseModel):
+    """Single page image from PDF split."""
+    page_number: int
+    image_base64: str
+    width: int
+    height: int
+
+class PdfSplitResponse(BaseModel):
+    """Response from PDF split endpoint."""
+    total_pages: int
+    pages: List[PdfPageImage]
+    filename: str
+
+@app.post("/api/pdf/split", response_model=PdfSplitResponse)
+async def split_pdf_to_images(
+    file: UploadFile = File(...),
+    max_pages: int = Form(default=30),
+    dpi: int = Form(default=150),
+    user: dict = Depends(verify_clerk_token),
+):
+    """
+    Split a PDF into individual page images without OCR processing.
+    
+    This endpoint is designed for the multi-file workflow where:
+    1. User uploads multiple files (images + PDFs)
+    2. PDFs are split into page images
+    3. Each page is processed separately through agentic OCR
+    
+    Args:
+        file: PDF file to split
+        max_pages: Maximum number of pages to process (default 30)
+        dpi: Resolution for rendering (default 150 for balance of quality/size)
+    
+    Returns:
+        PdfSplitResponse with page images as base64
+    """
+    try:
+        if not file.filename or not file.filename.lower().endswith('.pdf'):
+            raise HTTPException(status_code=400, detail="File must be a PDF")
+        
+        pdf_contents = await file.read()
+        pdf_filename = file.filename or "document.pdf"
+        
+        print(f"[PDF Split] Processing: {pdf_filename}")
+        
+        # Open PDF with PyMuPDF
+        pdf_document = fitz.open(stream=pdf_contents, filetype="pdf")
+        total_pages = min(len(pdf_document), max_pages)
+        
+        print(f"[PDF Split] Total pages: {len(pdf_document)}, processing: {total_pages}")
+        
+        pages: List[PdfPageImage] = []
+        
+        for page_num in range(total_pages):
+            try:
+                page = pdf_document[page_num]
+                
+                # Render page to image
+                # Matrix for DPI: default is 72 DPI, so scale = dpi/72
+                zoom = dpi / 72
+                matrix = fitz.Matrix(zoom, zoom)
+                pix = page.get_pixmap(matrix=matrix, alpha=False)
+                
+                # Convert to PNG bytes
+                img_bytes = pix.tobytes("png")
+                
+                # Encode as base64
+                img_base64 = base64.b64encode(img_bytes).decode('utf-8')
+                
+                pages.append(PdfPageImage(
+                    page_number=page_num + 1,
+                    image_base64=img_base64,
+                    width=pix.width,
+                    height=pix.height
+                ))
+                
+                print(f"[PDF Split] Page {page_num + 1}/{total_pages} rendered: {pix.width}x{pix.height}")
+                
+            except Exception as e:
+                print(f"[PDF Split] Error on page {page_num + 1}: {e}")
+                # Continue with other pages
+                continue
+        
+        pdf_document.close()
+        
+        if not pages:
+            raise HTTPException(status_code=400, detail="Could not extract any pages from PDF")
+        
+        print(f"[PDF Split] Complete: {len(pages)} pages extracted")
+        
+        return PdfSplitResponse(
+            total_pages=len(pages),
+            pages=pages,
+            filename=pdf_filename
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to split PDF: {str(e)}")
+
+
 @app.post("/api/ocr-pdf")
 async def process_pdf_ocr(
     file: UploadFile = File(...),
