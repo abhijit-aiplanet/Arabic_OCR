@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { ZoomIn, ZoomOut, RotateCw, Copy, Check, Download, ChevronLeft, ChevronRight } from 'lucide-react'
+import { ZoomIn, ZoomOut, RotateCw, Copy, Check, Download, ChevronLeft, ChevronRight, Palette } from 'lucide-react'
 import type { AgenticOCRResponse } from '@/lib/api'
 
 interface PageResultViewProps {
@@ -27,6 +27,7 @@ export default function PageResultView({
 }: PageResultViewProps) {
   const [zoom, setZoom] = useState(1)
   const [copied, setCopied] = useState(false)
+  const [showConfidence, setShowConfidence] = useState(false)
 
   const handleZoomIn = () => setZoom(prev => Math.min(prev + 0.25, 3))
   const handleZoomOut = () => setZoom(prev => Math.max(prev - 0.25, 0.5))
@@ -54,6 +55,23 @@ export default function PageResultView({
     a.click()
     document.body.removeChild(a)
     URL.revokeObjectURL(url)
+  }
+
+  // Get confidence color for a line based on field data
+  const getLineConfidenceStyle = (line: string) => {
+    if (!showConfidence || !result?.fields) return {}
+    
+    // Find matching field
+    const field = result.fields.find(f => line.includes(f.field_name))
+    if (!field) return {}
+    
+    if (field.confidence === 'high') {
+      return { backgroundColor: 'rgba(16, 185, 129, 0.15)', borderLeft: '3px solid rgb(16, 185, 129)' }
+    } else if (field.confidence === 'medium') {
+      return { backgroundColor: 'rgba(245, 158, 11, 0.15)', borderLeft: '3px solid rgb(245, 158, 11)' }
+    } else {
+      return { backgroundColor: 'rgba(239, 68, 68, 0.15)', borderLeft: '3px solid rgb(239, 68, 68)' }
+    }
   }
 
   return (
@@ -150,9 +168,21 @@ export default function PageResultView({
         {/* Right - OCR Output */}
         <div className="p-4">
           <div className="flex items-center justify-between mb-3">
-            <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Extracted Data</span>
+            <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Extracted Text</span>
             {result && (
               <div className="flex items-center gap-1">
+                {/* Confidence Toggle */}
+                <button
+                  onClick={() => setShowConfidence(!showConfidence)}
+                  className={`p-1.5 rounded transition-colors ${
+                    showConfidence 
+                      ? 'text-purple-600 bg-purple-50' 
+                      : 'text-gray-400 hover:text-gray-600 hover:bg-gray-50'
+                  }`}
+                  title={showConfidence ? 'Hide confidence colors' : 'Show confidence colors'}
+                >
+                  <Palette className="w-4 h-4" />
+                </button>
                 <button
                   onClick={handleCopy}
                   className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-50 rounded transition-colors"
@@ -171,7 +201,7 @@ export default function PageResultView({
             )}
           </div>
 
-          <div className="border border-gray-200 rounded-xl overflow-auto bg-gray-50" style={{ maxHeight: '500px' }}>
+          <div className="border border-gray-200 rounded-xl overflow-auto bg-white" style={{ maxHeight: '500px' }}>
             {isProcessing ? (
               <div className="flex flex-col items-center justify-center py-16">
                 <div className="w-10 h-10 border-2 border-purple-200 border-t-purple-600 rounded-full animate-spin mb-4" />
@@ -179,63 +209,49 @@ export default function PageResultView({
                 <p className="text-xs text-gray-400 mt-1">This may take 30-90 seconds</p>
               </div>
             ) : result ? (
-              <div className="p-4 space-y-4">
-                {/* Confidence Summary */}
-                <div className="flex items-center gap-4 text-xs pb-3 border-b border-gray-200">
-                  <div className="flex items-center gap-1.5">
-                    <div className="w-2 h-2 rounded-full bg-emerald-500" />
-                    <span className="text-gray-600">{result.confidence_summary.high} high</span>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <div className="w-2 h-2 rounded-full bg-amber-500" />
-                    <span className="text-gray-600">{result.confidence_summary.medium} medium</span>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <div className="w-2 h-2 rounded-full bg-red-500" />
-                    <span className="text-gray-600">{result.confidence_summary.low} low</span>
-                  </div>
-                </div>
-
-                {/* Fields */}
-                <div className="space-y-2">
-                  {result.fields.map((field, idx) => (
-                    <div
-                      key={idx}
-                      className={`p-3 rounded-lg border ${
-                        field.confidence === 'high' 
-                          ? 'border-emerald-200 bg-emerald-50' 
-                          : field.confidence === 'medium'
-                          ? 'border-amber-200 bg-amber-50'
-                          : 'border-gray-200 bg-gray-50'
-                      }`}
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="flex-1 min-w-0">
-                          <p className="text-xs font-medium text-gray-500 mb-1">
-                            {field.field_name}
-                          </p>
-                          <p className={`text-sm ${field.is_empty ? 'text-gray-400 italic' : 'text-gray-900'}`} dir="auto">
-                            {field.is_empty ? '(empty)' : field.value}
-                          </p>
-                        </div>
-                        <div className={`w-2 h-2 rounded-full flex-shrink-0 mt-1 ${
-                          field.confidence === 'high' ? 'bg-emerald-500' :
-                          field.confidence === 'medium' ? 'bg-amber-500' :
-                          'bg-red-500'
-                        }`} />
-                      </div>
-                      {field.needs_review && field.review_reason && (
-                        <p className="text-xs text-amber-600 mt-2">
-                          {field.review_reason}
-                        </p>
-                      )}
+              <div className="p-4">
+                {/* Confidence Legend (only show when toggle is on) */}
+                {showConfidence && (
+                  <div className="flex items-center gap-4 text-xs pb-3 mb-3 border-b border-gray-200">
+                    <div className="flex items-center gap-1.5">
+                      <div className="w-2 h-2 rounded-full bg-emerald-500" />
+                      <span className="text-gray-600">{result.confidence_summary.high} high</span>
                     </div>
-                  ))}
+                    <div className="flex items-center gap-1.5">
+                      <div className="w-2 h-2 rounded-full bg-amber-500" />
+                      <span className="text-gray-600">{result.confidence_summary.medium} medium</span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <div className="w-2 h-2 rounded-full bg-red-500" />
+                      <span className="text-gray-600">{result.confidence_summary.low} low</span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Raw Text Output */}
+                <div 
+                  className="font-mono text-sm leading-relaxed whitespace-pre-wrap"
+                  dir="auto"
+                  style={{ fontFamily: "'Noto Sans Arabic', 'Arial', monospace" }}
+                >
+                  {result.raw_text ? (
+                    result.raw_text.split('\n').map((line, idx) => (
+                      <div 
+                        key={idx} 
+                        className={`py-1 px-2 -mx-2 rounded ${showConfidence ? 'my-0.5' : ''}`}
+                        style={getLineConfidenceStyle(line)}
+                      >
+                        {line || '\u00A0'}
+                      </div>
+                    ))
+                  ) : (
+                    <div className="text-gray-400 italic">No text extracted</div>
+                  )}
                 </div>
 
                 {/* Warnings */}
                 {result.hallucination_detected && (
-                  <div className="p-3 bg-red-50 border border-red-200 rounded-lg">
+                  <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-lg">
                     <p className="text-sm text-red-700 font-medium">
                       Potential inaccuracies detected
                     </p>
