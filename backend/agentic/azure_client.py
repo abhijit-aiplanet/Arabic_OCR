@@ -178,13 +178,17 @@ class AzureVisionOCR:
                 
                 text = response.choices[0].message.content or ""
                 tokens = response.usage.total_tokens if response.usage else 0
+                completion_tokens = response.usage.completion_tokens if response.usage else 0
                 finish_reason = response.choices[0].finish_reason if response.choices else "unknown"
+                
+                print(f"[Azure] Response: {len(text)} chars, {tokens} total tokens, {completion_tokens} completion tokens")
+                print(f"[Azure] Finish reason: {finish_reason}")
                 
                 # Log if response was truncated
                 if finish_reason == "length":
-                    print(f"[Azure] WARNING: Response truncated (finish_reason=length)")
-                
-                print(f"[Azure] Extracted {len(text)} chars, {tokens} tokens")
+                    print(f"[Azure] WARNING: Response truncated! Need more max_tokens. Current: 16000")
+                elif finish_reason != "stop":
+                    print(f"[Azure] WARNING: Unexpected finish reason: {finish_reason}")
                 
                 return ExtractionResult(
                     text=text,
