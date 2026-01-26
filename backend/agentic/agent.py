@@ -357,15 +357,13 @@ class AgenticOCRAgent:
                 is_correct = any(word in review_text.upper() for word in ["CORRECT", "صحيح"])
                 
                 if not is_correct and ("FIX:" in review_text or "ADD:" in review_text or "تصحيح:" in review_text or "إضافة:" in review_text):
-                    # There were corrections - append them
                     self._add_step(
                         AgentState.REFINING.value,
-                        "Applying corrections from self-review",
+                        "Review found issues - logged for quality tracking",
                         observation=review_text[:300]
                     )
-                    
-                    # Merge corrections into raw output
-                    raw_output = raw_output + "\n\n## Corrections:\n" + review_text
+                    # DO NOT append review to raw_output - it's internal feedback only
+                    # The review is logged in agent_trace for debugging
                 else:
                     self._add_step(
                         AgentState.REVIEWING.value,
@@ -402,33 +400,60 @@ class AgenticOCRAgent:
         return self._build_result(fields, confidence, validation, raw_output, doc_type)
     
     def _clean_raw_output(self, text: str) -> str:
-        """Remove any prompt leakage from raw output."""
+        """Remove any prompt leakage or review output from raw output."""
         if not text:
             return text
         
-        # Lines to completely remove (instruction lines)
-        REMOVE_LINES = [
+        # Lines/phrases to completely remove
+        REMOVE_PATTERNS = [
+            # English instructions
             "START NOW", "CRITICAL RULES", "OUTPUT FORMAT", "PROCESS:",
             "FORMAT:", "RULES:", "CHECK:", "Look at", "You are",
             "just the text", "nothing else", "no explanation",
+            # Arabic instructions
             "نص عادي", "سطر بسطر", "علامة ؟", "للكلمات غير",
             "المهمة:", "التنسيق:", "قواعد:", "ابدأ الاستخراج",
+            # Review/correction output (MUST filter these!)
+            "FIX:", "ADD:", "REMOVE:", "CORRECT",
+            "replace the", "does not appear", "match exactly",
+            "the word", "the writer", "first and third",
+            "تصحيح:", "إضافة:", "حذف:",
+            "## Corrections", "Corrections:",
         ]
         
         lines = text.split("\n")
         clean_lines = []
+        in_correction_section = False
         
         for line in lines:
             stripped = line.strip()
+            
             # Skip empty lines at start
             if not stripped and not clean_lines:
                 continue
-            # Skip instruction lines
-            if any(phrase.lower() in stripped.lower() for phrase in REMOVE_LINES):
+            
+            # Detect start of correction section
+            if "Correction" in stripped or "تصحيح" in stripped or "FIX:" in stripped:
+                in_correction_section = True
                 continue
-            # Skip markdown headers that look like instructions
-            if stripped.startswith("##") and any(w in stripped.lower() for w in ["correction", "تصحيح", "check"]):
+            
+            # Skip everything after correction section starts
+            if in_correction_section:
                 continue
+            
+            # Skip instruction/review lines
+            if any(phrase.lower() in stripped.lower() for phrase in REMOVE_PATTERNS):
+                continue
+            
+            # Skip markdown headers
+            if stripped.startswith("##"):
+                continue
+            
+            # Skip lines that look like review commentary (English sentences about the text)
+            if re.search(r'\b(the|does|match|appear|replace|writer|first|second|third)\b', stripped.lower()):
+                if len(stripped) > 30:  # Long English sentence = probably review
+                    continue
+            
             clean_lines.append(line)
         
         # Remove trailing empty lines
