@@ -93,98 +93,96 @@ class AgentTrace:
 # PROMPTS - Document Type Specific, No Phantom Fields
 # =============================================================================
 
-DETECT_TYPE_PROMPT = """انظر إلى هذه الصورة وحدد نوعها في كلمة واحدة فقط:
+DETECT_TYPE_PROMPT = """Look at this image and respond with ONE word only:
+- form (if it has labeled fields with values)
+- handwritten (if it's handwritten text like notes, letters, poetry)
+- table (if it has rows and columns)
+- mixed (combination)
 
-- form: إذا كانت نموذج رسمي مع حقول وقيم (مثل نموذج حكومي أو استمارة)
-- handwritten: إذا كانت نص مكتوب بخط اليد فقط (رسالة، ملاحظات، شعر)
-- table: إذا كانت جدول بصفوف وأعمدة
-- mixed: إذا كانت مزيج من النصوص والنماذج
-
-أجب بكلمة واحدة فقط: form أو handwritten أو table أو mixed"""
-
-
-FORM_EXTRACTION_PROMPT = """أنت نظام OCR متخصص. اقرأ هذا النموذج واستخرج كل حقل مكتوب فيه قيمة.
-
-المهمة:
-1. انظر إلى كل حقل في النموذج
-2. اقرأ اسم الحقل (العنوان المطبوع)
-3. اقرأ القيمة المكتوبة بخط اليد بجانبه
-4. اكتب كل حقل وقيمته
-
-التنسيق:
-اسم_الحقل: القيمة
-
-قواعد مهمة:
-- اكتب فقط الحقول التي تراها في الصورة
-- لا تضف حقول غير موجودة
-- اقرأ كل شيء من أعلى الصفحة إلى أسفلها
-- إذا لم تستطع قراءة قيمة بوضوح، اكتب أفضل تخمين مع علامة استفهام: قيمة؟
-
-ابدأ الاستخراج:"""
+Reply with ONE word: form, handwritten, table, or mixed"""
 
 
-HANDWRITTEN_EXTRACTION_PROMPT = """أنت نظام OCR متخصص في قراءة النصوص المكتوبة بخط اليد.
+FORM_EXTRACTION_PROMPT = """You are a precise OCR system. Your ONLY job is to read and transcribe what is VISIBLE in this image.
 
-المهمة:
-اقرأ كل النص المكتوب في هذه الصورة، سطر بسطر.
+CRITICAL RULES:
+1. Output ONLY the text you see - nothing else
+2. DO NOT add any explanations, headers, or instructions
+3. DO NOT add text that is not in the image
+4. Read EVERY field from top to bottom, left to right
 
-التنسيق:
-- اكتب كل سطر في سطر منفصل
-- إذا كان هناك ترقيم أو نقاط، حافظ عليها
-- إذا كلمة غير واضحة، اكتبها مع علامة استفهام: كلمة؟
+FORMAT:
+field_name: value
 
-اقرأ كل ما تراه:"""
+For each field you see:
+- Write the printed label, then colon, then the handwritten value
+- If a value is unclear, write your best guess
 
-
-TABLE_EXTRACTION_PROMPT = """أنت نظام OCR متخصص في قراءة الجداول.
-
-المهمة:
-1. اقرأ عناوين الأعمدة
-2. اقرأ كل صف
-3. اكتب البيانات بتنسيق واضح
-
-التنسيق:
-العمود1 | العمود2 | العمود3
-القيمة1 | القيمة2 | القيمة3
-
-اقرأ الجدول:"""
+START OUTPUT NOW (no introduction, just the fields):"""
 
 
-MIXED_EXTRACTION_PROMPT = """أنت نظام OCR متخصص. اقرأ كل ما هو مكتوب في هذه الصورة.
+HANDWRITTEN_EXTRACTION_PROMPT = """You are a precise OCR system. Transcribe EXACTLY what is written in this image.
 
-المهمة:
-1. إذا وجدت نموذج مع حقول: اكتب اسم_الحقل: القيمة
-2. إذا وجدت نص عادي: اكتبه كما هو سطر بسطر
-3. إذا وجدت جدول: اكتب البيانات بتنسيق واضح
+CRITICAL RULES:
+1. Output ONLY the handwritten text - nothing else
+2. DO NOT add any titles, headers, explanations, or formatting instructions
+3. DO NOT add words or lines that are not visible in the image
+4. Copy each line EXACTLY as written, preserving the original text
+5. Read very carefully - examine each word letter by letter
 
-قواعد:
-- اكتب فقط ما تراه في الصورة
-- لا تضف أي شيء غير موجود
-- إذا كلمة غير واضحة: اكتبها مع علامة استفهام
+PROCESS:
+- Look at line 1, read each word carefully, write it
+- Look at line 2, read each word carefully, write it
+- Continue for all lines
 
-اقرأ كل شيء:"""
+OUTPUT FORMAT:
+Just the text, line by line. No numbering unless the original has numbers.
+
+START NOW (output only the handwritten text, nothing else):"""
 
 
-SELF_REVIEW_PROMPT = """راجع هذا الاستخراج وأجب عن الأسئلة:
+TABLE_EXTRACTION_PROMPT = """You are a precise OCR system. Extract the table data from this image.
 
-## النص المستخرج:
+CRITICAL RULES:
+1. Output ONLY the table content - no explanations
+2. DO NOT add text that is not in the image
+3. Read each cell carefully
+
+FORMAT:
+header1 | header2 | header3
+value1 | value2 | value3
+
+START NOW:"""
+
+
+MIXED_EXTRACTION_PROMPT = """You are a precise OCR system. Transcribe ALL text visible in this image.
+
+CRITICAL RULES:
+1. Output ONLY what you see - no explanations, no headers, no instructions
+2. DO NOT add any text that is not in the image
+3. For forms: write field_name: value
+4. For regular text: write line by line exactly as shown
+5. Read VERY carefully - check each word
+
+START NOW (just the text, nothing else):"""
+
+
+SELF_REVIEW_PROMPT = """Look at the image again and compare with this extraction:
+
 {extracted_text}
 
-## أسئلة المراجعة:
-1. هل فاتني أي نص مرئي في الصورة؟
-2. هل هناك أخطاء واضحة في القراءة؟
-3. هل أضفت شيء غير موجود في الصورة؟
+CHECK:
+1. Is anything MISSING from the image that wasn't extracted?
+2. Is anything WRONG (misread words)?
+3. Is anything EXTRA that doesn't exist in the image?
 
-## إذا وجدت مشاكل:
-اكتب التصحيحات بهذا التنسيق:
-- تصحيح: [ما يجب تغييره]
-- إضافة: [ما فاتني]
-- حذف: [ما أضفته بالخطأ]
+If there are problems, write corrections:
+- FIX: [what to change]
+- ADD: [what was missed]
+- REMOVE: [what doesn't exist in image]
 
-## إذا كان الاستخراج صحيح:
-اكتب: الاستخراج صحيح
+If extraction is correct, write: CORRECT
 
-راجع الآن:"""
+Check now:"""
 
 
 # =============================================================================
@@ -355,8 +353,10 @@ class AgenticOCRAgent:
                 review_text = review_result.text
                 log(f"[Agent] Review result:\n{review_text[:500]}")
                 
-                # Check if review found issues
-                if "الاستخراج صحيح" not in review_text and "صحيح" not in review_text.lower():
+                # Check if review found issues (English or Arabic confirmation)
+                is_correct = any(word in review_text.upper() for word in ["CORRECT", "صحيح"])
+                
+                if not is_correct and ("FIX:" in review_text or "ADD:" in review_text or "تصحيح:" in review_text or "إضافة:" in review_text):
                     # There were corrections - append them
                     self._add_step(
                         AgentState.REFINING.value,
@@ -365,8 +365,7 @@ class AgenticOCRAgent:
                     )
                     
                     # Merge corrections into raw output
-                    if "تصحيح:" in review_text or "إضافة:" in review_text:
-                        raw_output = raw_output + "\n\n## تصحيحات:\n" + review_text
+                    raw_output = raw_output + "\n\n## Corrections:\n" + review_text
                 else:
                     self._add_step(
                         AgentState.REVIEWING.value,
@@ -374,7 +373,10 @@ class AgenticOCRAgent:
                         observation="No corrections needed"
                     )
         
-        # Step 5: Parse the output (minimal processing)
+        # Step 5: Clean raw output of any prompt leakage
+        raw_output = self._clean_raw_output(raw_output)
+        
+        # Step 6: Parse the output (minimal processing)
         fields, confidence = self._parse_response(raw_output, doc_type)
         log(f"[Agent] Parsed {len(fields)} fields")
         
@@ -399,6 +401,42 @@ class AgenticOCRAgent:
         
         return self._build_result(fields, confidence, validation, raw_output, doc_type)
     
+    def _clean_raw_output(self, text: str) -> str:
+        """Remove any prompt leakage from raw output."""
+        if not text:
+            return text
+        
+        # Lines to completely remove (instruction lines)
+        REMOVE_LINES = [
+            "START NOW", "CRITICAL RULES", "OUTPUT FORMAT", "PROCESS:",
+            "FORMAT:", "RULES:", "CHECK:", "Look at", "You are",
+            "just the text", "nothing else", "no explanation",
+            "نص عادي", "سطر بسطر", "علامة ؟", "للكلمات غير",
+            "المهمة:", "التنسيق:", "قواعد:", "ابدأ الاستخراج",
+        ]
+        
+        lines = text.split("\n")
+        clean_lines = []
+        
+        for line in lines:
+            stripped = line.strip()
+            # Skip empty lines at start
+            if not stripped and not clean_lines:
+                continue
+            # Skip instruction lines
+            if any(phrase.lower() in stripped.lower() for phrase in REMOVE_LINES):
+                continue
+            # Skip markdown headers that look like instructions
+            if stripped.startswith("##") and any(w in stripped.lower() for w in ["correction", "تصحيح", "check"]):
+                continue
+            clean_lines.append(line)
+        
+        # Remove trailing empty lines
+        while clean_lines and not clean_lines[-1].strip():
+            clean_lines.pop()
+        
+        return "\n".join(clean_lines)
+    
     def _parse_response(self, text: str, doc_type: DocumentType) -> tuple:
         """
         Parse extraction response with minimal filtering.
@@ -410,17 +448,43 @@ class AgenticOCRAgent:
         if not text:
             return fields, confidence
         
+        # Filter out prompt leakage - common instruction phrases
+        SKIP_PHRASES = [
+            # English instructions
+            "START NOW", "CRITICAL RULES", "OUTPUT FORMAT", "PROCESS:",
+            "FORMAT:", "RULES:", "CHECK:", "Look at", "You are",
+            "just the text", "nothing else", "no explanation",
+            # Arabic instructions
+            "المهمة", "التنسيق", "قواعد", "ابدأ", "اقرأ كل",
+            "نص عادي", "سطر بسطر", "علامة",
+            # Correction markers
+            "FIX:", "ADD:", "REMOVE:", "Corrections:",
+            "تصحيح:", "إضافة:", "حذف:",
+        ]
+        
         lines = text.strip().split("\n")
+        
+        # Clean lines - remove any that look like instructions
+        clean_lines = []
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            # Skip if contains instruction phrases
+            if any(phrase.lower() in line.lower() for phrase in SKIP_PHRASES):
+                continue
+            # Skip headers and markdown
+            if line.startswith("#") or line.startswith("##"):
+                continue
+            clean_lines.append(line)
         
         if doc_type == DocumentType.HANDWRITTEN:
             # For handwritten text, keep lines as-is
             line_num = 0
-            for line in lines:
-                line = line.strip()
-                if not line:
-                    continue
-                # Skip review/correction sections
-                if line.startswith("#") or "تصحيح" in line or "إضافة" in line:
+            for line in clean_lines:
+                # Remove any leading numbers/bullets that model might add
+                cleaned = re.sub(r'^[\d\.\)\-\*]+\s*', '', line).strip()
+                if not cleaned:
                     continue
                 
                 line_num += 1
@@ -428,25 +492,15 @@ class AgenticOCRAgent:
                 
                 # Check for uncertainty markers
                 conf = "HIGH"
-                if "؟" in line:
+                if "?" in cleaned or "؟" in cleaned:
                     conf = "MEDIUM"
                 
-                fields[field_name] = line
+                fields[field_name] = cleaned
                 confidence[field_name] = conf
         
         else:
             # For forms and other types, look for field:value pattern
-            for line in lines:
-                line = line.strip()
-                
-                # Skip empty lines and headers
-                if not line or line.startswith("#"):
-                    continue
-                
-                # Skip correction sections
-                if "تصحيح:" in line or "إضافة:" in line or "حذف:" in line:
-                    continue
-                
+            for line in clean_lines:
                 # Try to parse as field:value
                 if ":" in line:
                     parts = line.split(":", 1)
@@ -454,12 +508,12 @@ class AgenticOCRAgent:
                         field_name = parts[0].strip()
                         value = parts[1].strip()
                         
-                        # Skip if looks like instruction
-                        if len(field_name) > 60:
+                        # Skip if looks like instruction (too long)
+                        if len(field_name) > 50:
                             continue
                         
-                        # Clean up field name
-                        field_name = field_name.lstrip("-•·0123456789.").strip()
+                        # Clean up field name - remove bullets/numbers
+                        field_name = re.sub(r'^[\d\.\)\-\*•·]+\s*', '', field_name).strip()
                         field_name = field_name.replace(" ", "_")
                         
                         if not field_name or len(field_name) < 2:
@@ -467,7 +521,7 @@ class AgenticOCRAgent:
                         
                         # Determine confidence
                         conf = "HIGH"
-                        if "؟" in value:
+                        if "?" in value or "؟" in value:
                             conf = "MEDIUM"
                         if not value or value == "---":
                             conf = "LOW"
@@ -476,11 +530,14 @@ class AgenticOCRAgent:
                         confidence[field_name] = conf
                 
                 elif doc_type == DocumentType.MIXED and line:
-                    # For mixed, also capture standalone lines
-                    if len(line) > 5 and not any(skip in line for skip in ["المهمة", "التنسيق", "قواعد"]):
+                    # For mixed, also capture standalone lines (Arabic text)
+                    if len(line) > 3:
                         line_key = f"نص_{len(fields) + 1}"
                         fields[line_key] = line
-                        confidence[line_key] = "MEDIUM"
+                        conf = "HIGH"
+                        if "?" in line or "؟" in line:
+                            conf = "MEDIUM"
+                        confidence[line_key] = conf
         
         return fields, confidence
     
