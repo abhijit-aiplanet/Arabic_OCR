@@ -80,12 +80,21 @@ export default function ImageUploader({
     maxFiles: maxFiles - selectedFiles.length,
   })
 
+  // Calculate total pages - PDFs use pageCount, images are 1 page each
   const totalPages = selectedFiles.reduce((sum, f) => {
     if (f.file.type === 'application/pdf') {
-      return sum + (f.pageCount || 1)
+      // Use actual page count if available, otherwise estimate based on file size
+      // Average PDF page is ~100KB, so rough estimate: size / 100KB
+      const estimatedPages = f.pageCount || Math.max(1, Math.ceil(f.file.size / (100 * 1024)))
+      return sum + estimatedPages
     }
     return sum + 1
   }, 0)
+  
+  // Check if we're still loading page counts
+  const loadingPageCounts = selectedFiles.some(f => 
+    f.file.type === 'application/pdf' && !f.pageCount
+  )
 
   const pdfCount = selectedFiles.filter(f => f.file.type === 'application/pdf').length
   const imageCount = selectedFiles.length - pdfCount
@@ -190,8 +199,13 @@ export default function ImageUploader({
                   </p>
                   <p className="text-xs text-gray-500">
                     {(fileItem.file.size / 1024 / 1024).toFixed(2)} MB
-                    {fileItem.file.type === 'application/pdf' && fileItem.pageCount && (
-                      <span className="ml-2">{fileItem.pageCount} pages</span>
+                    {fileItem.file.type === 'application/pdf' && (
+                      <span className="ml-2">
+                        {fileItem.pageCount 
+                          ? `${fileItem.pageCount} pages`
+                          : <span className="text-gray-400">counting pages...</span>
+                        }
+                      </span>
                     )}
                   </p>
                 </div>
@@ -246,8 +260,11 @@ export default function ImageUploader({
                 </span>
               )}
             </div>
-            <span>
-              {totalPages} total page{totalPages !== 1 ? 's' : ''} to process
+            <span className="flex items-center gap-1.5">
+              {loadingPageCounts && (
+                <div className="w-3 h-3 border-2 border-gray-300 border-t-gray-600 rounded-full animate-spin" />
+              )}
+              {loadingPageCounts ? '~' : ''}{totalPages} total page{totalPages !== 1 ? 's' : ''} to process
             </span>
           </div>
         )}

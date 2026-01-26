@@ -1,10 +1,9 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import ImageUploader, { FileWithPreview } from '@/components/ImageUploader'
 import TemplateSelector from '@/components/TemplateSelector'
 import PageResultView from '@/components/PageResultView'
-import AgentTracePanel from '@/components/AgentTrace'
 import { 
   processAgenticOCR,
   processAgenticOCRBase64,
@@ -33,6 +32,51 @@ interface PageResult {
   error?: string
 }
 
+// Helper to get PDF page count client-side
+async function getPdfPageCount(file: File): Promise<number> {
+  return new Promise((resolve) => {
+    const reader = new FileReader()
+    reader.onload = async (e) => {
+      try {
+        const arrayBuffer = e.target?.result as ArrayBuffer
+        const bytes = new Uint8Array(arrayBuffer)
+        
+        // Simple PDF page count by counting /Type /Page occurrences
+        // More reliable: look for /Count in the document catalog
+        let text = ''
+        for (let i = 0; i < Math.min(bytes.length, 50000); i++) {
+          text += String.fromCharCode(bytes[i])
+        }
+        
+        // Look for /Count N pattern in PDF
+        const countMatch = text.match(/\/Count\s+(\d+)/g)
+        if (countMatch && countMatch.length > 0) {
+          // Get the largest count (usually the root Pages object)
+          const counts = countMatch.map(m => parseInt(m.replace('/Count', '').trim()))
+          const maxCount = Math.max(...counts)
+          if (maxCount > 0 && maxCount < 1000) {
+            resolve(maxCount)
+            return
+          }
+        }
+        
+        // Fallback: count page objects
+        const pageMatches = text.match(/\/Type\s*\/Page[^s]/g)
+        if (pageMatches) {
+          resolve(pageMatches.length)
+          return
+        }
+        
+        resolve(1) // Default to 1 if we can't determine
+      } catch {
+        resolve(1)
+      }
+    }
+    reader.onerror = () => resolve(1)
+    reader.readAsArrayBuffer(file)
+  })
+}
+
 export default function Home() {
   const { getToken } = useAuth()
   
@@ -57,14 +101,22 @@ export default function Home() {
   // History
   const [showHistory, setShowHistory] = useState(false)
 
+  // Get fresh token - call this before each API request
+  const getFreshToken = useCallback(async (): Promise<string | null> => {
+    try {
+      const token = await getToken({ skipCache: true })
+      setAuthToken(token)
+      return token
+    } catch (e) {
+      console.error('Failed to get token:', e)
+      return null
+    }
+  }, [getToken])
+
   // Get auth token on mount
   useEffect(() => {
-    const fetchToken = async () => {
-      const token = await getToken()
-      setAuthToken(token)
-    }
-    fetchToken()
-  }, [getToken])
+    getFreshToken()
+  }, [getFreshToken])
   
   // Track elapsed time during processing
   useEffect(() => {
@@ -83,9 +135,19 @@ export default function Home() {
     }
   }, [isProcessing, processingStartTime])
 
-  // Handle file selection
-  const handleFilesSelect = useCallback((newFiles: FileWithPreview[]) => {
-    setFiles(newFiles)
+  // Handle file selection - also get PDF page counts
+  const handleFilesSelect = useCallback(async (newFiles: FileWithPreview[]) => {
+    // Get page counts for PDFs
+    const filesWithPageCounts = await Promise.all(
+      newFiles.map(async (f) => {
+        if (f.file.type === 'application/pdf' && !f.pageCount) {
+          const pageCount = await getPdfPageCount(f.file)
+          return { ...f, pageCount }
+        }
+        return f
+      })
+    )
+    setFiles(filesWithPageCounts)
   }, [])
 
   const handleRemoveFile = useCallback((id: string) => {
@@ -106,7 +168,8 @@ export default function Home() {
       return
     }
 
-    const token = await getToken()
+    // Get fresh token at start
+    let token = await getFreshToken()
     if (!token) {
       toast.error('Please sign in to use OCR features')
       return
@@ -127,6 +190,13 @@ export default function Home() {
       
       for (const fileItem of files) {
         if (fileItem.file.type === 'application/pdf') {
+          // Refresh token before PDF split (can take time)
+          token = await getFreshToken()
+          if (!token) {
+            toast.error('Session expired. Please sign in again.')
+            return
+          }
+          
           // Split PDF into pages
           toast.loading(`Loading PDF: ${fileItem.file.name}...`, { id: fileItem.id })
           
@@ -186,6 +256,16 @@ export default function Home() {
       for (let i = 0; i < allPages.length; i++) {
         const page = allPages[i]
         
+        // Refresh token BEFORE each page to prevent expiry during long sessions
+        token = await getFreshToken()
+        if (!token) {
+          toast.error('Session expired. Please sign in again.')
+          setPageResults(prev => prev.map(p => 
+            p.status === 'pending' ? { ...p, status: 'error', error: 'Session expired' } : p
+          ))
+          break
+        }
+        
         setCurrentProcessingId(page.id)
         setSelectedResultIndex(i)
         
@@ -229,12 +309,49 @@ export default function Home() {
           )
 
         } catch (err: any) {
-          setPageResults(prev => prev.map(p => 
-            p.id === page.id 
-              ? { ...p, status: 'error', error: err.message }
-              : p
-          ))
-          toast.error(`Failed: ${page.fileName} - ${err.message}`)
+          // Check if it's a session error and try to refresh
+          if (err.message?.includes('Session') || err.message?.includes('401') || err.message?.includes('expired')) {
+            token = await getFreshToken()
+            if (token) {
+              // Retry once with fresh token
+              try {
+                let result: AgenticOCRResponse
+                if (page.imageBase64) {
+                  result = await processAgenticOCRBase64(
+                    page.imageBase64,
+                    `${page.fileName}-page-${page.pageNumber}.png`,
+                    { maxIterations: 3 },
+                    token
+                  )
+                } else {
+                  const file = files.find(f => f.id === page.fileId)?.file
+                  if (!file) throw new Error('File not found')
+                  result = await processAgenticOCR(file, { maxIterations: 3 }, token)
+                }
+                
+                setPageResults(prev => prev.map(p => 
+                  p.id === page.id ? { ...p, status: 'complete', result } : p
+                ))
+                toast.success(`${page.fileName}: Retry successful!`, { duration: 3000 })
+                continue // Move to next page
+              } catch (retryErr: any) {
+                // Retry failed too
+                setPageResults(prev => prev.map(p => 
+                  p.id === page.id 
+                    ? { ...p, status: 'error', error: retryErr.message }
+                    : p
+                ))
+                toast.error(`Failed: ${page.fileName} - ${retryErr.message}`)
+              }
+            }
+          } else {
+            setPageResults(prev => prev.map(p => 
+              p.id === page.id 
+                ? { ...p, status: 'error', error: err.message }
+                : p
+            ))
+            toast.error(`Failed: ${page.fileName} - ${err.message}`)
+          }
         }
 
         // Update file status if all pages complete

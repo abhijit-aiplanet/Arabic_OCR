@@ -76,23 +76,53 @@ class AgentTrace:
         }
 
 
-# Simple, direct prompt - let post-processing handle validation
-EXTRACTION_PROMPT = """اقرأ هذا النموذج السعودي واستخرج القيم المكتوبة.
+# Flexible extraction prompt that adapts to document type
+EXTRACTION_PROMPT = """You are an expert Arabic OCR system. Carefully analyze this image and extract ALL text and data.
 
-اقرأ بدقة. إذا الحقل فارغ اكتب ---
+STEP 1: IDENTIFY DOCUMENT TYPE
+First, determine what type of document this is:
+- Form (نموذج): Has labeled fields with values to fill
+- Certificate (شهادة): Official document with stamps/seals
+- Letter (خطاب): Written correspondence
+- Table (جدول): Structured tabular data  
+- ID Card (بطاقة): Identity/membership card
+- Receipt (إيصال): Payment/transaction record
+- Handwritten Notes (ملاحظات): Freeform handwritten text
+- Mixed: Combination of types
 
-الحقول:
-اسم_المالك، رقم_الهوية، مصدرها، تاريخها، تاريخ_الميلاد، الحالة_الاجتماعية، عدد_من_يعولهم، المؤهل، المدينة، الحي، الشارع، رقم_المبنى، جوال، البريد_الإلكتروني، فاكس، نوع_النشاط، مدينة_مزاولة_النشاط، تاريخ_بدء_النشاط، تاريخ_انتهاء_الترخيص، رقم_رخصة_القيادة، تاريخ_إصدار_الرخصة، تاريخ_انتهاء_الرخصة، مصدر_الرخصة، نوع_المركبة، الموديل، اللون، رقم_اللوحة، سنة_الصنع، اسم_مقدم_الطلب، صفته، توقيعه، تاريخ_التوقيع
+STEP 2: EXTRACT BASED ON TYPE
 
-التنسيق:
-حقل: قيمة [HIGH/MEDIUM/LOW]
+For FORMS - Extract each field:
+field_name: value [HIGH/MEDIUM/LOW confidence]
 
-ملاحظات:
-- رقم_الهوية: ١٠ أرقام تبدأ بـ ١
-- جوال: ١٠ أرقام تبدأ بـ ٠٥
-- إذا توجد توقيع: [توقيع موجود]
+For DOCUMENTS/LETTERS - Extract:
+document_title: [title if present]
+date: [date if present]
+content: [full text content]
+signatures: [signature descriptions]
 
-ابدأ:"""
+For TABLES - Extract:
+table_title: [title if present]
+headers: [column headers]
+rows: [row data]
+
+For HANDWRITTEN - Extract:
+raw_text: [all readable text, preserve line breaks]
+uncertain_words: [words that are unclear]
+
+STEP 3: OUTPUT FORMAT
+Start with document_type: [type]
+Then list all extracted information in this format:
+field_or_section: value [HIGH/MEDIUM/LOW]
+
+RULES:
+- Read Arabic RIGHT-TO-LEFT carefully
+- Preserve original Arabic numerals (١٢٣) or convert to Western (123)
+- If text is unclear, mark confidence as LOW
+- If field is empty, write: ---
+- Include ALL visible text, don't skip anything
+
+Begin extraction:"""
 
 
 class AgenticOCRAgent:
